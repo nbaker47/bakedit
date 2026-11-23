@@ -588,32 +588,40 @@ impl Editor {
         }
     }
 
+    /// Go back to the newest remembered selections that differ from the current ones.
     fn undo_selection(&mut self) -> Outcome {
-        let Some(previous) = self.selection_undo.pop() else {
-            return Outcome::default();
-        };
-        let current = std::mem::replace(&mut self.selections, previous);
-        self.normalize_selections();
-        let changed = current != self.selections;
-        self.selection_redo.push(current);
-        Outcome {
-            selections_changed: changed,
-            ..Outcome::default()
+        let original = self.selections.clone();
+        while let Some(previous) = self.selection_undo.pop() {
+            self.selections = previous;
+            self.normalize_selections();
+            if self.selections != original {
+                self.selection_redo.push(original);
+                return Outcome {
+                    selections_changed: true,
+                    ..Outcome::default()
+                };
+            }
         }
+        self.selections = original;
+        Outcome::default()
     }
 
+    /// Go forward again to the newest undone selections that differ from the current ones.
     fn redo_selection(&mut self) -> Outcome {
-        let Some(next) = self.selection_redo.pop() else {
-            return Outcome::default();
-        };
-        let current = std::mem::replace(&mut self.selections, next);
-        self.normalize_selections();
-        let changed = current != self.selections;
-        self.selection_undo.push(current);
-        Outcome {
-            selections_changed: changed,
-            ..Outcome::default()
+        let original = self.selections.clone();
+        while let Some(next) = self.selection_redo.pop() {
+            self.selections = next;
+            self.normalize_selections();
+            if self.selections != original {
+                self.selection_undo.push(original);
+                return Outcome {
+                    selections_changed: true,
+                    ..Outcome::default()
+                };
+            }
         }
+        self.selections = original;
+        Outcome::default()
     }
 
     /// Select the text between the nearest pair of delimiters of `kind` around the primary

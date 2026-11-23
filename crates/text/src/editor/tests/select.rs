@@ -385,6 +385,30 @@ fn the_selection_history_follows_the_text() {
 }
 
 #[test]
+fn undo_selection_skips_entries_that_change_nothing() {
+    // Deleting the text between two remembered positions makes them the same place.
+    let mut e = editor("abˇcdef");
+    apply_all(
+        &mut e,
+        [
+            Command::Move(Motion::Right),
+            Command::Move(Motion::Right),
+            Command::Move(Motion::End),
+        ],
+    );
+    e.edit(&[(2..4, "")]);
+    assert_eq!(state(&e), "abefˇ");
+    apply_all(&mut e, [Command::UndoSelection]);
+    assert_eq!(
+        state(&e),
+        "abˇef",
+        "one press goes back to a place that is actually different"
+    );
+    apply_all(&mut e, [Command::RedoSelection]);
+    assert_eq!(state(&e), "abefˇ");
+}
+
+#[test]
 fn undo_selection_with_nothing_to_undo() {
     let mut e = crate::editor::Editor::from_str("abc");
     assert!(e.apply(Command::UndoSelection).is_noop());
