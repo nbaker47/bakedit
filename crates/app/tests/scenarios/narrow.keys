@@ -1,0 +1,18 @@
+# A narrow window, 100x30: the docks give the editor room, and everything still fits.
+expect No file open
+snap start
+key cmd-p
+text main.rs
+expect main.rs  src
+key enter
+expect src › main.rs
+snap editor
+key cmd-g
+expect Tracked
+snap git
+key cmd-shift-p
+expect Execute a command
+snap palette
+key escape
+key cmd-q
+expect-exit

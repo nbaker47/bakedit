@@ -1,0 +1,36 @@
+# A 50,000-line Rust file stays responsive: it opens, jumps to its end and back, pages,
+# finds, and takes typing, each within the scenario's timeout (4 s here; the transcript
+# has the times).
+
+key cmd-p
+text big.rs
+expect big.rs  data
+log open
+key enter
+expect data › big.rs
+expect fn f1(x: u32)
+log end
+key shift-g
+expect  50001:1  Rust
+expect line 50000
+key g g
+expect  1:1  Rust
+key ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d
+expect-not  1:1  Rust
+log find
+key cmd-f
+text line 49999
+expect 1 of 1
+expect line 49999
+key escape
+log type
+key o
+paste // typed into a big file
+key escape
+expect typed into a big file
+snap typed
+key u
+expect-not typed into a big file
+
+key cmd-q
+expect-exit

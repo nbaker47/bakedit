@@ -1,0 +1,21 @@
+# herdr's keys, baked in. With no herdr session of bakedit's own to drive (here the panel
+# runs plain sh), each herdr action types the ctrl-b chord Nathan's herdr config binds, as
+# his Zed keymap did; `cat -v` shows what arrived (with the line discipline off, so that
+# ctrl-u is not taken as "erase the line"). herdr-session.keys drives a real herdr.
+
+key cmd-t
+text stty -icanon -echo; cat -v
+key enter
+wait 0.3
+# Focus a pane left, right, up, down; move one left; previous workspace; workspace 1; zoom,
+# collapse, expand; scroll up 3 and down 9.
+key cmd-alt-left cmd-alt-right cmd-alt-up cmd-alt-down
+key cmd-alt-shift-left ctrl-alt-cmd-up cmd-alt-1
+key cmd-alt-z cmd-alt-c cmd-alt-a
+key shift-up cmd-shift-down
+expect ^Bh^Bl^Bk^Bj^B^H^Bu^B!^Bz^Bm^Be^B^U^B^E
+snap chords
+key ctrl-c
+
+key cmd-q
+expect-exit

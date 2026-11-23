@@ -1,9 +1,10 @@
 # run.sh runs, from another process three seconds in, `bakedit --action command_palette::Toggle`
 # and then `bakedit README.md:2`: both reach this window, the way an agent's hook would.
-wait 4.5
+expect Execute a command
 snap action
 key escape
-wait 1.5
+expect README.md
+expect  2:1  Markdown
 snap opened
 key cmd-q
-wait 1
+expect-exit

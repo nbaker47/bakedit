@@ -1,0 +1,11 @@
+# cmd-q puts the terminal back as it was: the screen bakedit drew on is left, the keyboard
+# protocol popped, mouse and paste reporting off, the cursor shown.
+expect No file open
+key cmd-p
+text lib
+expect lib.rs  src
+key enter
+expect src › lib.rs
+key cmd-q
+expect-exit
+exec python3 "$BAKEDIT_SCENARIO_HERE/check-restored.py" "$PTYSHOT_RAW"

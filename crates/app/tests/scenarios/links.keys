@@ -1,0 +1,28 @@
+# A path:line printed in the terminal (as an agent in herdr prints them) opens in the editor
+# at that line: cmd+click on it, or cmd-o to pick it from a list without the mouse.
+
+key cmd-t
+expect demo %
+text echo src/lib.rs:2 and README.md:3
+key enter
+expect src/lib.rs:2 and README.md:3
+# The output line is the third row of the panel (row 0 is its tab header): click its path.
+click 3 2 cmd
+expect src › lib.rs
+expect  2:1  Rust
+snap click
+
+# cmd-o in the terminal: every path and link on its screen, filtered by what is typed.
+key cmd-t
+key cmd-o
+expect Open a path or link from the terminal
+text readme
+expect README.md
+snap picker
+key enter
+expect README.md
+expect  3:1  Markdown
+snap picked
+
+key cmd-q
+expect-exit

@@ -1,3 +1,5 @@
 # bakedit --probe: what the terminal answered to the startup queries.
-wait 2.5
+expect kitty keyboard    flags 31
+expect works (key releases are reported)
+expect inside herdr      no
 snap report

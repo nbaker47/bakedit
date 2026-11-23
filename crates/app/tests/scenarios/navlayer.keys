@@ -1,0 +1,52 @@
+# The Karabiner layer, built in: hold ; and e s d f are the arrows, j k l h are shift, cmd,
+# alt and ctrl. cmd-k ; switches it off and on.
+
+key cmd-p
+text main.rs
+expect main.rs  src
+key enter
+expect  1:1  Rust
+expect ;layer
+
+# ; held, d tapped: down.
+down ;
+key d d
+up ;
+expect  3:1  Rust
+# ; held with k (cmd) and t: cmd-t, the terminal.
+down ;
+down k
+key t
+up k
+up ;
+text echo layer-ok
+key enter
+expect layer-ok
+snap layer-cmd-t
+# A ; tapped on its own types a ;.
+text echo a
+key ;
+text b
+key enter
+expect a;b
+
+# cmd-k ; in the editor switches the layer off: ; and d are typed again.
+key cmd-e
+key cmd-k ;
+expect Nav layer off
+expect-not ;layer
+key cmd-t
+down ;
+key d
+up ;
+expect demo % ;d
+snap layer-off
+key ctrl-u
+# And on again.
+key cmd-e
+key cmd-k ;
+expect Nav layer on
+expect ;layer
+
+key cmd-q
+expect-exit

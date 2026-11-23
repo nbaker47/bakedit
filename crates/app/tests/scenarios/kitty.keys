@@ -1,70 +1,88 @@
 # bakedit as a Ghostty window with the kitty keyboard protocol sends it (ptyshot answers the
-# startup queries with flags 31). Every key here is a press and its release.
+# startup queries with flags 31). Every key here is a press and its release. A tour of the
+# main views, with the pictures the README and reviews use.
 
-# Start: the terminal on the left, the file tree on the right, the keyboard in the centre.
-wait 2.5
+# Start: the terminal on the left, the file tree on the right, the keyboard in the centre,
+# and the usage strip on the bottom row.
+expect No file open
+expect-at 1 0 1 zsh
+expect ▾ demo
+expect cld
+expect cdx
 snap start
 
 # cmd-t: the terminal takes the keyboard.
 key cmd-t
-wait 0.5
+expect demo %
 snap terminal
 
 # A path printed in the terminal, cmd+clicked: it opens in the editor at that line.
 text echo src/lib.rs:2
 key enter
-wait 0.8
+expect src/lib.rs:2
 click 3 2 cmd
-wait 1.2
+expect src › lib.rs
+expect  2:1  Rust
 snap link
 
 # cmd-t twice: the terminal takes the keyboard again, then hides.
-key cmd-t
-key cmd-t
-wait 0.3
+key cmd-t cmd-t
+expect-not 1 zsh
 
 # cmd-g: the git panel in the left dock, listing the changes.
 key cmd-g
-wait 1
+expect Tracked
 snap git
 key cmd-g
 
 # cmd-shift-e: the file tree takes the keyboard.
 key cmd-shift-e
-wait 0.3
+expect lib.rs
 snap tree
 key cmd-e
 
 # cmd-p: the file finder. Type, enter opens the file at the line asked for.
 key cmd-p
-wait 0.5
+expect Search project files
 snap finder-empty
 text main:2
-wait 0.5
+expect line 2
 snap finder
 key enter
-wait 1.5
+expect src › main.rs
+expect  2:1  Rust
 snap editor
+
+# The command palette.
+key cmd-shift-p
+expect Execute a command
+text toggle
+expect terminal panel: toggle
+snap palette
+key escape
 
 # A chord: cmd-k waits for its second key; after a pause the completions are listed.
 key cmd-k
+expect cmd-k
 wait 1.2
+expect select between
 snap chord
 key escape
 wait 0.3
 
 # cmd-alt-t: the terminal fullscreen; cmd-e back to the editor.
 key cmd-alt-t
-wait 0.5
+expect fullscreen
 snap terminal-zoom
 key cmd-e
-wait 0.3
+expect src › main.rs
 
 # A narrower window.
 resize 120x34
 wait 1.2
+expect src › main.rs
 snap narrow
 
 # cmd-q: nothing unsaved, so it quits at once and the session is saved.
 key cmd-q
-wait 1
+expect-exit

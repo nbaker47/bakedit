@@ -1,0 +1,42 @@
+# The git panel on a throwaway repository: arrowing through the changes (each shows its diff
+# and is revealed in the tree, as Nathan's Zed keymap does), staging, committing, and the
+# project diff.
+
+key cmd-g
+expect Tracked
+expect M main.rs
+expect U notes.txt
+expect Nothing staged
+snap list
+
+# down: the next change, its diff in the centre, the file shown in the tree; the keyboard
+# stays in the list.
+key down
+expect Project Diff
+expect notes
+key up
+expect distinct words
+snap arrows
+
+# space stages main.rs; tab goes to the message; cmd-enter commits.
+key space
+expect 1 staged
+key tab
+paste Count distinct words
+key cmd-enter
+exec for i in 1 2 3 4 5 6 7 8 9 10; do GIT_CONFIG_GLOBAL=/dev/null git -C "$BAKEDIT_SCENARIO_PROJECT" log -1 --format=%s | grep -q '^Count distinct words$' && exit 0; sleep 0.3; done; exit 1
+expect-not M main.rs
+expect U notes.txt
+snap committed
+
+# cmd-alt-g: the project diff fullscreen; n and ] go from hunk to hunk; enter opens the file.
+key cmd-alt-g
+expect Project Diff
+expect notes.txt
+snap diff
+key enter
+expect notes.txt
+key cmd-alt-g
+
+key cmd-q
+expect-exit

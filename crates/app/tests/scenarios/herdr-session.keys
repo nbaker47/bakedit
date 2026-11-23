@@ -1,0 +1,28 @@
+# herdr in the terminal panel, its keys baked into bakedit, against a throwaway herdr server
+# of the scenario's own (never Nathan's session): run.sh starts it with
+# crates/herdr/tests/isolated-session.sh and runs bakedit with --terminal "herdr --session …"
+# and that server's config folder and home. herdr-check.py asks the server what happened.
+
+# herdr is the program in the terminal panel: its sidebar lists its spaces.
+key cmd-t
+expect spaces
+wait 1
+snap herdr
+# Two panes side by side, the focus on the left one.
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" split
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" focused left
+# cmd-alt-right: herdr::Navigate right, sent over the socket.
+key cmd-alt-right
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" focused right
+key cmd-alt-left
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" focused left
+# cmd-alt-z: zoom the pane, and back.
+key cmd-alt-z
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" zoomed yes
+key cmd-alt-z
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" zoomed no
+snap navigated
+
+key cmd-e
+key cmd-q
+expect-exit

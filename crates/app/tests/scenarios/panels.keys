@@ -1,0 +1,98 @@
+# The panel keys from Nathan's Zed keymap, each checked against what Zed does with it
+# (workspace.rs has the rules): show and hide, focus, and fullscreen.
+
+# Start: the terminal on the left, the tree on the right, the usage strip at the bottom.
+expect No file open
+expect-at 1 0 1 zsh
+expect ▾ demo
+expect cdx
+snap start
+
+# Open a file to work in.
+key cmd-p
+expect Search project files
+text main.rs
+expect main.rs  src
+key enter
+expect src › main.rs
+expect NAV
+
+# cmd-t: the terminal takes the keyboard (typing reaches the shell).
+key cmd-t
+text echo panels-check
+key enter
+expect panels-check
+snap terminal
+# cmd-t in the terminal: back to the editor, and the terminal's dock closes.
+key cmd-t
+expect-not 1 zsh
+expect NAV
+
+# cmd-alt-t from the editor: the terminal, fullscreen.
+key cmd-alt-t
+expect fullscreen
+expect-not src › main.rs
+snap terminal-fullscreen
+# cmd-alt-t in the terminal: fullscreen off, the editor back beside it.
+key cmd-alt-t
+expect src › main.rs
+expect-not fullscreen
+expect-at 1 0 1 zsh
+# cmd-alt-f in the terminal is fullscreen too, on and off.
+key cmd-alt-f
+expect fullscreen
+key cmd-alt-f
+expect src › main.rs
+
+# cmd-e: the editor has the keyboard; the terminal stays where it is.
+key cmd-e
+expect NAV
+expect-at 1 0 1 zsh
+
+# cmd-g: the git panel takes the left dock and the keyboard; cmd-g again hides it.
+key cmd-g
+expect Tracked
+expect Nothing staged
+snap git
+key cmd-g
+expect-not Tracked
+expect NAV
+
+# cmd-alt-g: the project diff, fullscreen (no docks); again: back to normal.
+key cmd-alt-g
+expect Project Diff
+expect distinct words
+expect-not ▾ demo
+snap diff-fullscreen
+key cmd-alt-g
+expect ▾ demo
+# cmd-w closes the diff's tab: main.rs is in front again.
+key cmd-e
+key cmd-w
+expect src › main.rs
+
+# cmd-shift-e from the editor: the tree shows the file (its folder opens) and takes the
+# keyboard; in the tree it closes the tree.
+key cmd-e
+key cmd-shift-e
+expect lib.rs
+key cmd-shift-e
+expect-not ▾ demo
+key cmd-shift-e
+expect ▾ demo
+key cmd-e
+
+# cmd-alt-f in the editor: every dock hides; again: they come back.
+key cmd-alt-f
+expect-not ▾ demo
+key cmd-alt-f
+expect ▾ demo
+# cmd-alt-e: the editor, all docks hidden; again: back.
+key cmd-alt-e
+expect-not ▾ demo
+expect NAV
+key cmd-alt-e
+expect ▾ demo
+
+key cmd-q
+expect-exit

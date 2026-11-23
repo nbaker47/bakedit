@@ -2,13 +2,17 @@
 # the device attributes): no cmd keys, no key releases. The status bar says so, the nav
 # layer is off, and ctrl-] is the prefix that reaches bakedit.
 
-wait 2.5
+expect use the ctrl-] prefix
+expect ;layer n/a
+expect ctrl-] p
 snap start
 
 # ctrl-] t: the terminal takes the keyboard.
 key ctrl-]
 key t
-wait 0.5
+text echo legacy-ok
+key enter
+expect legacy-ok
 snap terminal
 
 # ctrl-] c: back to the centre. ctrl-] p: the file finder.
@@ -16,17 +20,18 @@ key ctrl-]
 key c
 key ctrl-]
 key p
-wait 0.5
+expect Search project files
 text lib
-wait 0.5
+expect lib.rs  src
 snap finder
 key enter
-wait 1.5
+expect src › lib.rs
 snap editor
 
 # ctrl-] on its own: after a pause, everything it can be followed by.
 key ctrl-]
 wait 1.2
+expect terminal panel: toggle
 snap chord
 key escape
 wait 0.3
@@ -34,4 +39,4 @@ wait 0.3
 # ctrl-] q quits.
 key ctrl-]
 key q
-wait 1
+expect-exit

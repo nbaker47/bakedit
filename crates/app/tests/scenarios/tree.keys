@@ -1,0 +1,53 @@
+# The file tree: moving with the arrows, opening with space (a preview) and enter, and new,
+# rename and delete. (Delete, not Trash: a scenario never sends files to the real Trash.)
+
+key cmd-shift-e
+expect ▾ demo
+# Nothing is selected yet: down selects the project, then data, then src (folders come
+# first, then Cargo.toml, notes.txt, README.md). right opens src.
+key down down down
+key right
+expect lib.rs
+key down
+key space
+expect src › lib.rs
+snap preview
+# The keyboard is still in the tree: down, enter opens main.rs for good.
+key down
+key enter
+expect src › main.rs
+snap opened
+
+# cmd-n in the tree: a new file in the selected entry's folder, named in the tree itself.
+key cmd-shift-e
+key cmd-n
+text extra.rs
+key enter
+exec test -f "$BAKEDIT_SCENARIO_PROJECT/src/extra.rs"
+expect src › extra.rs
+snap new-file
+
+# f2 renames: the name without its extension is selected, so typing replaces it.
+key cmd-shift-e
+key f2
+text renamed
+key enter
+exec test -f "$BAKEDIT_SCENARIO_PROJECT/src/renamed.rs" && test ! -e "$BAKEDIT_SCENARIO_PROJECT/src/extra.rs"
+expect renamed.rs
+snap renamed
+
+# cmd-alt-backspace deletes, after asking; left picks Delete over Cancel.
+key cmd-alt-backspace
+expect Delete renamed.rs?
+snap prompt
+key left
+key enter
+exec test ! -e "$BAKEDIT_SCENARIO_PROJECT/src/renamed.rs"
+expect Deleted renamed.rs
+
+# cmd-shift-e in the tree closes it.
+key cmd-shift-e
+expect-not ▾ demo
+
+key cmd-q
+expect-exit

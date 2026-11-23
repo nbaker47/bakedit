@@ -1,9 +1,15 @@
 # bakedit --dump-input: every event decoded, one line each; ctrl-c twice ends it.
-wait 1
+expect ctrl-c twice quits
 key cmd-shift-p
 text a;
 click 4 2 cmd
-key ctrl-c
-key ctrl-c
-wait 0.5
+paste pasted text
+expect key press   cmd-shift-p
+expect key release cmd-shift-p
+expect key press   ; text=";"
+expect mouse press left at 4,2
+expect paste 11 chars "pasted text"
 snap events
+key ctrl-c
+key ctrl-c
+expect-exit

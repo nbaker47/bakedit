@@ -1,0 +1,56 @@
+# Finding: cmd-f in a file (the find bar), cmd-shift-f in the project, and the keys that go
+# with them.
+
+key cmd-p
+expect Search project files
+text main.rs
+expect main.rs  src
+key enter
+expect src › main.rs
+
+# cmd-f: the find bar over the file, seeded with the word under the cursor.
+key j j j
+key cmd-f
+expect Find
+text count
+expect 2 of 8
+snap find
+# enter and shift-enter step through the matches; escape closes the bar and leaves the
+# cursor on the match.
+key enter
+expect 3 of 8
+key shift-enter
+expect 2 of 8
+key escape
+expect-not 2 of 8
+expect NAV
+expect  4:13  Rust
+# n and N go on with the same search from nav mode, moving the cursor as vim's do.
+key n
+expect  5:13  Rust
+key shift-n
+expect  4:13  Rust
+
+# / is find in nav mode too; alt-enter selects every match.
+key /
+text word
+key alt-enter
+expect 9 cursors
+key escape
+
+# cmd-shift-f: project search, seeded with the selection; typing replaces it. Results come
+# grouped by file; enter goes into them, enter again opens one.
+key cmd-shift-f
+expect Search: word
+text distinct
+expect Search: distinct
+expect 1 result in 1 file
+snap project-search
+key enter
+key down
+key enter
+expect src › main.rs
+expect distinct words
+
+key cmd-q
+expect-exit

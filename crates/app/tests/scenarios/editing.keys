@@ -1,0 +1,74 @@
+# A file opened with cmd-p, moved around in nav mode, edited in edit mode, saved (and
+# formatted on save, the project having a Cargo.toml), then changed by another program.
+
+expect No file open
+key cmd-p
+expect Search project files
+text main.rs
+expect main.rs  src
+key enter
+expect src › main.rs
+# Files open in nav mode: keys move, nothing is typed.
+expect NAV
+expect  1:1  Rust
+
+# Nav mode: j k h l, w b e, 0 $, gg G, ctrl-d, and the line numbers follow.
+key j j
+expect  3:1  Rust
+key w
+expect  3:5  Rust
+key e
+expect  3:10  Rust
+key b
+expect  3:5  Rust
+key $
+expect  3:39  Rust
+key 0
+expect  3:1  Rust
+key shift-g
+expect  21:1  Rust
+key g g
+expect  1:1  Rust
+key ctrl-d
+expect  21:1  Rust
+key g g
+snap nav
+
+# shift-v selects whole lines, d cuts, u brings them back; v e selects a word.
+key j j
+key shift-v
+expect SELECT
+key d
+expect NAV
+expect-not Counts how
+key u
+expect Counts how
+key v e
+expect SELECT
+key escape
+expect NAV
+snap undo
+
+# Edit mode: o opens a line below and types; escape goes back to nav mode.
+key shift-g
+key o
+expect EDIT
+paste fn   added( )->u32{1}
+key escape
+expect NAV
+snap edited
+# cmd-s saves; rustfmt (Cargo.toml says the project wants it) formats the file.
+key cmd-s
+expect Saved main.rs
+exec for i in 1 2 3 4 5 6 7 8 9 10; do grep -q '^fn added() -> u32 {$' "$BAKEDIT_SCENARIO_PROJECT/src/main.rs" && exit 0; sleep 0.3; done; exit 1
+expect fn added() -> u32 {
+snap formatted
+
+# Another program changes the file: the editor shows the new text by itself.
+exec printf '// written by another program\n' >> "$BAKEDIT_SCENARIO_PROJECT/src/main.rs"
+expect written by another program
+snap reloaded
+
+# cmd-q: nothing unsaved, so it quits at once.
+key cmd-q
+expect-exit
