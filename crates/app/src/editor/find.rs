@@ -232,13 +232,28 @@ impl EditorItem {
         let selection = self.editor.selections().primary();
         let rope = self.editor.buffer().rope();
         let wrap = cx.settings.search_wrap;
+        // n and N in nav mode with the bar closed move the cursor, as vim's do: to the start
+        // of the next match after the one it is on, nothing selected.
+        let nav = self.find.is_none() && self.nav_cursor_only();
         let found = if forward {
-            let from = if selection.is_empty() { selection.head } else { selection.end() };
+            let from = if nav {
+                (selection.head + 1).min(rope.len_chars())
+            } else if selection.is_empty() {
+                selection.head
+            } else {
+                selection.end()
+            };
             search.find_next(rope, from, wrap)
         } else {
             search.find_prev(rope, selection.start(), wrap)
         };
         match found {
+            Some(found) if nav => {
+                self.editor.break_undo_group();
+                self.editor.set_cursor(found.start);
+                self.reveal = Reveal::Visible;
+                self.remember_query(cx);
+            }
             Some(found) => {
                 self.select_match(found);
                 self.remember_query(cx);
@@ -318,6 +333,12 @@ impl EditorItem {
                 if let Some(bar) = self.find.take() {
                     cx.project.remember_search(SearchKind::Buffer, bar.query.text());
                     self.last_search = bar.search;
+                    // Nav mode holds no selection outside v: as in vim, the cursor is left
+                    // at the start of the match that was found.
+                    if self.nav_cursor_only() {
+                        let start = self.editor.selections().primary().start();
+                        self.editor.set_cursor(start);
+                    }
                 }
                 open
             }

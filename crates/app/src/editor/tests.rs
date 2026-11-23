@@ -257,6 +257,44 @@ fn nav_mode_types_nothing_and_edit_mode_comes_with_i() {
 }
 
 #[test]
+fn nav_mode_e_lands_on_the_last_character_of_each_word() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "let words = vec;\nnext\n");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    assert_eq!(item.position(), Some((1, 3)), "on the t of let");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    assert_eq!(item.position(), Some((1, 9)), "from a word's end on to the s of words");
+    for _ in 0..3 {
+        act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    }
+    assert_eq!(item.position(), Some((1, 16)), "past =, vec, onto ;");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    assert_eq!(item.position(), Some((2, 4)), "on to the next line");
+    // Edit mode keeps the engine's word end: the bar cursor goes after the word.
+    act(&mut item, &mut harness, "editor::MoveToBeginning");
+    act(&mut item, &mut harness, "vim::InsertBefore");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    assert_eq!(item.position(), Some((1, 4)));
+}
+
+#[test]
+fn undo_in_nav_mode_leaves_no_selection() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "one\ntwo\nthree\n");
+    act(&mut item, &mut harness, "editor::MoveDown");
+    act(&mut item, &mut harness, "vim::ToggleVisualLine");
+    act(&mut item, &mut harness, "editor::Cut");
+    assert_eq!(text_of(&item), "one\nthree\n");
+    act(&mut item, &mut harness, "editor::Undo");
+    assert_eq!(text_of(&item), "one\ntwo\nthree\n");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
+    assert_eq!(item.status().position.map(|(line, col, selected)| (line, col, selected)), Some((2, 1, 0)), "on the line that came back");
+    act(&mut item, &mut harness, "editor::Redo");
+    assert_eq!(text_of(&item), "one\nthree\n");
+    assert_eq!(item.status().position.map(|p| p.2), Some(0));
+}
+
+#[test]
 fn the_nav_cursor_stays_on_a_character_and_remembers_its_column() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "a long line\nab\nanother long\n");
@@ -470,11 +508,20 @@ fn n_repeats_the_last_search_in_nav_mode() {
     assert!(harness.take_effects().iter().any(|e| matches!(e, Effect::Status { text, .. } if text.contains("Nothing to search"))));
     act(&mut item, &mut harness, "buffer_search::Deploy");
     type_text(&mut item, &mut harness, "foo");
+    // Closing the bar leaves the cursor at the start of the match it found, nothing selected.
     act(&mut item, &mut harness, "buffer_search::Dismiss");
+    assert_eq!(item.editor.selections().primary().range(), 2..2);
+    // n and N move the cursor from match to match, as in vim.
     act(&mut item, &mut harness, "search::SelectNextMatch");
-    assert_eq!(item.editor.selections().primary().range(), 6..9);
+    assert_eq!(item.editor.selections().primary().range(), 6..6);
+    act(&mut item, &mut harness, "search::SelectNextMatch");
+    assert_eq!(item.editor.selections().primary().range(), 2..2, "wraps around");
     act(&mut item, &mut harness, "search::SelectPreviousMatch");
-    assert_eq!(item.editor.selections().primary().range(), 2..5);
+    assert_eq!(item.editor.selections().primary().range(), 6..6);
+    // While the bar is open, enter selects the match, as in Zed.
+    act(&mut item, &mut harness, "buffer_search::Deploy");
+    act(&mut item, &mut harness, "search::SelectNextMatch");
+    assert!(!item.editor.selections().primary().is_empty());
 }
 
 #[test]

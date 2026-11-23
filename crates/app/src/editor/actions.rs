@@ -55,6 +55,12 @@ impl EditorItem {
         out.push(context);
     }
 
+    /// Nav mode with no selection being made (`v`): what holds there is one cursor per
+    /// place, never a selection.
+    pub(super) fn nav_cursor_only(&self) -> bool {
+        self.modal && !self.insert && self.selecting.is_none()
+    }
+
     /// Nav mode: the cursor sits on a character, not past the end of the line. The column
     /// vertical motion is heading for is kept.
     pub(super) fn clamp_nav_cursor(&mut self) {
@@ -139,12 +145,32 @@ impl EditorItem {
                 true
             }
             n if n.starts_with("vim::") => self.vim_action(n, cx),
+            "editor::MoveToNextWordEnd" if self.nav_cursor_only() => self.nav_word_end(action, cx),
             _ => self.run_action_command(action, cx),
         };
+        if handled && self.nav_cursor_only() && matches!(name, "editor::Undo" | "editor::Redo") {
+            // As in vim: what came back is not left selected; the cursor goes to its start.
+            let mut selections = self.editor.selections().clone();
+            selections.transform(|selection| Selection::cursor(selection.start()));
+            self.editor.set_selections(selections);
+        }
         if handled {
             self.clamp_nav_cursor();
         }
         handled
+    }
+
+    /// `e` in nav mode, as in vim: the block lands on the last character of the word, and
+    /// from there `e` goes on to the end of the next word. (The text engine's word end is the
+    /// boundary after the word, where edit mode's bar cursor belongs.)
+    fn nav_word_end(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let before = self.cursor();
+        self.run_command(Command::Move(Motion::Right), cx);
+        self.run_action_command(action, cx);
+        if self.cursor() > before + 1 {
+            self.run_command(Command::Move(Motion::Left), cx);
+        }
+        true
     }
 
     fn vim_action(&mut self, name: &str, cx: &mut Cx<'_>) -> bool {
