@@ -206,8 +206,64 @@ pub trait View {
     }
 }
 
+/// What the status bar shows about the item in front.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ItemStatus {
+    pub mode: Option<crate::chrome::ModeIndicator>,
+    /// 1-based line and column, and the number of selected characters.
+    pub position: Option<(usize, usize, usize)>,
+    pub cursors: usize,
+    pub language: Option<String>,
+    pub indent: Option<String>,
+    pub line_ending: Option<&'static str>,
+}
+
+/// Makes the items the shell cannot make itself. The app supplies the real one; tests
+/// supply a fake.
+pub trait ItemFactory {
+    /// An editor (or other viewer) for a file.
+    fn open_path(&mut self, path: &Path, cx: &mut Cx<'_>) -> Result<Box<dyn Item>, String>;
+    /// An empty, unsaved buffer.
+    fn untitled(&mut self, cx: &mut Cx<'_>) -> Box<dyn Item>;
+    /// The project diff view.
+    fn project_diff(&mut self, cx: &mut Cx<'_>) -> Box<dyn Item>;
+    /// The project search view.
+    fn project_search(&mut self, replace: bool, cx: &mut Cx<'_>) -> Box<dyn Item>;
+}
+
+/// The pickers whose rows come from outside the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PickerKind {
+    FileFinder,
+    CommandPalette,
+    TabSwitcher,
+    Outline,
+    Branches,
+    /// Paths and URLs visible in the terminal.
+    Links,
+    RecentProjects,
+}
+
+/// Supplies rows for the pickers the shell does not fill itself, and acts on the choice.
+pub trait PickerSource {
+    fn rows(&mut self, kind: PickerKind, query: &str, cx: &mut Cx<'_>) -> Vec<crate::picker::PickerItem>;
+    /// `row` is the selected row's index in what `rows` last returned, or `None` when the
+    /// list was empty and the bare query was confirmed.
+    fn confirm(&mut self, kind: PickerKind, row: Option<usize>, query: &str, secondary: bool, cx: &mut Cx<'_>);
+}
+
 /// A view that lives in a tab of the centre.
 pub trait Item: View {
+    /// What the status bar should say about this item.
+    fn status(&self) -> ItemStatus {
+        ItemStatus::default()
+    }
+
+    /// A stable name for what this item is ("editor", "project_diff", "project_search").
+    fn kind(&self) -> &'static str {
+        "editor"
+    }
+
     /// How the tab bar shows it.
     fn tab(&self, cx: &RenderCx<'_>) -> Tab;
 

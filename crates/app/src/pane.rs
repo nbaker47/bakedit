@@ -310,12 +310,26 @@ pub(crate) mod test_support {
         pub path: Option<PathBuf>,
         pub dirty: bool,
         pub line: u32,
+        pub kind: &'static str,
+        pub saves: usize,
+        /// Actions this item claims, and a log of the ones it was offered.
+        pub handles: Vec<&'static str>,
+        pub seen: Vec<String>,
     }
 
     impl FakeItem {
         pub fn file(path: &str) -> Box<FakeItem> {
             let name = Path::new(path).file_name().unwrap().to_string_lossy().into_owned();
-            Box::new(FakeItem { name, path: Some(PathBuf::from(path)), dirty: false, line: 1 })
+            Box::new(FakeItem {
+                name,
+                path: Some(PathBuf::from(path)),
+                dirty: false,
+                line: 1,
+                kind: "editor",
+                saves: 0,
+                handles: Vec::new(),
+                seen: Vec::new(),
+            })
         }
 
         pub fn dirty(path: &str) -> Box<FakeItem> {
@@ -325,7 +339,10 @@ pub(crate) mod test_support {
         }
 
         pub fn untitled(name: &str) -> Box<FakeItem> {
-            Box::new(FakeItem { name: name.to_string(), path: None, dirty: false, line: 1 })
+            let mut item = FakeItem::file("/untitled");
+            item.name = name.to_string();
+            item.path = None;
+            item
         }
     }
 
@@ -338,15 +355,33 @@ pub(crate) mod test_support {
         fn contexts(&self, out: &mut Vec<Context>) {
             out.push(Context::new("Fake"));
         }
-        fn handle_action(&mut self, _: &Action, _: &mut Cx<'_>) -> bool {
-            false
+        fn handle_action(&mut self, action: &Action, _: &mut Cx<'_>) -> bool {
+            self.seen.push(action.name.clone());
+            self.handles.contains(&action.name.as_str())
         }
-        fn handle_key(&mut self, _: &KeyEvent, _: &mut Cx<'_>) -> bool {
-            false
+        fn handle_key(&mut self, key: &KeyEvent, _: &mut Cx<'_>) -> bool {
+            if let Some(text) = &key.text {
+                self.seen.push(format!("typed {text}"));
+            }
+            true
+        }
+        fn focus_changed(&mut self, focused: bool, _: &mut Cx<'_>) {
+            self.seen.push(format!("focus {focused}"));
         }
     }
 
     impl Item for FakeItem {
+        fn kind(&self) -> &'static str {
+            self.kind
+        }
+        fn save(&mut self, _: bool, _: &mut Cx<'_>) -> Result<(), String> {
+            if self.name.contains("readonly") {
+                return Err(format!("{} is read-only", self.name));
+            }
+            self.saves += 1;
+            self.dirty = false;
+            Ok(())
+        }
         fn tab(&self, _: &RenderCx<'_>) -> Tab {
             Tab { title: self.name.clone(), dirty: self.dirty, ..Default::default() }
         }

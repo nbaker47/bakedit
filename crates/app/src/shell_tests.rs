@@ -1,0 +1,552 @@
+//! The shell driven end to end with stand-in views: the user's panel, fullscreen, tab,
+//! prompt and picker flows as sequences of actions.
+
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+use bakedit_core::{Action, KeyEvent, MouseButton, MouseEvent, MouseKind, Theme};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use serde_json::json;
+
+use crate::clipboard::{Clipboard, MemoryBackend};
+use crate::pane::test_support::FakeItem;
+use crate::picker::PickerItem;
+use crate::settings::Settings;
+use crate::shell::{Modal, Request, Shell};
+use crate::ui::{Canvas, Style};
+use crate::view::{Context, Cursor, Cx, Effect, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View};
+use crate::workspace::{DockPosition, Focus, PanelId, Zoomed};
+
+type Log = Rc<RefCell<Vec<String>>>;
+
+struct FakePanel {
+    name: &'static str,
+    log: Log,
+    handles: Vec<&'static str>,
+}
+
+impl View for FakePanel {
+    fn render(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
+        canvas.fill(area, cx.theme.panel_bg);
+        let label = if cx.focused { format!("[{}]", self.name) } else { self.name.to_string() };
+        canvas.text(area.x + 1, area.y, &label, Style::fg(cx.theme.text), area.width);
+        None
+    }
+    fn contexts(&self, out: &mut Vec<Context>) {
+        out.push(Context::new(self.name));
+    }
+    fn handle_action(&mut self, action: &Action, _: &mut Cx<'_>) -> bool {
+        self.log.borrow_mut().push(format!("{} action {} {}", self.name, action.name, action.args.clone().unwrap_or(json!(null))));
+        self.handles.contains(&action.name.as_str())
+    }
+    fn handle_key(&mut self, key: &KeyEvent, _: &mut Cx<'_>) -> bool {
+        self.log.borrow_mut().push(format!("{} key {}", self.name, key.display()));
+        true
+    }
+    fn handle_mouse(&mut self, event: &MouseEvent, _: Rect, _: &mut Cx<'_>) -> bool {
+        self.log.borrow_mut().push(format!("{} mouse {:?}", self.name, event.kind));
+        true
+    }
+    fn focus_changed(&mut self, focused: bool, _: &mut Cx<'_>) {
+        self.log.borrow_mut().push(format!("{} focus {focused}", self.name));
+    }
+}
+
+struct Factory;
+
+impl ItemFactory for Factory {
+    fn open_path(&mut self, path: &Path, _: &mut Cx<'_>) -> Result<Box<dyn Item>, String> {
+        if path.to_string_lossy().contains("missing") {
+            return Err(format!("{} does not exist", path.display()));
+        }
+        Ok(FakeItem::file(&path.to_string_lossy()))
+    }
+    fn untitled(&mut self, _: &mut Cx<'_>) -> Box<dyn Item> {
+        FakeItem::untitled("untitled")
+    }
+    fn project_diff(&mut self, _: &mut Cx<'_>) -> Box<dyn Item> {
+        let mut item = FakeItem::untitled("Project Diff");
+        item.kind = "project_diff";
+        item.handles = vec!["project_diff::ShowFile"];
+        item
+    }
+    fn project_search(&mut self, _: bool, _: &mut Cx<'_>) -> Box<dyn Item> {
+        let mut item = FakeItem::untitled("Search");
+        item.kind = "project_search";
+        item
+    }
+}
+
+struct Source {
+    files: Vec<&'static str>,
+}
+
+impl PickerSource for Source {
+    fn rows(&mut self, _: PickerKind, query: &str, _: &mut Cx<'_>) -> Vec<PickerItem> {
+        self.files.iter().filter(|f| f.contains(query)).map(|f| PickerItem::new(*f)).collect()
+    }
+    fn confirm(&mut self, _: PickerKind, row: Option<usize>, query: &str, _: bool, cx: &mut Cx<'_>) {
+        let matching: Vec<&&str> = self.files.iter().filter(|f| f.contains(query)).collect();
+        if let Some(file) = row.and_then(|r| matching.get(r)) {
+            cx.push(Effect::open(format!("/project/{file}")));
+        }
+    }
+}
+
+fn shell() -> (Shell, Log) {
+    let log: Log = Rc::default();
+    let mut shell = Shell::new(
+        Settings::default(),
+        Theme::builtin(),
+        PathBuf::from("/project"),
+        Clipboard::with_backend(Box::new(MemoryBackend::default())),
+        Box::new(Factory),
+        Box::new(Source { files: vec!["src/main.rs", "src/lib.rs", "README.md"] }),
+    );
+    for (id, name, handles) in [
+        (PanelId::Terminal, "Terminal", vec![]),
+        (PanelId::Git, "GitPanel", vec![]),
+        (PanelId::Project, "ProjectPanel", vec!["project_panel::ScrollCursorCenter", "project_panel::RevealPath"]),
+    ] {
+        shell.set_panel(id, Box::new(FakePanel { name, log: log.clone(), handles }));
+    }
+    (shell, log)
+}
+
+fn act(shell: &mut Shell, name: &str) -> bool {
+    shell.dispatch(&Action::new(name))
+}
+
+fn frame(shell: &mut Shell, width: u16, height: u16) -> String {
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    shell.render(&mut buf);
+    crate::dump::to_text(&buf)
+}
+
+fn fake(shell: &Shell, index: usize) -> &FakeItem {
+    shell.pane.item(index).unwrap().as_any().downcast_ref::<FakeItem>().unwrap()
+}
+
+fn fake_mut(shell: &mut Shell, index: usize) -> &mut FakeItem {
+    shell.pane.item_mut(index).unwrap().as_any_mut().downcast_mut::<FakeItem>().unwrap()
+}
+
+fn names(shell: &Shell) -> Vec<String> {
+    shell.pane.slots().iter().map(|slot| slot.item.as_any().downcast_ref::<FakeItem>().unwrap().name.clone()).collect()
+}
+
+#[test]
+fn cmd_t_shows_the_terminal_and_cmd_t_again_hides_it() {
+    let (mut shell, log) = shell();
+    assert!(act(&mut shell, "terminal_panel::Toggle"));
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Terminal));
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Left), Some(PanelId::Terminal));
+    assert!(act(&mut shell, "terminal_panel::Toggle"));
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Left), None);
+    let log = log.borrow();
+    assert!(log.contains(&"Terminal focus true".to_string()));
+    assert!(log.contains(&"Terminal focus false".to_string()));
+}
+
+#[test]
+fn the_fullscreen_terminal_flow() {
+    let (mut shell, _) = shell();
+    // cmd-alt-t from the editor: the terminal comes up fullscreen.
+    act(&mut shell, "terminal_panel::ToggleZoom");
+    assert_eq!(shell.workspace.zoomed(), Some(Zoomed::Panel(PanelId::Terminal)));
+    let text = frame(&mut shell, 100, 20);
+    assert!(text.lines().next().unwrap().starts_with(" [Terminal]"));
+    assert_eq!(shell.layout().panel(PanelId::Terminal), Some(Rect::new(0, 0, 100, 18)));
+    // cmd-e: back to the editor, the zoomed terminal gets out of the way.
+    act(&mut shell, "workspace::FocusCenterPane");
+    assert_eq!(shell.workspace.zoomed(), None);
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Left), None);
+    // cmd-t: it returns still fullscreen; cmd-alt-f (ToggleZoom in the terminal) un-zooms it.
+    act(&mut shell, "terminal_panel::Toggle");
+    assert_eq!(shell.workspace.zoomed(), Some(Zoomed::Panel(PanelId::Terminal)));
+    act(&mut shell, "workspace::ToggleZoom");
+    assert_eq!(shell.workspace.zoomed(), None);
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Left), Some(PanelId::Terminal));
+}
+
+#[test]
+fn git_and_terminal_share_the_left_dock() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "terminal_panel::Toggle");
+    act(&mut shell, "git_panel::Toggle");
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Left), Some(PanelId::Git));
+    act(&mut shell, "project_panel::ToggleFocus");
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Right), Some(PanelId::Project));
+    let text = frame(&mut shell, 160, 20);
+    let first = text.lines().next().unwrap();
+    assert!(first.starts_with(" GitPanel"), "{first:?}");
+    assert!(first.contains("[ProjectPanel]"), "the focused panel is on the right: {first:?}");
+}
+
+#[test]
+fn cmd_shift_e_focuses_the_tree_and_closes_it_from_inside() {
+    let (mut shell, log) = shell();
+    // Workspace binding: [project_panel::ToggleFocus, project_panel::ScrollCursorCenter]
+    act(&mut shell, "project_panel::ToggleFocus");
+    assert!(act(&mut shell, "project_panel::ScrollCursorCenter"), "the panel takes the second action");
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Project));
+    assert!(log.borrow().iter().any(|l| l.starts_with("ProjectPanel action project_panel::ScrollCursorCenter")));
+    // In the tree, cmd-shift-e is workspace::CloseActiveDock.
+    assert!(act(&mut shell, "workspace::CloseActiveDock"));
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+    assert_eq!(shell.workspace.visible_panel(DockPosition::Right), None);
+    assert!(!act(&mut shell, "workspace::CloseActiveDock"), "from the editor there is no dock to close");
+}
+
+#[test]
+fn cmd_alt_e_focuses_the_editor_and_hides_every_dock() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "terminal_panel::Toggle");
+    act(&mut shell, "project_panel::ToggleFocus");
+    act(&mut shell, "workspace::FocusCenterPane");
+    act(&mut shell, "workspace::ToggleAllDocks");
+    frame(&mut shell, 120, 20);
+    assert!(shell.layout().docks.is_empty());
+    assert_eq!(shell.layout().center, Some(Rect::new(0, 0, 120, 18)));
+    act(&mut shell, "workspace::ToggleAllDocks");
+    frame(&mut shell, 120, 20);
+    assert_eq!(shell.layout().docks.len(), 2);
+}
+
+#[test]
+fn opening_files_previews_and_reveals() {
+    let (mut shell, log) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.open_file(Path::new("/project/b.rs"), None, None, true, false);
+    shell.open_file(Path::new("/project/c.rs"), Some(12), None, true, false);
+    assert_eq!(names(&shell), ["a.rs", "c.rs"], "the preview tab was reused");
+    assert_eq!(fake(&shell, 1).line, 12);
+    // Opening the previewed file for real keeps it.
+    shell.open_file(Path::new("/project/c.rs"), None, None, false, true);
+    assert!(!shell.pane.is_preview(1));
+    shell.open_file(Path::new("/project/missing.rs"), None, None, false, true);
+    let text = frame(&mut shell, 100, 12);
+    assert!(text.contains("/project/missing.rs does not exist"), "{text}");
+    // pane::RevealInProjectPanel sends the path to the tree and focuses it.
+    assert!(act(&mut shell, "pane::RevealInProjectPanel"));
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Project));
+    assert!(log.borrow().iter().any(|l| l.contains("project_panel::RevealPath") && l.contains("/project/c.rs")), "{:?}", log.borrow());
+}
+
+#[test]
+fn closing_an_unsaved_tab_asks_first() {
+    let (mut shell, _) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    fake_mut(&mut shell, 0).dirty = true;
+    act(&mut shell, "pane::CloseActiveItem");
+    assert!(matches!(shell.modal, Some(Modal::Prompt { .. })));
+    assert_eq!(shell.pane.len(), 1);
+    let text = frame(&mut shell, 100, 20);
+    assert!(text.contains("Save changes to a.rs?"), "{text}");
+    assert!(text.contains("Don't Save"));
+    // Escape cancels and the tab stays.
+    act(&mut shell, "menu::Cancel");
+    assert!(shell.modal.is_none());
+    assert_eq!(shell.pane.len(), 1);
+    // "Save" (first button) saves and closes.
+    act(&mut shell, "pane::CloseActiveItem");
+    act(&mut shell, "menu::SelectNext");
+    act(&mut shell, "menu::Confirm");
+    assert!(shell.pane.is_empty());
+    // "Don't Save", chosen by its first letter.
+    shell.open_file(Path::new("/project/b.rs"), None, None, false, true);
+    fake_mut(&mut shell, 0).dirty = true;
+    act(&mut shell, "pane::CloseActiveItem");
+    shell.handle_key(&KeyEvent::typed('d'));
+    assert!(shell.pane.is_empty());
+    assert!(shell.modal.is_none());
+}
+
+#[test]
+fn bulk_close_and_reopen() {
+    let (mut shell, _) = shell();
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        shell.open_file(Path::new(&format!("/project/{name}")), None, None, false, true);
+    }
+    shell.dispatch(&Action::with_args("pane::ActivateItem", json!(0)));
+    act(&mut shell, "pane::CloseOtherItems");
+    assert_eq!(names(&shell), ["a.rs"]);
+    act(&mut shell, "pane::ReopenClosedItem");
+    assert_eq!(names(&shell).len(), 2);
+    act(&mut shell, "pane::ActivateNextItem");
+    act(&mut shell, "pane::ActivatePreviousItem");
+    act(&mut shell, "pane::CloseAllItems");
+    assert!(shell.pane.is_empty());
+    let text = frame(&mut shell, 100, 20);
+    assert!(text.contains("No file open"), "{text}");
+    assert!(text.contains("cmd-p         find a file"));
+}
+
+#[test]
+fn quitting_with_unsaved_work_asks() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "zed::Quit");
+    assert!(shell.quit, "nothing unsaved: quit at once");
+    let (mut shell, _) = shell_with_dirty();
+    act(&mut shell, "zed::Quit");
+    assert!(!shell.quit);
+    assert!(matches!(shell.modal, Some(Modal::Prompt { .. })));
+    act(&mut shell, "menu::Confirm");
+    assert!(!shell.quit, "the default button is Cancel");
+    act(&mut shell, "zed::Quit");
+    shell.handle_key(&KeyEvent::typed('s'));
+    assert!(shell.quit);
+    assert_eq!(fake(&shell, 0).saves, 1);
+}
+
+fn shell_with_dirty() -> (Shell, Log) {
+    let (mut shell, log) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    fake_mut(&mut shell, 0).dirty = true;
+    (shell, log)
+}
+
+#[test]
+fn saving() {
+    let (mut shell, _) = shell_with_dirty();
+    act(&mut shell, "workspace::Save");
+    assert_eq!(fake(&shell, 0).saves, 1);
+    assert!(frame(&mut shell, 100, 12).contains("Saved a.rs"));
+    shell.open_file(Path::new("/project/readonly.rs"), None, None, false, true);
+    fake_mut(&mut shell, 1).dirty = true;
+    act(&mut shell, "workspace::SaveAll");
+    assert!(frame(&mut shell, 100, 12).contains("readonly.rs is read-only"));
+}
+
+#[test]
+fn the_command_palette_runs_commands() {
+    let (mut shell, _) = shell_with_dirty();
+    act(&mut shell, "command_palette::Toggle");
+    for c in "wssave".chars() {
+        shell.handle_key(&KeyEvent::typed(c));
+    }
+    let text = frame(&mut shell, 120, 24);
+    assert!(text.contains("workspace: save"), "{text}");
+    act(&mut shell, "menu::Confirm");
+    assert!(shell.modal.is_none());
+    assert_eq!(fake(&shell, 0).saves, 1, "the chosen command ran");
+    // The same key closes it again.
+    act(&mut shell, "command_palette::Toggle");
+    act(&mut shell, "command_palette::Toggle");
+    assert!(shell.modal.is_none());
+}
+
+#[test]
+fn the_file_finder_opens_what_is_picked() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "file_finder::Toggle");
+    let text = frame(&mut shell, 120, 24);
+    assert!(text.contains("Search project files"));
+    assert!(text.contains("src/main.rs") && text.contains("README.md"));
+    for c in "lib".chars() {
+        shell.handle_key(&KeyEvent::typed(c));
+    }
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(names(&shell), ["lib.rs"]);
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+    // Nothing matches: the picker says so and confirming does nothing.
+    act(&mut shell, "file_finder::Toggle");
+    shell.handle_paste("zzz");
+    assert!(frame(&mut shell, 120, 24).contains("No matching files"));
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(names(&shell), ["lib.rs"]);
+}
+
+#[test]
+fn the_tab_switcher_flips_to_the_previous_tab() {
+    let (mut shell, _) = shell();
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        shell.open_file(Path::new(&format!("/project/{name}")), None, None, false, true);
+    }
+    shell.dispatch(&Action::with_args("pane::ActivateItem", json!(0)));
+    // Most recent: a, then c, then b. ctrl-tab then enter goes to c.
+    act(&mut shell, "tab_switcher::Toggle");
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(shell.pane.active_index(), Some(2));
+    act(&mut shell, "tab_switcher::Toggle");
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(shell.pane.active_index(), Some(0), "and back again");
+}
+
+#[test]
+fn go_to_line_and_back() {
+    let (mut shell, _) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    act(&mut shell, "go_to_line::Toggle");
+    assert!(frame(&mut shell, 100, 20).contains("Go to line"));
+    shell.handle_paste("120:4");
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(fake(&shell, 0).line, 120);
+    act(&mut shell, "pane::GoBack");
+    assert_eq!(fake(&shell, 0).line, 1);
+    act(&mut shell, "pane::GoForward");
+    assert_eq!(fake(&shell, 0).line, 120);
+    act(&mut shell, "go_to_line::Toggle");
+    shell.handle_paste("abc");
+    act(&mut shell, "menu::Confirm");
+    assert!(frame(&mut shell, 100, 20).contains("Not a line number: abc"));
+}
+
+#[test]
+fn the_project_diff_is_one_tab() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "git_panel::Toggle");
+    act(&mut shell, "git::Diff");
+    assert_eq!(names(&shell), ["Project Diff"]);
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+    act(&mut shell, "git::Diff");
+    assert_eq!(names(&shell).len(), 1, "it is reused, not opened twice");
+    // From the git panel, without taking the focus, scrolled to a file.
+    shell.set_focus(Focus::Panel(PanelId::Git));
+    shell.dispatch(&Action::new("noop"));
+    let effect = Effect::ShowProjectDiff { path: Some("/project/a.rs".into()), focus: false };
+    shell.dispatch(&Action::with_args("test::Effect", json!(null)));
+    // Effects arrive from views; push one the way a view would, through a dispatch cycle.
+    struct Pusher(Option<Effect>);
+    impl View for Pusher {
+        fn render(&mut self, _: &mut Canvas<'_>, _: Rect, _: &RenderCx<'_>) -> Option<Cursor> {
+            None
+        }
+        fn contexts(&self, _: &mut Vec<Context>) {}
+        fn handle_action(&mut self, _: &Action, cx: &mut Cx<'_>) -> bool {
+            if let Some(effect) = self.0.take() {
+                cx.push(effect);
+            }
+            true
+        }
+        fn handle_key(&mut self, _: &KeyEvent, _: &mut Cx<'_>) -> bool {
+            false
+        }
+    }
+    shell.set_panel(PanelId::Git, Box::new(Pusher(Some(effect))));
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Git), "the focus stays in the git panel");
+    assert!(fake(&shell, 0).seen.contains(&"project_diff::ShowFile".to_string()));
+}
+
+#[test]
+fn key_contexts_follow_the_focus() {
+    let (mut shell, _) = shell();
+    let names = |shell: &Shell| shell.contexts().iter().map(|c| c.name).collect::<Vec<_>>();
+    assert_eq!(names(&shell), ["Workspace", "Pane"]);
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    assert_eq!(names(&shell), ["Workspace", "Pane", "Fake"]);
+    act(&mut shell, "terminal_panel::Toggle");
+    assert_eq!(names(&shell), ["Workspace", "Dock", "Terminal"]);
+    act(&mut shell, "file_finder::Toggle");
+    assert_eq!(names(&shell), ["Workspace", "FileFinder", "Picker", "Editor"]);
+    assert_eq!(shell.contexts()[3].values, vec![("mode", "single_line".to_string())]);
+    act(&mut shell, "menu::Cancel");
+    act(&mut shell, "go_to_line::Toggle");
+    assert_eq!(names(&shell), ["Workspace", "GoToLine", "Editor"]);
+}
+
+#[test]
+fn unclaimed_keys_and_actions_go_to_the_focused_view_only() {
+    let (mut shell, log) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.handle_key(&KeyEvent::typed('x'));
+    assert!(fake(&shell, 0).seen.contains(&"typed x".to_string()));
+    act(&mut shell, "terminal_panel::Toggle");
+    shell.handle_key(&KeyEvent::typed('y'));
+    assert!(log.borrow().contains(&"Terminal key y".to_string()));
+    assert!(!fake(&shell, 0).seen.contains(&"typed y".to_string()));
+    assert!(!act(&mut shell, "editor::MoveUp"), "nobody in the terminal handles an editor action");
+    assert!(!act(&mut shell, "no::SuchAction"));
+}
+
+#[test]
+fn requests_for_the_app_are_collected() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "bakedit::ToggleNavLayer");
+    act(&mut shell, "bakedit::ReloadConfig");
+    assert_eq!(shell.requests, vec![Request::ToggleNavLayer, Request::ReloadConfig]);
+}
+
+#[test]
+fn the_frame_has_every_part() {
+    let (mut shell, _) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.open_file(Path::new("/project/b.rs"), None, None, false, true);
+    act(&mut shell, "terminal_panel::Toggle");
+    act(&mut shell, "project_panel::ToggleFocus");
+    shell.git.branch = Some("main".into());
+    shell.usage = vec![crate::usage::Vendor {
+        short: "cld".into(),
+        name: "Claude".into(),
+        meters: vec![crate::usage::Meter { window: "7d".into(), percent: 28.0, reset_at: None }],
+        error: None,
+    }];
+    let text = frame(&mut shell, 200, 30);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with(" Terminal"), "{:?}", lines[0]);
+    assert!(lines[0].contains(" a.rs "), "the tab bar: {:?}", lines[0]);
+    assert!(lines[0].contains(" b.rs "));
+    assert!(lines[0].contains("[ProjectPanel]"));
+    assert!(lines[1].contains("b.rs"), "the active item draws below the tabs: {:?}", lines[1]);
+    assert_eq!(lines[0].matches('│').count(), 2, "one divider each side of the centre");
+    assert!(lines[28].contains("main"), "the status bar is the row above the usage strip: {:?}", lines[28]);
+    assert_eq!(lines[29], " cld 7d ▰▰▱▱▱▱ 28%");
+    // Without the strip the status bar is the last row.
+    shell.settings.usage_meter = false;
+    let text = frame(&mut shell, 200, 30);
+    assert!(text.lines().nth(29).unwrap().contains("main"));
+    for (w, h) in [(1, 1), (10, 3), (40, 8), (20, 40)] {
+        frame(&mut shell, w, h);
+    }
+}
+
+#[test]
+fn clicks_focus_switch_tabs_and_resize() {
+    let (mut shell, log) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.open_file(Path::new("/project/b.rs"), None, None, false, true);
+    act(&mut shell, "terminal_panel::Toggle");
+    act(&mut shell, "workspace::FocusCenterPane");
+    let text = frame(&mut shell, 200, 30);
+    let click = |kind: MouseKind, col: u16, row: u16| MouseEvent::new(kind, col, row);
+    // A click in the terminal focuses it and is passed on.
+    shell.handle_mouse(&click(MouseKind::Press(MouseButton::Left), 5, 5));
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Terminal));
+    assert!(log.borrow().iter().any(|l| l.starts_with("Terminal mouse Press")));
+    // The wheel over the editor does not steal the focus.
+    let center = shell.layout().center.unwrap();
+    shell.handle_mouse(&click(MouseKind::ScrollDown, center.x + 5, center.y + 5));
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Terminal));
+    // Clicking the first tab activates it and focuses the editor.
+    let tab_col = text.lines().next().unwrap().find(" a.rs").unwrap() as u16;
+    shell.handle_mouse(&click(MouseKind::Press(MouseButton::Left), tab_col + 2, 0));
+    assert_eq!(shell.pane.active_index(), Some(0));
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+    // Middle click closes a tab.
+    shell.handle_mouse(&click(MouseKind::Press(MouseButton::Middle), tab_col + 2, 0));
+    assert_eq!(names(&shell), ["b.rs"]);
+    // Dragging the divider resizes the dock.
+    let divider = shell.layout().dividers[0].rect;
+    shell.handle_mouse(&click(MouseKind::Press(MouseButton::Left), divider.x, 4));
+    shell.handle_mouse(&click(MouseKind::Drag(MouseButton::Left), divider.x - 20, 4));
+    shell.handle_mouse(&click(MouseKind::Release(MouseButton::Left), divider.x - 20, 4));
+    frame(&mut shell, 200, 30);
+    assert_eq!(shell.layout().panel(PanelId::Terminal).unwrap().width, divider.x - 20);
+}
+
+#[test]
+fn a_prompt_blocks_everything_else() {
+    let (mut shell, _) = shell_with_dirty();
+    act(&mut shell, "pane::CloseActiveItem");
+    assert!(act(&mut shell, "terminal_panel::Toggle"), "swallowed");
+    assert_eq!(shell.workspace.focus(), Focus::Center, "but not acted on");
+    // Clicking outside the prompt cancels it.
+    frame(&mut shell, 100, 24);
+    shell.handle_mouse(&MouseEvent::new(MouseKind::Press(MouseButton::Left), 0, 0));
+    assert!(shell.modal.is_none());
+    assert_eq!(shell.pane.len(), 1);
+}

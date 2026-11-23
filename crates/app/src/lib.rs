@@ -18,7 +18,11 @@ pub mod pane;
 pub mod picker;
 pub mod session;
 pub mod settings;
+pub mod shell;
 pub mod ui;
 pub mod usage;
 pub mod view;
 pub mod workspace;
+
+#[cfg(test)]
+mod shell_tests;
