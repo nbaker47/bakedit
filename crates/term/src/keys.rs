@@ -1541,6 +1541,114 @@ mod tests {
     }
 
     #[test]
+    fn every_combination_encodes_to_something_sane() {
+        let keys = [
+            Key::Char('a'),
+            Key::Char('Z'),
+            Key::Char('3'),
+            Key::Char('/'),
+            Key::Char(' '),
+            Key::Char('é'),
+            Key::Char('日'),
+            Key::Char('\u{1}'),
+            Key::Enter,
+            Key::Escape,
+            Key::Tab,
+            Key::Backspace,
+            Key::Delete,
+            Key::Insert,
+            Key::Up,
+            Key::Home,
+            Key::PageDown,
+            Key::F(0),
+            Key::F(1),
+            Key::F(3),
+            Key::F(12),
+            Key::F(13),
+            Key::F(35),
+            Key::F(255),
+            Key::CapsLock,
+            Key::Menu,
+            Key::Modifier(ModKey::LeftAlt),
+            Key::Modifier(ModKey::IsoLevel3Shift),
+            Key::Other(0),
+            Key::Other(KP_BEGIN),
+            Key::Other(57440),
+            Key::Other(u32::MAX),
+        ];
+        let texts = [None, Some(""), Some("x"), Some("å"), Some("\r"), Some("ab")];
+        for key in keys {
+            for mods in 0..64u8 {
+                let mods = Mods::from_bits_truncate(mods);
+                for kind in [KeyKind::Press, KeyKind::Repeat, KeyKind::Release] {
+                    for (variant, text) in texts.iter().enumerate() {
+                        let mut event = KeyEvent::new(key, mods);
+                        event.kind = kind;
+                        event.text = text.map(str::to_string);
+                        event.keypad = variant % 2 == 1;
+                        event.caps_lock = variant % 3 == 1;
+                        event.shifted = (variant == 2).then_some('X');
+                        event.base = (variant == 3).then_some('c');
+                        for flags in 0..32u8 {
+                            for app_cursor in [false, true] {
+                                let modes = KeyModes {
+                                    kitty_flags: flags,
+                                    app_cursor,
+                                    app_keypad: app_cursor,
+                                };
+                                let bytes = encode_key(&event, modes);
+                                let context = format!("{event:?} with {modes:?}");
+                                // Always text or an escape sequence, never half of one.
+                                let encoded = String::from_utf8(bytes)
+                                    .unwrap_or_else(|_| panic!("not UTF-8: {context}"));
+                                if kind == KeyKind::Release && flags & KITTY_REPORT_EVENTS == 0 {
+                                    assert_eq!(
+                                        encoded, "",
+                                        "a release nobody asked for: {context}"
+                                    );
+                                }
+                                if flags == 0
+                                    && mods.intersects(Mods::SUPER | Mods::HYPER | Mods::META)
+                                {
+                                    assert_eq!(
+                                        encoded, "",
+                                        "legacy has no such modifier: {context}"
+                                    );
+                                }
+                                if flags == 0 {
+                                    assert!(
+                                        !encoded.ends_with('u') || !encoded.starts_with("\x1b["),
+                                        "CSI u in legacy mode: {context}"
+                                    );
+                                }
+                                if flags & KITTY_REPORT_ALL != 0 && !encoded.is_empty() {
+                                    assert!(
+                                        encoded.starts_with("\x1b["),
+                                        "not an escape code: {context} gave {encoded:?}"
+                                    );
+                                }
+                                if encoded.starts_with("\x1b[") && encoded.len() > 2 && flags != 0 {
+                                    let last = encoded.chars().last().unwrap_or(' ');
+                                    assert!(
+                                        matches!(last, 'u' | '~' | 'A'..='Z'),
+                                        "{context} gave {encoded:?}"
+                                    );
+                                    let body = &encoded[2..encoded.len() - 1];
+                                    assert!(
+                                        body.chars()
+                                            .all(|c| c.is_ascii_digit() || c == ';' || c == ':'),
+                                        "{context} gave {encoded:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn unknown_flag_bits_are_ignored() {
         assert_eq!(enc(&ch('a', CTRL), 0b0010_0000), "\x01");
         assert_eq!(enc(&ch('a', CTRL), 0b0010_0001), "\x1b[97;5u");

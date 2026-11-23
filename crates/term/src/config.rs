@@ -449,6 +449,55 @@ mod tests {
     }
 
     #[test]
+    fn splitting_never_loses_or_invents_characters() {
+        const PIECES: &[&str] = &[
+            "a", "b c", " ", "\t", "'", "\"", "\\", "~", "~/", "$", "`", "é", "x=y", "--flag",
+            "\n", "''", "\"\"",
+        ];
+        let mut state = 0x1234_5678_9ABC_DEF1u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..3000 {
+            let mut line = String::new();
+            for _ in 0..next() % 10 {
+                line.push_str(PIECES[(next() % PIECES.len() as u64) as usize]);
+            }
+            let Ok(words) = split_words(&line, None) else {
+                continue;
+            };
+            // Without a home nothing is expanded, so every character of every word was in
+            // the line, and nothing but blanks, quotes and backslashes was dropped.
+            let kept: String = words.concat();
+            let mut rest = line.chars();
+            for c in kept.chars() {
+                assert!(
+                    rest.any(|l| l == c),
+                    "{c:?} of {words:?} is not from {line:?}"
+                );
+            }
+            let dropped: String = line.chars().filter(|c| !kept.contains(*c)).collect();
+            assert!(
+                dropped.chars().all(|c| " \t\n\r'\"\\".contains(c)),
+                "{dropped:?} went missing from {line:?}"
+            );
+            // Quoting each word and splitting again gives the same words back.
+            let quoted: Vec<String> = words
+                .iter()
+                .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
+                .collect();
+            assert_eq!(
+                split_words(&quoted.join(" "), None).unwrap(),
+                words,
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
     fn command_builds_a_config() {
         let config = TermConfig::command("tmux new -A -s 'my session'").unwrap();
         assert_eq!(config.program.as_deref(), Some("tmux"));

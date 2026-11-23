@@ -2000,6 +2000,140 @@ mod tests {
         let _ = detect_links(&long);
     }
 
+    #[test]
+    fn random_lines_give_spans_that_fit_and_do_not_overlap() {
+        const PIECES: &[&str] = &[
+            "a",
+            "Z",
+            "9",
+            "é",
+            "日",
+            "e\u{301}",
+            " ",
+            "  ",
+            "/",
+            "//",
+            ".",
+            "..",
+            ":",
+            "::",
+            "#",
+            "#L",
+            "L",
+            "C",
+            "-",
+            "_",
+            "~",
+            "~/",
+            "./",
+            "../",
+            "@",
+            "$",
+            "%",
+            "=",
+            "+",
+            "(",
+            ")",
+            "[",
+            "]",
+            "](",
+            "<",
+            ">",
+            "{",
+            "}",
+            "\"",
+            "'",
+            "`",
+            ",",
+            ";",
+            "!",
+            "?",
+            "*",
+            "|",
+            "│",
+            "─",
+            "\t",
+            "http://",
+            "https://",
+            "file://",
+            "file:///",
+            "ssh://",
+            "src/",
+            "main.rs",
+            ".rs",
+            ".toml",
+            ":12",
+            ":12:3",
+            ":1-2",
+            "#L4",
+            "#L4-L9",
+            "(1,2)",
+            ", line 7",
+            " line 7",
+            " on line 7",
+            "%20",
+            "%zz",
+            "Makefile",
+            ".gitignore",
+            "example.com",
+            "v1.2.3",
+            "12:30",
+            "[x](",
+            "[x](y)",
+            "a/b",
+            "/abs",
+            "x=y",
+            "--flag=",
+            "🦀",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..4000 {
+            let mut line = String::new();
+            for _ in 0..next() % 14 {
+                line.push_str(PIECES[(next() % PIECES.len() as u64) as usize]);
+            }
+            let chars: Vec<char> = line.chars().collect();
+            let spans = detect_links(&line);
+            let mut previous_end = 0;
+            for span in &spans {
+                assert!(
+                    span.start < span.end && span.end <= chars.len(),
+                    "{span:?} in {line:?}"
+                );
+                assert!(
+                    span.start >= previous_end,
+                    "overlapping spans in {line:?}: {spans:?}"
+                );
+                previous_end = span.end;
+                match &span.target {
+                    LinkTarget::Path { path, .. } => {
+                        assert!(!path.is_empty(), "empty path in {line:?}");
+                        // Whatever was found, resolving it is safe too.
+                        let _ = span.target.resolve(&[]);
+                    }
+                    LinkTarget::Url(url) => assert!(url.contains(':'), "{url:?} in {line:?}"),
+                }
+            }
+            // The link under a column is the span that covers it.
+            for col in 0..chars.len() {
+                let under = link_at(&line, col);
+                let covering = spans
+                    .iter()
+                    .find(|span| span.start <= col && col < span.end);
+                assert_eq!(under.as_ref(), covering, "column {col} of {line:?}");
+            }
+            let _ = split_position(&line);
+            let _ = percent_decode(&line);
+            let _ = resolve_reference(&line, &[]);
+        }
+    }
+
     // ---- resolution ---------------------------------------------------------------------
 
     fn touch(path: &Path) {

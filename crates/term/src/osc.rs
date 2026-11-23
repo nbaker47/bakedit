@@ -545,6 +545,93 @@ mod tests {
     }
 
     #[test]
+    fn how_the_output_is_cut_into_reads_makes_no_difference() {
+        const PIECES: &[&[u8]] = &[
+            b"text",
+            b"\x1b",
+            b"]",
+            b"7;",
+            b"9;",
+            b"99;",
+            b"777;notify;",
+            b"0;",
+            b"52;c;",
+            b"file:///tmp/a%20b",
+            b"hello",
+            b";",
+            b"i=1:d=0",
+            b"i=1",
+            b"p=body",
+            b"e=1",
+            b"aGk=",
+            b"\x07",
+            b"\x1b\\",
+            b"\x18",
+            b"\x1a",
+            b"\x01",
+            b"\xff",
+            b"\xc3\xa9",
+            b"4;1;50",
+            b"[31m",
+            b"\r\n",
+            b"notify",
+            b":",
+            b"=",
+            b"/",
+            b"localhost",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..1500 {
+            let mut stream = Vec::new();
+            for _ in 0..next() % 30 {
+                stream.extend_from_slice(PIECES[(next() % PIECES.len() as u64) as usize]);
+            }
+            let whole = scan_with(Some("mac"), &[&stream]);
+            // Byte by byte, and cut at a few random places.
+            let bytes: Vec<&[u8]> = stream.chunks(1).collect();
+            assert_eq!(
+                scan_with(Some("mac"), &bytes),
+                whole,
+                "byte by byte: {stream:?}"
+            );
+            let mut cuts: Vec<usize> = (0..3)
+                .map(|_| (next() % (stream.len() as u64 + 1)) as usize)
+                .collect();
+            cuts.sort_unstable();
+            let pieces = [
+                &stream[..cuts[0]],
+                &stream[cuts[0]..cuts[1]],
+                &stream[cuts[1]..cuts[2]],
+                &stream[cuts[2]..],
+            ];
+            assert_eq!(
+                scan_with(Some("mac"), &pieces),
+                whole,
+                "cut at {cuts:?}: {stream:?}"
+            );
+            for event in whole {
+                match event {
+                    TermEvent::Cwd(path) => assert!(path.is_absolute(), "{path:?} from {stream:?}"),
+                    TermEvent::Notification { title, body } => {
+                        assert!(!title.is_empty() || !body.is_empty());
+                        assert!(
+                            !title.chars().chain(body.chars()).any(char::is_control),
+                            "{title:?} {body:?}"
+                        );
+                    }
+                    other => panic!("the scanner produced {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn other_output_is_left_alone() {
         assert_eq!(scan(b""), vec![]);
         assert_eq!(scan(b"plain text\r\n"), vec![]);
