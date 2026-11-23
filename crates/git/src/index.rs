@@ -1,5 +1,6 @@
 //! Changing the index and the work tree: staging, unstaging, discarding and committing.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{GitError, Result};
@@ -110,7 +111,14 @@ impl Repo {
         if paths.is_empty() {
             return Ok(RestoreOutcome::default());
         }
-        self.restore_entries(|entry| paths.iter().any(|path| entry.path.starts_with(path)))
+        // A file is covered when it, or a directory above it, is among the paths.
+        let paths: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        self.restore_entries(|entry| {
+            entry
+                .path
+                .ancestors()
+                .any(|ancestor| paths.contains(ancestor))
+        })
     }
 
     /// [`Repo::restore`] for the whole work tree: discards every unstaged change to a
