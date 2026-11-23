@@ -325,6 +325,32 @@ fn publishing_picks_the_push_default_then_origin_then_the_only_remote() {
 }
 
 #[test]
+fn a_branch_that_tracks_a_local_branch_is_pushed_to_the_remote_and_keeps_tracking() {
+    let test = TestRepo::with_commit();
+    let remote = test.add_origin();
+    test.repo.create_branch("stacked", true).unwrap();
+    test.git(&["branch", "--quiet", "--set-upstream-to=main"]);
+    test.write("stacked.txt", "stacked\n");
+    test.commit_all("stacked work");
+    assert_eq!(
+        test.repo.status().unwrap().upstream.as_deref(),
+        Some("main")
+    );
+
+    test.repo.push(false).unwrap();
+    assert_eq!(remote_head(&remote, "stacked"), test.head());
+    // Still stacked on the local branch.
+    let status = test.repo.status().unwrap();
+    assert_eq!(status.upstream.as_deref(), Some("main"));
+    assert_eq!((status.ahead, status.behind), (1, 0));
+
+    test.write("stacked.txt", "more\n");
+    test.commit_all("more stacked work");
+    test.repo.push(false).unwrap();
+    assert_eq!(remote_head(&remote, "stacked"), test.head());
+}
+
+#[test]
 fn pushing_and_pulling_before_the_first_commit_are_errors_from_git() {
     let test = TestRepo::new();
     let remote = test.sandbox().join("origin.git");

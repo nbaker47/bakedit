@@ -36,7 +36,8 @@ impl Repo {
     /// name on the remote (`branch.<name>.pushRemote` or `remote.pushDefault` if set,
     /// else `origin`, else the only remote there is) with upstream tracking set up, so
     /// the next push and pull need no arguments. A branch with an upstream is pushed with
-    /// a plain `git push`.
+    /// a plain `git push`. A branch that tracks another local branch is pushed to the
+    /// same remote a new branch would go to, and keeps tracking what it tracks.
     ///
     /// `force_with_lease` overwrites the remote branch, but only if it still is where the
     /// last fetch saw it. A rejected push, a detached `HEAD` and a failing pre-push hook
@@ -48,10 +49,21 @@ impl Repo {
             args.push("--force-with-lease".to_string());
         }
         if let Some(branch) = self.current_branch()? {
-            if self.config(&format!("branch.{branch}.remote"))?.is_none() {
-                args.push("--set-upstream".to_string());
-                args.push(self.publish_remote(&branch)?);
-                args.push(format!("refs/heads/{branch}:refs/heads/{branch}"));
+            let upstream_remote = self.config(&format!("branch.{branch}.remote"))?;
+            let same_name = format!("refs/heads/{branch}:refs/heads/{branch}");
+            match upstream_remote.as_deref() {
+                None => {
+                    args.push("--set-upstream".to_string());
+                    args.push(self.publish_remote(&branch)?);
+                    args.push(same_name);
+                }
+                // The branch tracks another local branch. That is the user's choice
+                // and stays; the push still has to go to a real remote.
+                Some(".") => {
+                    args.push(self.publish_remote(&branch)?);
+                    args.push(same_name);
+                }
+                Some(_) => {}
             }
         }
         self.run_network_command(&args)
