@@ -36,6 +36,11 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 /// The variable herdr sets inside its panes to the API socket of their session.
 pub const SOCKET_ENV_VAR: &str = "HERDR_SOCKET_PATH";
 
+/// The shortest wait worth starting. Socket timeouts are counted in microseconds and one that
+/// rounds down to zero means "wait for ever", so a call with less time left than this has
+/// timed out.
+const SHORTEST_WAIT: Duration = Duration::from_millis(1);
+
 /// The id sent with every request. herdr echoes it and writes it to its log.
 const REQUEST_ID: &str = "bakedit";
 
@@ -235,8 +240,8 @@ impl Client {
     }
 
     /// The same client with a different timeout for each call. A timeout above
-    /// [`MAX_TIMEOUT`] is cut down to it; a zero timeout makes every call fail with
-    /// [`HerdrError::Timeout`].
+    /// [`MAX_TIMEOUT`] is cut down to it; one under a millisecond makes every call fail with
+    /// [`HerdrError::Timeout`] without contacting herdr.
     pub fn with_timeout(mut self, timeout: Duration) -> Client {
         self.timeout = timeout.min(MAX_TIMEOUT);
         self
@@ -452,10 +457,10 @@ impl Client {
         }
     }
 
-    /// The time left until `deadline`, or the timeout error once it has passed.
+    /// The time left until `deadline`, or the timeout error once it has all but passed.
     fn time_left(&self, method: &str, deadline: Instant) -> Result<Duration, HerdrError> {
         match deadline.checked_duration_since(Instant::now()) {
-            Some(left) if !left.is_zero() => Ok(left),
+            Some(left) if left >= SHORTEST_WAIT => Ok(left),
             _ => Err(self.timed_out(method)),
         }
     }
@@ -883,6 +888,28 @@ mod tests {
             .call("ping", Value::Null)
             .unwrap_err();
         assert!(matches!(err, HerdrError::Timeout { .. }), "{err:?}");
+        assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn a_timeout_too_short_to_count_fails_at_once_instead_of_waiting_for_ever() {
+        // Less than a microsecond would reach the socket as "no timeout at all".
+        let server = MockServer::start();
+        server.expect("ping", Reply::Hang(Duration::from_secs(3)));
+        for timeout in [
+            Duration::from_nanos(1),
+            Duration::from_nanos(999),
+            Duration::from_micros(999),
+        ] {
+            let started = Instant::now();
+            let err = server
+                .client()
+                .with_timeout(timeout)
+                .call("ping", Value::Null)
+                .unwrap_err();
+            assert!(matches!(err, HerdrError::Timeout { .. }), "{err:?}");
+            assert!(started.elapsed() < Duration::from_millis(500));
+        }
         assert!(server.requests().is_empty());
     }
 
