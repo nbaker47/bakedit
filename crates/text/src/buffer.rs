@@ -777,6 +777,59 @@ impl Buffer {
         Some((keep..len, "\n"))
     }
 
+    /// The edits that remove the spaces and tabs at the end of every line.
+    fn trailing_whitespace_edits(&self) -> Vec<(Range<usize>, &'static str)> {
+        let is_blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
+        let trailing_blanks =
+            |bytes: &[u8]| bytes.iter().rev().take_while(|byte| is_blank(byte)).count();
+        let mut byte_ranges: Vec<Range<usize>> = Vec::new();
+        // Byte offset of the current chunk, and how many blanks in a row end where the
+        // scan currently stands (a run can reach back into earlier chunks).
+        let mut offset = 0;
+        let mut run = 0;
+        for chunk in self.rope.chunks() {
+            let bytes = chunk.as_bytes();
+            let mut segment_start = 0;
+            for newline in memchr::memchr_iter(b'\n', bytes) {
+                let segment = &bytes[segment_start..newline];
+                let blanks = trailing_blanks(segment);
+                let run_here = if blanks == segment.len() {
+                    run + blanks
+                } else {
+                    blanks
+                };
+                if run_here > 0 {
+                    byte_ranges.push(offset + newline - run_here..offset + newline);
+                }
+                run = 0;
+                segment_start = newline + 1;
+            }
+            let tail = &bytes[segment_start..];
+            let blanks = trailing_blanks(tail);
+            run = if blanks == tail.len() {
+                run + blanks
+            } else {
+                blanks
+            };
+            offset += bytes.len();
+        }
+        if run > 0 {
+            byte_ranges.push(offset - run..offset);
+        }
+        let ascii = self.rope.len_bytes() == self.rope.len_chars();
+        let to_char = |byte: usize| {
+            if ascii {
+                byte
+            } else {
+                self.rope.byte_to_char(byte)
+            }
+        };
+        byte_ranges
+            .into_iter()
+            .map(|bytes| (to_char(bytes.start)..to_char(bytes.end), ""))
+            .collect()
+    }
+
     /// Write the text as file bytes: byte order mark, then the text with the buffer's line
     /// ending.
     fn write_contents(&self, writer: &mut dyn Write) -> io::Result<()> {
@@ -792,7 +845,7 @@ impl Buffer {
     }
 
     /// Save to the buffer's path. See [`Buffer::save`]; this variant also carries
-    /// selections through the final-newline edit so undo can restore them.
+    /// selections through the clean-up edits so undo can restore them.
     pub(crate) fn save_with_selections(
         &mut self,
         options: SaveOptions,
@@ -801,15 +854,24 @@ impl Buffer {
         let path = self.path.clone().ok_or(BufferError::NoPath)?;
         let mut summary = EditSummary::new();
         let mut after = selections.cloned();
-        if options.ensure_final_newline {
-            if let Some(edit) = self.final_newline_edit() {
-                self.begin_transaction(UndoKind::Other, selections);
-                summary = self.edit(&[edit]);
-                if let Some(after) = &mut after {
-                    after.map_through(&summary);
+        if options.remove_trailing_whitespace || options.ensure_final_newline {
+            // Both clean-ups are one undo step.
+            self.begin_transaction(UndoKind::Other, selections);
+            if options.remove_trailing_whitespace {
+                let edits = self.trailing_whitespace_edits();
+                if !edits.is_empty() {
+                    summary.extend(self.edit(&edits));
                 }
-                self.end_transaction(after.as_ref());
             }
+            if options.ensure_final_newline {
+                if let Some(edit) = self.final_newline_edit() {
+                    summary.extend(self.edit(&[edit]));
+                }
+            }
+            if let Some(after) = &mut after {
+                after.map_through(&summary);
+            }
+            self.end_transaction(after.as_ref());
         }
         file::write_atomic(&path, &mut |writer| self.write_contents(writer)).map_err(|source| {
             BufferError::Io {
@@ -833,12 +895,13 @@ impl Buffer {
     /// If the directory does not allow the temporary file, or a rename would change the
     /// file's owner or break hard links, the file is overwritten in place instead.
     ///
-    /// With `ensure_final_newline` the text is first edited to end in exactly one `\n`
-    /// (see [`SaveOptions`]); that edit is an undo step and is described by the returned
-    /// summary, which is empty otherwise. Afterwards the buffer is clean.
+    /// The clean-ups asked for in `options` (see [`SaveOptions`]) are applied to the text
+    /// first: trailing whitespace is removed, then the text is made to end in exactly one
+    /// `\n`. Together they are one undo step, described by the returned summary, which is
+    /// empty when nothing needed changing. Afterwards the buffer is clean.
     ///
     /// Fails with [`BufferError::NoPath`] when the buffer has no path. If writing fails,
-    /// the final-newline edit (if any) stays in the buffer and the buffer stays dirty.
+    /// the clean-up edits (if any) stay in the buffer and the buffer stays dirty.
     pub fn save(&mut self, options: SaveOptions) -> Result<EditSummary, BufferError> {
         self.save_with_selections(options, None)
             .map(|(summary, _)| summary)
@@ -1426,6 +1489,54 @@ mod tests {
         assert_eq!(edit("\n"), None);
         assert_eq!(edit("  "), Some((0..2, "\n")));
         assert_eq!(edit("a\nb"), Some((3..3, "\n")));
+    }
+
+    #[test]
+    fn trailing_whitespace_edits_find_every_line_end() {
+        let ranges = |text: &str| -> Vec<Range<usize>> {
+            Buffer::from_str(text)
+                .trailing_whitespace_edits()
+                .into_iter()
+                .map(|(range, _)| range)
+                .collect()
+        };
+        let none: Vec<Range<usize>> = Vec::new();
+        assert_eq!(ranges(""), none);
+        assert_eq!(ranges("a\nb\n"), none);
+        assert_eq!(ranges("a \nb\t\t\nc"), vec![1..2, 4..6]);
+        assert_eq!(ranges("a  "), vec![1..3]);
+        assert_eq!(ranges("  \n\t\n"), vec![0..2, 3..4]);
+        assert_eq!(ranges("  a  b  \n"), vec![6..8], "only the end of the line");
+        assert_eq!(
+            ranges("é \n世界\t"),
+            vec![1..2, 5..6],
+            "ranges are in chars"
+        );
+        assert_eq!(ranges("a\u{a0}\n"), none, "only spaces and tabs count");
+
+        // Runs that cross the rope's chunk boundaries (chunks are about a kilobyte).
+        let mut text = String::new();
+        let mut expected = Vec::new();
+        let mut chars = 0;
+        for line in 0..40 {
+            let word = "word ".repeat(line * 7 % 50);
+            let blanks = " ".repeat(line * 311 % 2500);
+            let content = format!("{}x", word);
+            text.push_str(&content);
+            text.push_str(&blanks);
+            text.push('\n');
+            chars += content.chars().count();
+            if !blanks.is_empty() {
+                expected.push(chars..chars + blanks.len());
+            }
+            chars += blanks.len() + 1;
+        }
+        assert_eq!(ranges(&text), expected);
+        let mut buffer = Buffer::from_str(&text);
+        let edits = buffer.trailing_whitespace_edits();
+        buffer.edit(&edits);
+        assert!(buffer.to_string().lines().all(|line| line.ends_with('x')));
+        assert!(buffer.trailing_whitespace_edits().is_empty());
     }
 
     /// The chars other than `\n` that some builds of ropey break lines at.

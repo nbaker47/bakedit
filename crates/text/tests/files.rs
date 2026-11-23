@@ -24,9 +24,11 @@ fn file_names(dir: &Path) -> Vec<String> {
 
 const KEEP: SaveOptions = SaveOptions {
     ensure_final_newline: false,
+    remove_trailing_whitespace: false,
 };
 const FINAL_NEWLINE: SaveOptions = SaveOptions {
     ensure_final_newline: true,
+    remove_trailing_whitespace: false,
 };
 
 #[test]
@@ -387,6 +389,48 @@ fn ensure_final_newline_adds_trims_and_is_undoable() {
         b"b\n\n\n",
         "without the option nothing is trimmed"
     );
+}
+
+#[test]
+fn remove_trailing_whitespace_on_save() {
+    let dir = TempDir::new().unwrap();
+    let tidy = SaveOptions {
+        ensure_final_newline: true,
+        remove_trailing_whitespace: true,
+    };
+    let path = write(&dir, "messy.txt", b"one  \n\ttwo\t \n   \nthree   ");
+    let mut buffer = Buffer::from_file(&path).unwrap();
+    let summary = buffer.save(tidy).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"one\n\ttwo\n\nthree\n");
+    assert_eq!(buffer.to_string(), "one\n\ttwo\n\nthree\n");
+    assert!(!buffer.is_dirty());
+    assert_eq!(
+        summary.map_offset(5, Bias::Left),
+        3,
+        "a position in removed whitespace"
+    );
+    assert_eq!(
+        summary.map_offset(7, Bias::Left),
+        5,
+        "a position after it shifts"
+    );
+
+    // Both clean-ups are a single undo step.
+    buffer.undo().unwrap();
+    assert_eq!(buffer.to_string(), "one  \n\ttwo\t \n   \nthree   ");
+    assert!(!buffer.can_undo());
+
+    // CRLF files are trimmed the same way and keep their line ending.
+    let path = write(&dir, "win.txt", b"a \r\nb\t\r\n");
+    let mut buffer = Buffer::from_file(&path).unwrap();
+    buffer.save(tidy).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\r\n");
+
+    // Nothing to do is nothing recorded.
+    let path = write(&dir, "clean.txt", b"a\nb\n");
+    let mut buffer = Buffer::from_file(&path).unwrap();
+    assert!(buffer.save(tidy).unwrap().is_empty());
+    assert!(!buffer.can_undo());
 }
 
 /// Rewrite a file from outside and make sure the buffer can tell, whatever the clock's

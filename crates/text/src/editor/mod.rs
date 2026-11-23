@@ -747,7 +747,7 @@ impl Editor {
     }
 
     /// Save the buffer to its path (see [`Buffer::save`]). The selections follow the
-    /// final-newline edit when there is one.
+    /// clean-up edits (trailing whitespace, final newline) when there are any.
     pub fn save(&mut self, options: SaveOptions) -> Result<Outcome, BufferError> {
         let before = self.selections.clone();
         self.reset_after_outside_change();

@@ -46,6 +46,9 @@ pub struct SaveOptions {
     /// `ensure_final_newline_on_save` does: trailing spaces, tabs and blank lines at the end
     /// of the file are replaced by a single `\n`. An empty buffer stays empty.
     pub ensure_final_newline: bool,
+    /// Remove the spaces and tabs at the end of every line before writing, as Zed's
+    /// `remove_trailing_whitespace_on_save` does.
+    pub remove_trailing_whitespace: bool,
 }
 
 /// Why a buffer could not be loaded, saved or reloaded.

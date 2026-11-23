@@ -53,6 +53,7 @@ fn a_whole_session() {
     let outcome = editor
         .save(SaveOptions {
             ensure_final_newline: true,
+            ..SaveOptions::default()
         })
         .unwrap();
     assert!(
@@ -222,6 +223,7 @@ fn saving_trims_the_tail_and_keeps_the_cursor_inside_the_text() {
     let outcome = editor
         .save(SaveOptions {
             ensure_final_newline: true,
+            ..SaveOptions::default()
         })
         .unwrap();
     assert!(outcome.text_changed() && outcome.selections_changed);
@@ -249,6 +251,7 @@ fn save_as_and_errors() {
             &path,
             SaveOptions {
                 ensure_final_newline: true,
+                ..SaveOptions::default()
             },
         )
         .unwrap();
