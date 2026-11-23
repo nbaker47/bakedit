@@ -116,7 +116,16 @@ pub(crate) fn read(path: &Path) -> Result<Decoded, BufferError> {
     };
     // Stamp first: if the file changes while it is being read, the stale stamp makes the
     // buffer report it as modified later instead of hiding the change.
-    let stamp = stamp(path).map_err(io_error)?;
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if !metadata.is_file() {
+        // Reading a pipe or a device could block for ever or never end.
+        let not_a_file = io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+        return Err(io_error(not_a_file));
+    }
+    let stamp = Some(DiskStamp {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    });
     let bytes = fs::read(path).map_err(io_error)?;
     let sniff = &bytes[..bytes.len().min(BINARY_SNIFF_LEN)];
     if memchr::memchr(0, sniff).is_some() {
