@@ -16,7 +16,7 @@
 # ptyshot strips HERDR_* and keeps the clipboard in the process (BAKEDIT_CLIPBOARD=memory).
 # `--terminal shell` keeps herdr out of every scenario but herdr-session, which starts its
 # own throwaway herdr server (crates/herdr/tests/isolated-session.sh) with a private config,
-# home and socket, and stops it again.
+# home and socket, points the terminal.command setting at it, and stops it again.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -166,9 +166,12 @@ for scenario in "${all[@]}"; do
             # bakedit and the herdr client in its panel see only the test server's folders.
             env_args+=(--env "HOME=$BAKEDIT_TEST_HERDR_DIR/home" --env "XDG_CONFIG_HOME=$BAKEDIT_TEST_HERDR_DIR"
                        --env "BAKEDIT_SCENARIO_HERDR_SOCKET=$BAKEDIT_TEST_HERDR_SOCKET" --env "SHELL=/bin/sh")
-            mkdir -p "$BAKEDIT_TEST_HERDR_DIR/zed"
-            cp "$here/zed-settings.json" "$BAKEDIT_TEST_HERDR_DIR/zed/settings.json"
-            run herdr-session 200x52 -- --terminal "herdr --session $session" --new --no-restore "$project"
+            # What the terminal runs comes from the terminal.command setting (herdr unless set),
+            # here the test server's session.
+            mkdir -p "$BAKEDIT_TEST_HERDR_DIR/bakedit"
+            printf '{ "terminal": { "dock": "left", "command": "herdr --session %s" }, "project_panel": { "dock": "right" } }\n' \
+                "$session" > "$BAKEDIT_TEST_HERDR_DIR/bakedit/settings.json"
+            run herdr-session 200x52 -- --new --no-restore "$project"
             env_args=("${saved_env[@]}")
             "$repo/crates/herdr/tests/isolated-session.sh" stop "$BAKEDIT_TEST_HERDR_DIR" > /dev/null ;;
     esac
@@ -179,10 +182,10 @@ if [ "${BAKEDIT_SCENARIO_PICTURES:-1}" != "0" ] && [ -x "$chrome" ]; then
     for html in "$out"/*.html; do
         [ -e "$html" ] || continue
         snap="$(basename "$html" .html)"
-        cols=$(awk 'NR == 1 { print length($0) }' "$out/$snap.txt")
-        rows=$(wc -l < "$out/$snap.txt")
-        size="$(head -c 400 "$out/$snap.html" | grep -o 'data-size="[0-9]*x[0-9]*"' | grep -o '[0-9]*x[0-9]*')"
-        if [ -n "$size" ]; then cols="${size%x*}"; rows="${size#*x}"; fi
+        # The screen size ptyshot recorded on the <pre>.
+        size="$(grep -o -m1 'data-size="[0-9]*x[0-9]*"' "$html" | grep -o '[0-9]*x[0-9]*')"
+        [ -n "$size" ] || continue
+        cols="${size%x*}" rows="${size#*x}"
         # ptyshot draws 14px cells (about 8.4 x 17.5 px) inside 8px of padding.
         width=$(( cols * 85 / 10 + 24 )) height=$(( rows * 175 / 10 + 24 ))
         "$chrome" --headless=new --disable-gpu --hide-scrollbars --screenshot="$out/$snap.png" \

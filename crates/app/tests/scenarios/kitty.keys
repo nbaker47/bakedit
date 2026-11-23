@@ -53,12 +53,16 @@ expect src › main.rs
 expect  2:1  Rust
 snap editor
 
-# The command palette.
+# The command palette, with none of Zed's AI.
 key cmd-shift-p
 expect Execute a command
 text toggle
 expect terminal panel: toggle
 snap palette
+key cmd-a
+text assistant
+expect assistant
+expect No matching commands
 key escape
 
 # A chord: cmd-k waits for its second key; after a pause the completions are listed.

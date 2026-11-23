@@ -1,7 +1,8 @@
 # herdr in the terminal panel, its keys baked into bakedit, against a throwaway herdr server
 # of the scenario's own (never Nathan's session): run.sh starts it with
-# crates/herdr/tests/isolated-session.sh and runs bakedit with --terminal "herdr --session …"
-# and that server's config folder and home. herdr-check.py asks the server what happened.
+# crates/herdr/tests/isolated-session.sh, sets terminal.command to "herdr --session …" in
+# bakedit's settings, and runs bakedit with that server's config folder and home.
+# herdr-check.py asks the server what happened.
 
 # herdr is the program in the terminal panel: its sidebar lists its spaces.
 key cmd-t

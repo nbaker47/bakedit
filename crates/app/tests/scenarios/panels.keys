@@ -16,6 +16,7 @@ expect main.rs  src
 key enter
 expect src › main.rs
 expect NAV
+snap three-columns
 
 # cmd-t: the terminal takes the keyboard (typing reaches the shell).
 key cmd-t
