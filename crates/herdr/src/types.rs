@@ -185,10 +185,16 @@ pub struct PaneInfo {
 
 impl PaneInfo {
     /// The directory a relative path printed in this pane most likely refers to: the
-    /// foreground program's directory when herdr knows it, else the shell's.
+    /// foreground program's directory when herdr knows it, else the shell's. An empty path
+    /// counts as not known.
     pub fn working_dir(&self) -> Option<&Path> {
-        self.foreground_cwd.as_deref().or(self.cwd.as_deref())
+        known_dir(&self.foreground_cwd).or(known_dir(&self.cwd))
     }
+}
+
+/// `dir` unless herdr left it out or sent an empty string.
+fn known_dir(dir: &Option<PathBuf>) -> Option<&Path> {
+    dir.as_deref().filter(|dir| !dir.as_os_str().is_empty())
 }
 
 /// A rectangle of terminal cells.
@@ -346,6 +352,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pane.working_dir(), Some(Path::new("/work/a")));
+    }
+
+    #[test]
+    fn an_empty_directory_is_no_directory() {
+        let pane: PaneInfo = serde_json::from_value(json!({
+            "pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/work/a", "foreground_cwd": "",
+        }))
+        .unwrap();
+        assert_eq!(pane.working_dir(), Some(Path::new("/work/a")));
+        let pane: PaneInfo = serde_json::from_value(json!({
+            "pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "",
+        }))
+        .unwrap();
+        assert_eq!(pane.working_dir(), None);
     }
 
     #[test]
