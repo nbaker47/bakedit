@@ -1,6 +1,6 @@
 //! Languages and syntax highlighting for bakedit.
 //!
-//! Two things live here:
+//! Three things live here:
 //!
 //! * The **language registry**: what a file is ([`detect`], [`language_for_path`]) and the
 //!   editing conventions that follow from it ([`Language`]): comment markers, brackets,
@@ -11,6 +11,8 @@
 //!   themselves. [`LineHighlights`] files the spans by line for drawing,
 //!   [`bracket_marks`] works out bracket nesting for rainbow brackets, and [`outline`] lists
 //!   a file's symbols.
+//! * A [`SyntaxWorker`] that does all of that on its own thread, so typing never waits for a
+//!   parse.
 //!
 //! ```
 //! use bakedit_syntax::{capture_name, detect, Highlighter};
@@ -45,6 +47,7 @@ mod lines;
 mod lua_pattern;
 mod outline;
 mod registry;
+mod worker;
 
 pub use brackets::{bracket_marks, BracketMark};
 pub use capture::{capture_count, capture_id, capture_name, CaptureId, StyleCache};
@@ -56,3 +59,4 @@ pub use language::{
 };
 pub use lines::{LineBreaks, LineHighlights};
 pub use outline::{outline, Symbol, SymbolKind};
+pub use worker::{SyntaxResult, SyntaxWorker};
