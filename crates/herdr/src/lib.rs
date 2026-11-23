@@ -33,6 +33,13 @@
 //! [`launch`] holds what a terminal panel needs to know to start herdr in the first place:
 //! where the executable is, whether the IDE is itself inside a herdr pane, and which session
 //! a command line attaches to.
+//!
+//! # Testing code that uses this crate
+//!
+//! The `mock` feature adds a `mock` module with `MockServer`, a scripted stand-in for herdr on
+//! a temporary socket: queue the replies a call sequence needs, run the code, then look at the
+//! requests it made. This crate's own tests use it, and its tests against a real herdr only
+//! ever run against a throwaway session (`tests/isolated-session.sh`), never the user's.
 
 #![warn(missing_docs)]
 
