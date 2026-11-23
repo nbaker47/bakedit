@@ -10,6 +10,7 @@ pub mod file;
 pub mod graphemes;
 pub mod history;
 pub mod pairs;
+pub mod search;
 pub mod selection;
 
 pub use ropey;
@@ -19,4 +20,5 @@ pub use edit::{Bias, BytePoint, Change, EditSummary, InputEdit};
 pub use file::{BufferError, DiskState, LineEnding, SaveOptions};
 pub use history::UndoKind;
 pub use pairs::PairKind;
+pub use search::{Search, SearchError, SearchQuery};
 pub use selection::{Selection, Selections};
