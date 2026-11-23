@@ -196,7 +196,7 @@ fn typed_text(
     let shift = mods.contains(Mods::SHIFT);
     match event.text.as_deref() {
         Some(text) => {
-            if text.chars().next().map_or(true, is_control) {
+            if text.chars().next().is_none_or(is_control) {
                 return None;
             }
             // With alt held, text only counts if alt changed what the key types.

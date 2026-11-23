@@ -607,13 +607,13 @@ mod tests {
     #[test]
     fn oversized_payloads_are_dropped_without_losing_sync() {
         let mut bytes = b"\x1b]9;".to_vec();
-        bytes.extend(std::iter::repeat(b'x').take(MAX_PAYLOAD * 3));
+        bytes.extend(std::iter::repeat_n(b'x', MAX_PAYLOAD * 3));
         bytes.extend_from_slice(b"\x07\x1b]9;small\x07");
         assert_eq!(scan(&bytes), vec![note("", "small")]);
         // An OSC of another kind, however long, is never buffered.
         let mut scanner = OscScanner::new(None);
         let mut long = b"\x1b]52;c;".to_vec();
-        long.extend(std::iter::repeat(b'A').take(1 << 20));
+        long.extend(std::iter::repeat_n(b'A', 1 << 20));
         scanner.feed(&long, &mut |_| {});
         assert!(scanner.payload.capacity() < 64);
         assert_eq!(scanner.state, State::Skip);

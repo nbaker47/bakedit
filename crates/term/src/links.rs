@@ -2033,7 +2033,10 @@ mod tests {
         let dotted = format!("{}/x/../x/./a.rs", root.display());
         assert_eq!(resolve_path(&dotted, &[]), Some(absolute_path));
         assert_eq!(
-            resolve_path(&format!("{}/x/missing.rs", root.display()), &[root.clone()]),
+            resolve_path(
+                &format!("{}/x/missing.rs", root.display()),
+                std::slice::from_ref(&root)
+            ),
             None
         );
     }
@@ -2053,7 +2056,7 @@ mod tests {
         // `~user` is not expanded: it is a file name like any other.
         touch(&root.join("~other"));
         assert_eq!(
-            resolve_with_home("~other", &[root.clone()], home),
+            resolve_with_home("~other", std::slice::from_ref(&root), home),
             Some(root.join("~other"))
         );
     }
