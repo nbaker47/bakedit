@@ -344,7 +344,7 @@ fn undo_in_nav_mode_leaves_no_selection() {
     act(&mut item, &mut harness, "editor::Undo");
     assert_eq!(text_of(&item), "one\ntwo\nthree\n");
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    assert_eq!(item.status().position.map(|(line, col, selected)| (line, col, selected)), Some((2, 1, 0)), "on the line that came back");
+    assert_eq!(item.status().position, Some((2, 1, 0)), "on the line that came back, nothing selected");
     act(&mut item, &mut harness, "editor::Redo");
     assert_eq!(text_of(&item), "one\nthree\n");
     assert_eq!(item.status().position.map(|p| p.2), Some(0));
