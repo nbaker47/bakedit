@@ -438,13 +438,106 @@ const BOOLEAN_LITERAL_EXTRA: &str = "(boolean_literal) @boolean\n";
 /// As [`TRUE_FALSE_EXTRA`], for PHP.
 const PHP_EXTRA: &str = "(boolean) @boolean\n";
 
-/// tree-sitter-python lists its method-call pattern before the pattern that makes every
-/// attribute a property, so `obj.method()` comes out as a property. Said again here, after
-/// both.
+/// tree-sitter-python, brought into line with the query Zed uses for Python. The bundled
+/// query lists its method-call pattern before the one that makes every attribute a property,
+/// so `obj.method()` comes out as a property; and beyond that bug the two differ in most
+/// lines of real code:
+///
+/// * Names follow convention wherever they stand, attributes included: `CamelCase` is a
+///   class, `ALL_CAPS` a constant, either with leading underscores.
+/// * The name of a class where it is defined and its base classes are types, as are the
+///   names in an annotation and the second argument of `isinstance`.
+/// * Calling a class (`Path(...)`) is the colour of a type; `int`, `str`, `list` and the
+///   other built-in types are built-in types, called or in an annotation.
+/// * A keyword argument's name is `function.kwargs`.
+/// * `and`, `or`, `not`, `in` and `is` are keyword operators, not operators.
+/// * Of a decorator only the `@` and the names are function-coloured, not its punctuation;
+///   `@property`, `@classmethod` and `@staticmethod` are built-in attributes.
+/// * The well-known dunder attributes (`__name__`, `__dict__`) are special attributes.
 const PYTHON_EXTRA: &str = r#"
+((identifier) @type.class
+ (#match? @type.class "^_*[A-Z][A-Za-z0-9_]*$"))
+((identifier) @constant
+ (#match? @constant "^_*[A-Z][A-Z0-9_]*$"))
+(type (identifier) @type)
+(generic_type (identifier) @type)
+(type (tuple (identifier) @type))
+(type (string) @type)
+(type_alias_statement "type" @keyword)
+
+(call function: (attribute attribute: (identifier) @function.method))
+(call function: (identifier) @function)
+(decorator
+  "@" @function.decorator
+  [
+    (identifier) @function.decorator
+    (attribute
+      object: (identifier) @function.decorator
+      attribute: (identifier) @function.decorator)
+    (call function: (identifier) @function.decorator)
+    (call
+      (attribute
+        object: (identifier) @function.decorator
+        attribute: (identifier) @function.decorator))
+  ])
+(function_definition name: (identifier) @function)
+((call
+   function: (identifier) @_function
+   arguments: (argument_list (_) (identifier) @type))
+ (#eq? @_function "isinstance"))
+((call
+   function: (identifier) @_function
+   arguments: (argument_list (identifier) @type (identifier) @type))
+ (#eq? @_function "issubclass"))
+(function_definition
+  parameters: (parameters
+    [
+      (identifier) @variable.parameter
+      (typed_parameter (identifier) @variable.parameter)
+      (default_parameter name: (identifier) @variable.parameter)
+      (typed_default_parameter name: (identifier) @variable.parameter)
+      (list_splat_pattern (identifier) @variable.parameter)
+      (dictionary_splat_pattern (identifier) @variable.parameter)
+      (typed_parameter (list_splat_pattern (identifier) @variable.parameter))
+      (typed_parameter (dictionary_splat_pattern (identifier) @variable.parameter))
+    ]))
+(call arguments: (argument_list (keyword_argument name: (identifier) @function.kwargs)))
+
+(class_definition name: (identifier) @type.class)
+(class_definition superclasses: (argument_list (identifier) @type.class))
+((call function: (identifier) @type.class)
+ (#match? @type.class "^_*[A-Z][A-Za-z0-9_]*$"))
+((call function: (identifier) @function.builtin)
+ (#any-of? @function.builtin
+   "abs" "aiter" "all" "anext" "any" "ascii" "bin" "bool" "breakpoint" "bytearray" "bytes"
+   "callable" "chr" "classmethod" "compile" "complex" "delattr" "dict" "dir" "divmod"
+   "enumerate" "eval" "exec" "filter" "float" "format" "frozenset" "getattr" "globals"
+   "hasattr" "hash" "help" "hex" "id" "input" "int" "isinstance" "issubclass" "iter" "len"
+   "list" "locals" "map" "max" "memoryview" "min" "next" "object" "oct" "open" "ord" "pow"
+   "print" "property" "range" "repr" "reversed" "round" "set" "setattr" "slice" "sorted"
+   "staticmethod" "str" "sum" "super" "tuple" "type" "vars" "zip" "__import__"))
+
 [(true) (false)] @boolean
-(call
-  function: (attribute attribute: (identifier) @function.method))
+(ellipsis) @constant.builtin
+["." "," ":"] @punctuation.delimiter
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+(interpolation "{" @punctuation.special "}" @punctuation.special)
+(binary_operator operator: "@" @operator)
+["and" "in" "is" "not" "or" "is not" "not in"] @keyword.operator
+
+((decorator "@" @attribute.builtin (identifier) @attribute.builtin @_name)
+ (#any-of? @_name "classmethod" "staticmethod" "property"))
+((attribute attribute: (identifier) @attribute.special)
+ (#match? @attribute.special "^__(all|annotations|bases|builtins|class|closure|code|debug|defaults|dict|doc|file|func|globals|kwdefaults|match_args|members|metaclass|methods|module|mro|mro_entries|name|qualname|post_init|self|signature|slots|subclasses|version|weakref|wrapped|classcell|spec|path|package|future|traceback)__$"))
+([
+   (call function: (identifier) @type.builtin)
+   (type (identifier) @type.builtin)
+   (generic_type (identifier) @type.builtin)
+   (type (binary_operator left: (identifier) @type.builtin))
+ ]
+ (#any-of? @type.builtin
+   "bool" "bytearray" "bytes" "complex" "dict" "float" "frozenset" "int" "list" "memoryview"
+   "object" "range" "set" "slice" "str" "tuple"))
 "#;
 
 /// tree-sitter-javascript treats every capitalised identifier as a constructor (and
@@ -1105,6 +1198,7 @@ mod tests {
     const NOT_HIGHLIGHTS: &[&str] = &[
         "_class",
         "_function",
+        "_name",
         "clean",
         "spell",
         "nospell",

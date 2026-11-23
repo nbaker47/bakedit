@@ -88,6 +88,66 @@ fn rust_macro_arguments_are_highlighted_as_rust() {
 }
 
 #[test]
+fn python_follows_zed_where_the_bundled_query_does_not() {
+    let text = r#"import abc
+import functools
+
+_MAX_SIZE = 3
+
+
+class _Base(abc.ABC, metaclass=abc.ABCMeta):
+    @functools.wraps(print)
+    def run(self, *args, **kwargs):
+        if args and not kwargs or self is None:
+            raise ValueError(type(self).__name__)
+        return sorted(args, key=len, reverse=True)
+
+    @property
+    def size(self) -> "int | None":
+        return _MAX_SIZE if isinstance(self, _Base) else ...
+"#;
+    check_captures(
+        "python",
+        text,
+        &[
+            // Names by convention, with or without leading underscores, attributes too.
+            ("«_MAX_SIZE» = 3", "constant"),
+            ("class «_Base»", "type.class"),
+            ("abc.«ABC»,", "constant"),
+            ("abc.«ABCMeta»", "type.class"),
+            ("raise «ValueError»(", "type.class"),
+            // Keyword arguments, here and in a class's arguments.
+            ("«key»=len", "function.kwargs"),
+            ("«reverse»=True", "function.kwargs"),
+            ("«metaclass»=", "variable"),
+            // Word operators are keywords.
+            ("args «and» not", "keyword.operator"),
+            ("and «not» kwargs", "keyword.operator"),
+            ("kwargs «or» self", "keyword.operator"),
+            ("self «is» None", "keyword.operator"),
+            // Of a decorator the `@` and the names are function-coloured, the rest is not.
+            ("«@»functools", "function.decorator"),
+            ("@«functools».", "function.decorator"),
+            ("@functools«.»wraps", "punctuation.delimiter"),
+            (".«wraps»(print)", "function.decorator"),
+            ("wraps«(»print", "punctuation.bracket"),
+            ("«@»property", "attribute.builtin"),
+            ("@«property»", "attribute.builtin"),
+            // Parameters, dunders, builtins, annotations.
+            ("*«args»,", "variable.parameter"),
+            ("**«kwargs»)", "variable.parameter"),
+            (").«__name__»", "attribute.special"),
+            ("«type»(self)", "function.builtin"),
+            ("«sorted»(args", "function.builtin"),
+            ("«isinstance»(self", "function.builtin"),
+            ("isinstance(self, «_Base»)", "type"),
+            ("-> «\"int | None\"»", "type"),
+            ("else «...»", "constant.builtin"),
+        ],
+    );
+}
+
+#[test]
 fn rust_follows_zed_where_the_bundled_query_does_not() {
     let text = r#"#![allow(clippy::needless_return)]
 #[cfg(not(test))]
@@ -184,20 +244,25 @@ fn python() {
             ("2.5", "number"),
             ("True", "boolean"),
             ("-> «None»", "constant.builtin"),
-            ("class «Shape»", "constructor"),
+            ("class «Shape»", "type.class"),
             ("def «__init__»", "function"),
             ("def «area»", "function"),
             ("def «main»", "function"),
-            ("@staticmethod", "function"),
-            ("«Shape»(\"square\")", "function"),
+            ("@staticmethod", "attribute.builtin"),
+            // Calling a class is the colour of the class.
+            ("«Shape»(\"square\")", "type.class"),
             ("«print»(label)", "function.builtin"),
             ("«len»(label)", "function.builtin"),
-            ("«range»(LIMIT)", "function.builtin"),
+            ("«range»(LIMIT)", "type.builtin"),
+            ("«str»(index)", "type.builtin"),
             ("os.path.«join»(", "function.method"),
             ("os.«path».join", "property"),
             ("self.«name» =", "property"),
-            ("name: «str»", "type"),
-            ("-> «bool»", "type"),
+            ("name: «str»", "type.builtin"),
+            ("-> «bool»", "type.builtin"),
+            ("argv: «List»[str]", "type"),
+            ("(self, «name»: str)", "variable.parameter"),
+            ("«height»=2.5", "variable.parameter"),
             ("{«width» * height}", "variable"),
             ("«{»width", "punctuation.special"),
             ("width« »* height}", "embedded"),
