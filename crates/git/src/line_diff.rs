@@ -181,6 +181,7 @@ fn number_lines<'a>(old: &[Line<'a>], new: &[Line<'a>]) -> (Vec<u32>, Vec<u32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Lcg;
     use LineHunkKind::{Added, Deleted, Modified};
 
     fn hunk(
@@ -348,39 +349,26 @@ mod tests {
         assert_eq!(texts("\r\r\n"), [("", true), ("", true)]);
     }
 
-    /// A small deterministic generator, so the test below needs no dependency and always
-    /// checks the same cases.
-    struct Lcg(u64);
-
-    impl Lcg {
-        fn next(&mut self, bound: u64) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (self.0 >> 33) % bound
+    /// A short text over few distinct lines, so there are many ways to line two of them
+    /// up, with every kind of line ending.
+    fn random_text(random: &mut Lcg) -> String {
+        let mut text = String::new();
+        for _ in 0..random.next(12) {
+            text.push_str(["alpha", "beta", "gamma", "", "delta"][random.next(5) as usize]);
+            text.push_str(["\n", "\n", "\n", "\r\n", "\r"][random.next(5) as usize]);
         }
-
-        fn text(&mut self) -> String {
-            let mut text = String::new();
-            for _ in 0..self.next(12) {
-                // Few distinct lines, so there are many ways to line them up.
-                text.push_str(["alpha", "beta", "gamma", "", "delta"][self.next(5) as usize]);
-                text.push_str(["\n", "\n", "\n", "\r\n", "\r"][self.next(5) as usize]);
-            }
-            if self.next(4) == 0 {
-                text.push_str("unterminated");
-            }
-            text
+        if random.next(4) == 0 {
+            text.push_str("unterminated");
         }
+        text
     }
 
     #[test]
     fn hunks_are_a_correct_edit_for_many_random_texts() {
         let mut random = Lcg(42);
         for _ in 0..3000 {
-            let base = random.text();
-            let current = random.text();
+            let base = random_text(&mut random);
+            let current = random_text(&mut random);
             let hunks = diff(&base, &current);
             // The same promises hold when there is no time at all.
             let past = Instant::now().checked_sub(Duration::from_secs(1));

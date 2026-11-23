@@ -57,6 +57,8 @@ mod permalink;
 mod remote;
 mod repo;
 mod status;
+#[cfg(test)]
+mod testing;
 
 pub use branch::Branch;
 pub use diff::{

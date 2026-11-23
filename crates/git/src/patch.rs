@@ -189,7 +189,13 @@ fn standalone_starts(hunk: &Hunk, reverse: bool) -> (u32, u32) {
             start.saturating_sub(1)
         }
     };
-    let start_after = |before: u32, lines: u32| if lines == 0 { before } else { before + 1 };
+    let start_after = |before: u32, lines: u32| {
+        if lines == 0 {
+            before
+        } else {
+            before.saturating_add(1)
+        }
+    };
     if reverse {
         let before = lines_before(hunk.new_start, hunk.new_lines);
         (start_after(before, hunk.old_lines), hunk.new_start)
@@ -328,6 +334,11 @@ mod tests {
         // An ordinary change.
         assert_eq!(standalone_starts(&hunk(38, 7, 37, 8), false), (38, 38));
         assert_eq!(standalone_starts(&hunk(38, 7, 37, 8), true), (37, 37));
+        // Numbers at the edge of what fits stay there.
+        let max = u32::MAX;
+        assert_eq!(standalone_starts(&hunk(max, 0, max, 1), false), (max, max));
+        assert_eq!(standalone_starts(&hunk(max, 1, max, 0), true), (max, max));
+        assert_eq!(standalone_starts(&hunk(0, 1, 0, 1), false), (0, 1));
     }
 
     #[test]

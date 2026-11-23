@@ -876,9 +876,26 @@ fn truncated_and_malformed_input_gives_what_was_readable() {
         assert_eq!(file.path, Path::new("f"));
     }
 
-    // A header line without names is no file.
+    // Line numbers at the edge of what fits do not overflow.
+    let edge = parse_one(
+        "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -4294967295,2 +4294967294,2 @@\n a\n-b\n+c\n",
+    );
+    assert_eq!(
+        rows(&edge.hunks[0]),
+        [
+            (' ', Some(u32::MAX), Some(u32::MAX - 1), "a"),
+            ('-', Some(u32::MAX), None, "b"),
+            ('+', None, Some(u32::MAX), "c"),
+        ]
+    );
+
+    // A header line without names is no file, and an empty name is no name.
     assert!(parse("diff --git \n").is_empty());
     assert!(parse("diff --git \"unterminated\n").is_empty());
+    assert!(parse("diff --git a/ b/\nold mode 100644\n").is_empty());
+    assert!(parse("diff --git \"a/\" \"b/\"\n--- a/\n+++ b/\n").is_empty());
+    assert!(parse("* Unmerged path \n").is_empty());
+    assert!(parse("diff --cc \n").is_empty());
     // Bad modes are simply unknown.
     let file = parse_one("diff --git a/f b/f\nold mode banana\nnew mode 99\n");
     assert_eq!((file.old_mode, file.new_mode), (None, None));
@@ -925,4 +942,131 @@ fn added_hunks_for_untracked_content() {
 
     let hunk = added_hunk(b"caf\xe9\n").unwrap();
     assert_eq!(hunk.lines[0].bytes(), b"caf\xe9");
+}
+
+/// A bit of everything the parser knows, for the test below to take apart.
+const EVERYTHING: &str = concat!(
+    "diff --git a/f.txt b/f.txt\n",
+    "index b03757e..96e9f48 100644\n",
+    "--- a/f.txt\n",
+    "+++ b/f.txt\n",
+    "@@ -1,5 +1,5 @@\n",
+    " a\n",
+    "-b\n",
+    "+B\n",
+    " c\n",
+    " d\n",
+    " e\n",
+    "@@ -12,5 +12,6 @@ fn heading(arg: u8) {\n",
+    " l\n",
+    " m\n",
+    " n\n",
+    "-o\n",
+    "+O\n",
+    "+extra\n",
+    " p\n",
+    "\\ No newline at end of file\n",
+    "diff --git a/rename-me.txt b/renamed file.txt\n",
+    "similarity index 72%\n",
+    "rename from rename-me.txt\n",
+    "rename to renamed file.txt\n",
+    "index 3a31ef6..c8cd5d0 100644\n",
+    "--- a/rename-me.txt\n",
+    "+++ b/renamed file.txt\t\n",
+    "@@ -1,3 +1,3 @@\n",
+    " old content line 1\n",
+    "-line 2\n",
+    "+line 2 changed\n",
+    " line 3\n",
+    "diff --git \"a/ta\\tb.txt\" \"b/ta\\tb.txt\"\n",
+    "new file mode 100755\n",
+    "index 0000000..d5a09df\n",
+    "--- /dev/null\n",
+    "+++ \"b/ta\\tb.txt\"\n",
+    "@@ -0,0 +1,2 @@\n",
+    "+brand new\n",
+    "+second line\n",
+    "diff --git a/deleted.txt b/deleted.txt\n",
+    "deleted file mode 100644\n",
+    "index 286c5f5..0000000\n",
+    "--- a/deleted.txt\n",
+    "+++ /dev/null\n",
+    "@@ -1 +0,0 @@\n",
+    "-gone\n",
+    "diff --git a/bin.dat b/bin.dat\n",
+    "index 0f49c4a..4c2de3c 100644\n",
+    "Binary files a/bin.dat and b/bin.dat differ\n",
+    "diff --git a/script.sh b/script.sh\n",
+    "old mode 100644\n",
+    "new mode 100755\n",
+    "* Unmerged path both.txt\n",
+    "diff --git a/both.txt b/both.txt\n",
+    "--- a/both.txt\n",
+    "+++ b/both.txt\n",
+    "@@ -1 +1,2 @@\n",
+    "+<<<<<<< HEAD\n",
+    " both added main\n",
+    "* Unmerged path gone.txt\n",
+    "diff --cc combined.txt\n",
+    "index 4c6dd32,2264291..0000000\n",
+    "--- a/combined.txt\n",
+    "+++ b/combined.txt\n",
+    "@@@ -1,1 -1,1 +1,5 @@@\n",
+    "++<<<<<<< HEAD\n",
+    " +both added main\n",
+);
+
+#[test]
+fn the_sample_of_everything_parses_as_expected() {
+    let files = parse(EVERYTHING);
+    let summary: Vec<(&Path, DiffStatus, usize)> = files
+        .iter()
+        .map(|file| (file.path.as_path(), file.status, file.hunks.len()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (Path::new("f.txt"), DiffStatus::Modified, 2),
+            (Path::new("renamed file.txt"), DiffStatus::Renamed, 1),
+            (Path::new("ta\tb.txt"), DiffStatus::Added, 1),
+            (Path::new("deleted.txt"), DiffStatus::Deleted, 1),
+            (Path::new("bin.dat"), DiffStatus::Modified, 0),
+            (Path::new("script.sh"), DiffStatus::Modified, 0),
+            (Path::new("both.txt"), DiffStatus::Conflicted, 1),
+            (Path::new("gone.txt"), DiffStatus::Conflicted, 0),
+            (Path::new("combined.txt"), DiffStatus::Conflicted, 0),
+        ]
+    );
+}
+
+#[test]
+fn mangled_diffs_never_panic_and_stay_consistent() {
+    let mut random = crate::testing::Lcg(8);
+    for _ in 0..20_000 {
+        let mangled = random.mangle(EVERYTHING.as_bytes());
+        for file in parse_diff(&mangled) {
+            assert!(!file.path.as_os_str().is_empty());
+            let mut lines = 0;
+            for (index, hunk) in file.hunks.iter().enumerate() {
+                // A hunk never holds more lines than its header announced.
+                let old = hunk
+                    .lines
+                    .iter()
+                    .filter(|line| line.old_no.is_some())
+                    .count();
+                let new = hunk
+                    .lines
+                    .iter()
+                    .filter(|line| line.new_no.is_some())
+                    .count();
+                assert!(old <= hunk.old_lines as usize && new <= hunk.new_lines as usize);
+                lines += hunk.lines.len();
+                // And whatever was read can be written back out as a patch.
+                for reverse in [false, true] {
+                    let _ = crate::patch::hunk_patch(&file, index, reverse);
+                }
+            }
+            assert!(file.additions() + file.deletions() <= lines);
+        }
+    }
 }

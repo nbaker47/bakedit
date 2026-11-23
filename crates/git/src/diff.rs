@@ -273,7 +273,7 @@ impl<'a> DiffParser<'a> {
             } else if let Some(path) = line.strip_prefix(b"* Unmerged path ") {
                 self.finish_file();
                 self.flush_unmerged();
-                self.unmerged = Some(path_from_bytes(path));
+                self.unmerged = Some(path_from_bytes(path)).filter(|path| path != Path::new(""));
             } else if line.starts_with(b"@@ ") {
                 self.read_hunk(line);
             } else if let Some(file) = &mut self.current {
@@ -359,12 +359,13 @@ impl<'a> DiffParser<'a> {
                 takes_new.then_some(new_no),
                 line.get(1..).unwrap_or_default(),
             ));
+            // Saturating: a header may claim a line number at the very end of the range.
             if takes_old {
-                old_no += 1;
+                old_no = old_no.saturating_add(1);
                 old_left -= 1;
             }
             if takes_new {
-                new_no += 1;
+                new_no = new_no.saturating_add(1);
                 new_left -= 1;
             }
         }
@@ -522,11 +523,14 @@ impl PendingFile {
             Some(Side::Named(name)) => Some(name),
             Some(Side::Absent) | None => None,
         };
-        let old = self
-            .moved_from
-            .or(named(self.minus_side))
-            .or(self.header_old);
-        let new = self.moved_to.or(named(self.plus_side)).or(self.header_new);
+        // An empty name is no name.
+        let given = |name: Option<Vec<u8>>| name.filter(|name| !name.is_empty());
+        let old = given(self.moved_from)
+            .or(given(named(self.minus_side)))
+            .or(given(self.header_old));
+        let new = given(self.moved_to)
+            .or(given(named(self.plus_side)))
+            .or(given(self.header_new));
         let status = self.status.unwrap_or(DiffStatus::Modified);
         let (path, old_path) = match status {
             DiffStatus::Deleted => (old.or(new)?, None),

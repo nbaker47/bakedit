@@ -231,4 +231,33 @@ mod tests {
         assert_eq!(back, every_byte);
         assert_eq!(used, quoted.len());
     }
+    #[test]
+    fn mangled_quoting_is_rejected_or_read_but_never_panics() {
+        let mut random = crate::testing::Lcg(1);
+        let samples: [&[u8]; 4] = [
+            br#""a/ta\tb.txt" "b/ta\tb.txt""#,
+            br#""quo\"te\\back\nline""#,
+            br#""\303\274 \001\a\b\f\r\v""#,
+            b"\"caf\xc3\xa9 \\377\\000\"",
+        ];
+        for round in 0..20_000 {
+            let mangled = random.mangle(samples[round % samples.len()]);
+            if let Some((_, used)) = unquote_c_style(&mangled) {
+                assert!(used <= mangled.len());
+                assert_eq!(mangled[used - 1], b'"');
+            }
+        }
+    }
+
+    #[test]
+    fn random_names_survive_quoting() {
+        let mut random = crate::testing::Lcg(2);
+        for _ in 0..5_000 {
+            let name: Vec<u8> = (0..random.next(24))
+                .map(|_| 1 + random.next(255) as u8)
+                .collect();
+            let quoted = quote_c_style(&name);
+            assert_eq!(unquote_c_style(&quoted), Some((name, quoted.len())));
+        }
+    }
 }

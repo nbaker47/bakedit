@@ -293,7 +293,10 @@ pub fn parse_status(output: &[u8]) -> Status {
             // The path a rename or copy came from follows as a record of its own.
             Some(b'2') => parse_changed(record, records.next()),
             Some(b'u') => parse_unmerged(record),
-            Some(b'?') => record.strip_prefix(b"? ").map(untracked_entry),
+            Some(b'?') => record
+                .strip_prefix(b"? ")
+                .filter(|path| !path.is_empty())
+                .map(untracked_entry),
             _ => None,
         };
         match entry {
@@ -754,6 +757,9 @@ mod tests {
         assert!(parse_status(b"1 MMM N... 1 2 3 a b path")
             .entries
             .is_empty());
+        // A record with nothing where the path should be.
+        assert!(parse_status(b"? \0").entries.is_empty());
+        assert!(parse_status(b"?\0").entries.is_empty());
     }
 
     #[test]
@@ -880,5 +886,35 @@ mod tests {
             }
         );
         assert!(!status.is_clean());
+    }
+    #[test]
+    fn mangled_output_never_panics() {
+        let rename = format!("2 RM N... 100644 100644 100644 {HASH_A} {HASH_B} R86 new name.txt");
+        let unmerged =
+            format!("u UU N... 100644 100644 100644 100644 {HASH_A} {HASH_B} {ZEROS} c.txt");
+        let sample = nul_joined(&[
+            b"# branch.oid 8cbc8e3948a4d8437af274ed8924f9a77582e614",
+            b"# branch.head feat/x",
+            b"# branch.upstream origin/feat/x",
+            b"# branch.ab +12 -3",
+            &changed("MM", "dir with space/file.txt"),
+            rename.as_bytes(),
+            b"old name.txt",
+            unmerged.as_bytes(),
+            b"? untracked \xff file",
+            b"! ignored.log",
+        ]);
+        let mut random = crate::testing::Lcg(3);
+        for _ in 0..20_000 {
+            let status = parse_status(&random.mangle(&sample));
+            let counts = status.counts();
+            assert_eq!(counts.total, status.entries.len());
+            assert!(status.staged().len() + status.unstaged().len() >= counts.total);
+            for entry in &status.entries {
+                let _ = (entry.stage_state(), entry.display_status());
+                assert!(!entry.paths().is_empty());
+                assert!(!entry.path.as_os_str().is_empty());
+            }
+        }
     }
 }

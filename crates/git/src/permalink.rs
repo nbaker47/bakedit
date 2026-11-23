@@ -528,4 +528,28 @@ mod tests {
             "http://git.example.com:8080/a/b/c"
         );
     }
+    #[test]
+    fn mangled_urls_never_panic_and_never_leak_credentials() {
+        let samples = [
+            "git@github.com:owner/repo.git",
+            "https://user:s3cr3t@github.com/owner/repo.git",
+            "ssh://git@git.example.com:7999/proj/repo.git",
+            "https://[::1]:8443/team/project.git",
+            "ssh://git@[2001:db8::1]:22/team/project.git",
+        ];
+        let mut random = crate::testing::Lcg(6);
+        for round in 0..20_000 {
+            let mangled = random.mangle(samples[round % samples.len()].as_bytes());
+            let url = String::from_utf8_lossy(&mangled);
+            let Some(remote) = parse_remote_url(&url) else {
+                continue;
+            };
+            assert!(!remote.host.is_empty() && !remote.path.is_empty());
+            assert!(!remote.host.contains('@'), "{url:?} gave {remote:?}");
+            let path = path_from_bytes(&random.mangle(b"dir with space/file \xff.md"));
+            let link = build_permalink(&remote, SHA, &path, round as u32, 7);
+            assert!(link.starts_with(&remote.web_url()));
+            assert!(link.contains('#'));
+        }
+    }
 }

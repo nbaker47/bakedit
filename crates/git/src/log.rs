@@ -165,4 +165,27 @@ mod tests {
             "feat(x): tabs\tand | pipes \u{1f} and separators"
         );
     }
+    #[test]
+    fn mangled_output_never_panics() {
+        let sample = nul_terminated(&[
+            "8cbc8e3948a4d8437af274ed8924f9a77582e614",
+            "8cbc8e3",
+            "Ada Lovelace",
+            "1795406241",
+            "2 hours ago",
+            "fix: handle the empty case",
+            "05c16969050e1b3ed1da06fa5e46f34bac38a6f9",
+            "05c1696",
+            "S\u{f8}ren",
+            "-5",
+            "4 hours ago",
+            "",
+        ]);
+        let mut random = crate::testing::Lcg(5);
+        for _ in 0..20_000 {
+            let mangled = random.mangle(&sample);
+            let fields = mangled.iter().filter(|&&byte| byte == 0).count() + 1;
+            assert!(parse_log(&mangled).len() * LOG_FIELDS <= fields);
+        }
+    }
 }

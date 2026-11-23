@@ -359,4 +359,33 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn mangled_output_never_panics() {
+        let mut sample = record([
+            "refs/heads/feat/x",
+            "*",
+            SHA_A,
+            "1795406241",
+            "origin/feat/x",
+            "",
+            "/work/project",
+            "local change",
+        ]);
+        sample.extend(record([
+            "refs/remotes/origin/HEAD",
+            " ",
+            SHA_B,
+            "1795406240",
+            "",
+            "refs/remotes/origin/main",
+            "",
+            "subject",
+        ]));
+        let mut random = crate::testing::Lcg(4);
+        for _ in 0..20_000 {
+            for branch in parse_branches(&random.mangle(&sample)) {
+                assert!(!branch.name.is_empty());
+            }
+        }
+    }
 }
