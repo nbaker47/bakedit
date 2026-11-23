@@ -7,7 +7,8 @@
 //!   event becomes one batch, with each path listed once;
 //! * changes **inside ignored directories** (`target/`, `node_modules/`) are dropped, so a
 //!   build does not flood the UI. An ignored entry that sits in a visible directory is
-//!   still reported, because the tree shows it;
+//!   still reported, because the tree shows it, and so is what happens directly inside
+//!   an ignored directory the app says it has open ([`Watcher::watch_ignored_dirs`]);
 //! * [`crate::ALWAYS_HIDDEN`] names are dropped;
 //! * changes **inside the git directory** are not listed; they set
 //!   [`FsBatch::git_changed`] when they touch `HEAD`, the index, a ref or the state of a
@@ -19,10 +20,11 @@
 //! `index.update(&batch.paths)`, reload open buffers whose file is listed, refresh git
 //! status if `git_changed`; and on `rescan`, `tree.refresh_all()` and `index.rebuild()`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -31,7 +33,7 @@ use notify::event::{EventKind, ModifyKind};
 use notify::{EventKindMask, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::ignore_rules::{
-    has_hidden_component, is_ignore_file, is_own_temp_file, normalize, IgnoreRules,
+    has_hidden_component, is_ignore_file, is_own_temp_file, normalize, resolve, IgnoreRules,
 };
 
 /// How long events are collected after the first one before a batch is sent.
@@ -49,6 +51,9 @@ pub struct FsBatch {
     /// The paths that were created, changed, renamed or removed: absolute, starting with
     /// the watched root as it was given, sorted, each listed once. What happened to a
     /// path is not recorded; look at the disk. Empty when `rescan` is set.
+    ///
+    /// Nothing inside `.git` is listed, with one exception: `.git/info/exclude`, because
+    /// a change to it changes which files are ignored, just like a `.gitignore`.
     pub paths: Vec<PathBuf>,
     /// Something in the git directory changed that affects status: `HEAD`, the index, a
     /// branch or tag, `packed-refs`, the config, `info/exclude`, or the state of a merge,
@@ -87,7 +92,10 @@ pub enum WatchError {
 
 /// Watches one project directory. Dropping it stops the watch and its thread.
 pub struct Watcher {
+    root: PathBuf,
     events: Receiver<FsBatch>,
+    /// Ignored directories whose direct children are reported all the same.
+    open_ignored: Arc<Mutex<HashSet<PathBuf>>>,
     // Declared in the order they must be dropped: first the backend (no more raw
     // events), then the stop signal, and `Drop` joins the thread last.
     backend: Option<RecommendedWatcher>,
@@ -135,10 +143,12 @@ impl Watcher {
 
         let (events_sender, events) = crossbeam_channel::unbounded();
         let (stop, stop_signal) = crossbeam_channel::bounded::<()>(0);
+        let open_ignored = Arc::new(Mutex::new(HashSet::new()));
         let mut classifier = Classifier {
             rules: IgnoreRules::new(&root),
-            root,
+            root: root.clone(),
             git,
+            open_ignored: Arc::clone(&open_ignored),
         };
         let thread = thread::Builder::new()
             .name("bakedit-watcher".to_string())
@@ -154,7 +164,9 @@ impl Watcher {
             .map_err(WatchError::Thread)?;
 
         Ok(Watcher {
+            root,
             events,
+            open_ignored,
             backend: Some(backend),
             stop: Some(stop),
             thread: Some(thread),
@@ -164,6 +176,31 @@ impl Watcher {
     /// The channel the batches arrive on. Batches queue up until they are read.
     pub fn events(&self) -> &Receiver<FsBatch> {
         &self.events
+    }
+
+    /// The watched directory, absolute, as every reported path starts.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Also report what is created, changed or removed directly inside these ignored
+    /// directories (absolute, or relative to the root). The list replaces the previous
+    /// one; an empty list goes back to dropping everything inside ignored directories.
+    ///
+    /// This is for ignored directories the user has opened in the tree, which would
+    /// otherwise show stale contents: pass
+    /// [`FileTree::expanded_ignored_dirs`](crate::FileTree::expanded_ignored_dirs)
+    /// whenever that list changes. Only direct children count, so a build that churns
+    /// deep inside `target/` stays quiet unless those deep directories are open too.
+    pub fn watch_ignored_dirs<P: AsRef<Path>>(&self, dirs: &[P]) {
+        let dirs = dirs
+            .iter()
+            .map(|dir| resolve(&self.root, dir.as_ref()))
+            .collect();
+        *self
+            .open_ignored
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = dirs;
     }
 }
 
@@ -240,6 +277,8 @@ struct Classifier {
     root: PathBuf,
     git: Option<GitDirs>,
     rules: IgnoreRules,
+    /// Ignored directories whose direct children are reported all the same.
+    open_ignored: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Classifier {
@@ -296,11 +335,20 @@ impl Classifier {
         if has_hidden_component(relative) || is_own_temp_file(relative) {
             return;
         }
-        if self.rules.inside_ignored_dir(relative) {
+        if self.rules.inside_ignored_dir(relative) && !self.in_open_ignored_dir(path) {
             return;
         }
         pending.rules_changed |= is_ignore_file(path);
         pending.paths.insert(path.to_path_buf());
+    }
+
+    /// Whether `path` sits directly inside an ignored directory the app has open.
+    fn in_open_ignored_dir(&self, path: &Path) -> bool {
+        let open = self
+            .open_ignored
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        !open.is_empty() && path.parent().is_some_and(|parent| open.contains(parent))
     }
 
     /// Turn what was collected into the batch to send.
@@ -635,6 +683,7 @@ mod tests {
             root: root.to_path_buf(),
             git: GitDirs::discover(root),
             rules: IgnoreRules::new(root),
+            open_ignored: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -687,6 +736,44 @@ mod tests {
                 git_changed: false,
                 rescan: false,
             }
+        );
+    }
+
+    #[test]
+    fn open_ignored_directories_report_their_direct_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        fs::create_dir_all(root.join("target/debug/deps")).unwrap();
+        let mut classifier = classifier(root);
+        let seen = |classifier: &mut Classifier| {
+            let mut pending = Pending::default();
+            for path in [
+                "target/a.txt",
+                "target/debug/b.txt",
+                "target/debug/deps/c.o",
+            ] {
+                classifier.add(&mut pending, created(&root.join(path)));
+            }
+            classifier.finish(pending).paths
+        };
+        assert!(seen(&mut classifier).is_empty());
+
+        classifier
+            .open_ignored
+            .lock()
+            .unwrap()
+            .insert(root.join("target/debug"));
+        assert_eq!(seen(&mut classifier), [root.join("target/debug/b.txt")]);
+
+        classifier
+            .open_ignored
+            .lock()
+            .unwrap()
+            .insert(root.join("target"));
+        assert_eq!(
+            seen(&mut classifier),
+            [root.join("target/a.txt"), root.join("target/debug/b.txt")]
         );
     }
 

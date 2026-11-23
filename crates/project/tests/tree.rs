@@ -227,6 +227,28 @@ fn ignored_entries_are_shown_flagged_and_stay_closed() {
 }
 
 #[test]
+fn open_ignored_directories_are_listed_for_the_watcher() {
+    let project = Project::with_files(&["out/deep/x.bin", "src/main.rs"]);
+    project.write(".gitignore", "out/\n");
+    let mut tree = FileTree::new(project.root());
+    tree.expand(&project.path("src"));
+    assert!(tree.expanded_ignored_dirs().is_empty());
+
+    tree.expand(&project.path("out"));
+    assert_eq!(tree.expanded_ignored_dirs(), [project.path("out")]);
+    tree.expand(&project.path("out/deep"));
+    assert_eq!(
+        tree.expanded_ignored_dirs(),
+        [project.path("out"), project.path("out/deep")]
+    );
+    tree.collapse(&project.path("out"));
+    assert!(
+        tree.expanded_ignored_dirs().is_empty(),
+        "hidden ones do not count"
+    );
+}
+
+#[test]
 fn dot_ignore_files_and_nested_gitignores_count() {
     let project = Project::with_files(&["docs/draft.md", "docs/final.md", "scratch/x", "keep/x"]);
     project.write(".ignore", "scratch/\n");

@@ -245,6 +245,43 @@ fn changes_inside_ignored_directories_are_dropped() {
 }
 
 #[test]
+fn an_ignored_directory_that_is_open_in_the_tree_is_reported() {
+    let _turn = one_at_a_time();
+    let project = Project::new();
+    project.write(".gitignore", "dist/\n");
+    project.mkdir("dist/assets");
+    let mut watched = Watched::start(project.root());
+    assert_eq!(watched.watcher.root(), project.root());
+
+    // Closed: nothing inside it is reported.
+    project.write("dist/one.js", "1");
+    let marker = project.write("marker-one.txt", "x");
+    assert!(watched.wait_for_path(&marker));
+    watched.listen(QUIET);
+    assert_eq!(watched.paths(), BTreeSet::from([marker]));
+
+    // Open: its direct children are, deeper ones still are not.
+    watched.forget();
+    watched.watcher.watch_ignored_dirs(&[project.path("dist")]);
+    let direct = project.write("dist/two.js", "2");
+    project.write("dist/assets/deep.png", "3");
+    assert!(watched.wait_for_path(&direct), "{:?}", watched.batches);
+    watched.listen(QUIET);
+    assert!(!watched
+        .paths()
+        .contains(&project.path("dist/assets/deep.png")));
+
+    // Closed again.
+    watched.forget();
+    watched.watcher.watch_ignored_dirs::<PathBuf>(&[]);
+    project.write("dist/three.js", "3");
+    let marker = project.write("marker-two.txt", "x");
+    assert!(watched.wait_for_path(&marker));
+    watched.listen(QUIET);
+    assert_eq!(watched.paths(), BTreeSet::from([marker]));
+}
+
+#[test]
 fn always_hidden_names_and_own_temp_files_are_dropped() {
     let _turn = one_at_a_time();
     let project = Project::new();

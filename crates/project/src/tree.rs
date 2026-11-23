@@ -340,6 +340,18 @@ impl FileTree {
         paths
     }
 
+    /// The ignored directories that are expanded and visible. A watcher drops what
+    /// happens inside ignored directories; give it this list
+    /// ([`Watcher::watch_ignored_dirs`](crate::Watcher::watch_ignored_dirs)) and the
+    /// ones the user has open stay up to date.
+    pub fn expanded_ignored_dirs(&self) -> Vec<PathBuf> {
+        self.rows
+            .iter()
+            .filter(|row| row.ignored && row.is_expanded())
+            .map(|row| row.path.clone())
+            .collect()
+    }
+
     /// Expand the visible directory at `path` and every directory below it. Returns
     /// whether anything was expanded.
     ///
