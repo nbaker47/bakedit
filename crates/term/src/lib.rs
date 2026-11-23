@@ -16,12 +16,13 @@
 //! ```no_run
 //! use bakedit_term::{TermConfig, TermEvent, Terminal};
 //!
-//! // herdr by default, the user's shell when it is not installed.
-//! let on_event = |event: TermEvent| println!("{event:?}");
-//! let terminal = match Terminal::spawn(TermConfig::herdr(), Box::new(on_event)) {
-//!     Err(error) if error.is_program_missing() => Terminal::spawn(TermConfig::shell(), Box::new(on_event)),
-//!     other => other,
-//! }?;
+//! // herdr by default, the user's shell when herdr is not installed.
+//! let on_event = Box::new(|event: TermEvent| println!("{event:?}"));
+//! let (terminal, problem) =
+//!     Terminal::spawn_with_fallback(TermConfig::herdr(), TermConfig::shell(), on_event)?;
+//! if let Some(problem) = problem {
+//!     println!("started a shell instead: {problem}");
+//! }
 //! terminal.send_text("echo hello\r");
 //! # Ok::<(), bakedit_term::TermError>(())
 //! ```

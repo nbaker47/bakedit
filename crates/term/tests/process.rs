@@ -4,10 +4,11 @@
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use bakedit_term::{find_program, TermConfig, TermError, TermEvent, Terminal};
-use common::{process_exists, sh, start, wait_for_process_to_go};
+use common::{process_exists, sh, start, wait_for_process_to_go, TIMEOUT};
 
 fn pairs(env: &[(&str, &str)]) -> Vec<(String, String)> {
     env.iter()
@@ -212,6 +213,70 @@ fn a_program_that_does_not_exist_is_an_error_not_a_dead_terminal() {
     let error = Terminal::spawn(config, on_event()).expect_err("the file is not executable");
     assert!(matches!(error, TermError::Spawn { .. }), "{error:?}");
     assert!(!error.is_program_missing(), "{error}");
+}
+
+#[test]
+fn a_program_that_is_missing_can_fall_back_to_another() {
+    let callback = || {
+        let (sender, events) = mpsc::channel();
+        let on_event: Box<dyn Fn(TermEvent) + Send + Sync> = Box::new(move |event| {
+            let _ = sender.send(event);
+        });
+        (on_event, events)
+    };
+    let missing = || TermConfig {
+        program: Some("bakedit-test-no-such-program".to_string()),
+        ..TermConfig::default()
+    };
+    let wait_for_text = |term: &Terminal, needle: &str| {
+        let deadline = Instant::now() + TIMEOUT;
+        while !term.screen_text().contains(needle) {
+            assert!(
+                Instant::now() < deadline,
+                "no {needle:?} in\n{}",
+                term.screen_text()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+
+    // The first choice is not installed: the second runs, with the same callback, and the
+    // caller is told why.
+    let (on_event, events) = callback();
+    let (term, problem) =
+        Terminal::spawn_with_fallback(missing(), sh("echo second choice; exec cat"), on_event)
+            .expect("the fallback starts");
+    let problem = problem.expect("the first choice failed");
+    assert!(problem.is_program_missing(), "{problem}");
+    wait_for_text(&term, "second choice");
+    assert_eq!(events.recv_timeout(TIMEOUT), Ok(TermEvent::Wakeup));
+    drop(term);
+
+    // The first choice is there: no fallback, nothing to report.
+    let (on_event, _events) = callback();
+    let (term, problem) = Terminal::spawn_with_fallback(
+        sh("echo first choice; exec cat"),
+        sh("echo second choice; exec cat"),
+        on_event,
+    )
+    .expect("the first choice starts");
+    assert!(problem.is_none(), "{problem:?}");
+    wait_for_text(&term, "first choice");
+    assert!(!term.screen_text().contains("second choice"));
+    drop(term);
+
+    // Neither is there: the error is the fallback's.
+    let (on_event, _events) = callback();
+    let other = TermConfig {
+        program: Some("/nonexistent/bakedit-other".to_string()),
+        ..TermConfig::default()
+    };
+    let error =
+        Terminal::spawn_with_fallback(missing(), other, on_event).expect_err("nothing can start");
+    assert!(
+        matches!(&error, TermError::Spawn { program, .. } if program == "/nonexistent/bakedit-other"),
+        "{error:?}"
+    );
 }
 
 #[test]

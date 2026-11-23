@@ -402,6 +402,54 @@ fn the_event_callback_may_use_the_terminal() {
 }
 
 #[test]
+fn a_callback_that_panics_does_not_stop_the_events() {
+    let (sender, receiver) = mpsc::channel();
+    let on_event = Box::new(move |event: TermEvent| {
+        if event == TermEvent::Bell {
+            panic!("a bug in the application's callback");
+        }
+        let _ = sender.send(event);
+    });
+    let term = Terminal::spawn(echo(""), on_event).expect("the terminal starts");
+    let deadline = Instant::now() + TIMEOUT;
+    while !term.screen_text().contains("READY") {
+        assert!(Instant::now() < deadline, "the child never got ready");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A bell, which makes the callback panic, then a title and a question.
+    assert!(term.send_text(&format!(
+        "!{}",
+        common::hex("\x07\x1b]0;still here\x07\x1b[c")
+    )));
+    loop {
+        match receiver
+            .recv_timeout(TIMEOUT)
+            .expect("events keep coming after the panic")
+        {
+            TermEvent::Title(title) => {
+                assert_eq!(title, "still here");
+                break;
+            }
+            _ => continue,
+        }
+    }
+    // The child still gets its answers, too.
+    let deadline = Instant::now() + TIMEOUT;
+    while !term
+        .screen_text()
+        .replace('\n', "")
+        .contains(&common::hex("\x1b[?6c"))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no answer to the query\n{}",
+            term.screen_text()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn no_events_arrive_after_the_terminal_is_dropped() {
     let (sender, receiver) = mpsc::channel();
     let on_event = Box::new(move |event: TermEvent| {

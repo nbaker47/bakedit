@@ -10,6 +10,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, Weak};
@@ -24,7 +25,7 @@ use alacritty_terminal::vte::ansi::{NamedColor, Rgb as AnsiRgb};
 use bakedit_core::{Key, KeyEvent, KeyKind, MouseEvent, Rgb};
 
 use crate::config::{TermColors, TermConfig};
-use crate::error::Result;
+use crate::error::{Result, TermError};
 use crate::event::TermEvent;
 use crate::input::{encode_alt_scroll, encode_focus, encode_mouse, encode_paste};
 use crate::keys::encode_key;
@@ -37,6 +38,8 @@ const BELL_INTERVAL: Duration = Duration::from_millis(100);
 /// Clipboard requests the child may have outstanding before the oldest is dropped.
 const MAX_CLIPBOARD_REQUESTS: usize = 16;
 
+/// The application's event callback.
+type Callback = Box<dyn Fn(TermEvent) + Send + Sync>;
 type ClipboardFormat = Arc<dyn Fn(&str) -> String + Send + Sync>;
 type ColorFormat = Arc<dyn Fn(AnsiRgb) -> String + Send + Sync>;
 type SizeFormat = Arc<dyn Fn(WindowSize) -> String + Send + Sync>;
@@ -259,7 +262,7 @@ impl Throttle {
 /// answers for the child.
 struct Dispatcher {
     queue: Receiver<Internal>,
-    on_event: Box<dyn Fn(TermEvent) + Send + Sync>,
+    on_event: Callback,
     term: Weak<FairMutex<Term<Listener>>>,
     pty: EventLoopSender,
     shared: Arc<Shared>,
@@ -330,8 +333,14 @@ impl Dispatcher {
     }
 
     fn emit(&self, event: TermEvent) {
-        if !self.shared.closed.load(Ordering::Relaxed) {
-            (self.on_event)(event);
+        if self.shared.closed.load(Ordering::Relaxed) {
+            return;
+        }
+        // A panic in the application's callback must not take this thread with it: the
+        // child would never get another answer and the application never another event.
+        let call = AssertUnwindSafe(|| (self.on_event)(event));
+        if std::panic::catch_unwind(call).is_err() {
+            log::error!("the terminal's event callback panicked");
         }
     }
 
@@ -434,13 +443,43 @@ impl Terminal {
     /// it than passing the event on to the application's loop. Events can arrive before
     /// this function has returned.
     ///
-    /// Fails when no pty can be had or the program cannot be run; see
-    /// [`TermError::is_program_missing`](crate::TermError::is_program_missing) for the
-    /// failure worth falling back to a shell for.
-    pub fn spawn(
+    /// Fails when no pty can be had or the program cannot be run. To run something else
+    /// in that case, use [`Terminal::spawn_with_fallback`].
+    pub fn spawn(config: TermConfig, on_event: Callback) -> Result<Terminal> {
+        Terminal::start(config, on_event).map_err(|(error, _)| error)
+    }
+
+    /// Like [`Terminal::spawn`], but when the program in `config` cannot be started (it
+    /// is not installed, or the file is not something that runs), `fallback` is started in
+    /// its place. This is how a terminal panel always comes up: herdr when it is there,
+    /// the shell when it is not.
+    ///
+    /// The second value is `None` when `config` started, and the reason it did not when
+    /// `fallback` was used; show it to the user. A program that starts and then exits by
+    /// itself is not a failure to start: that is a [`TermEvent::Exit`] like any other.
+    /// Errors that have nothing to do with the program, such as the system being out of
+    /// ptys, are returned without trying `fallback`.
+    pub fn spawn_with_fallback(
         config: TermConfig,
-        on_event: Box<dyn Fn(TermEvent) + Send + Sync>,
-    ) -> Result<Terminal> {
+        fallback: TermConfig,
+        on_event: Callback,
+    ) -> Result<(Terminal, Option<TermError>)> {
+        match Terminal::start(config, on_event) {
+            Ok(terminal) => Ok((terminal, None)),
+            Err((error @ TermError::Spawn { .. }, Some(on_event))) => {
+                let terminal = Terminal::start(fallback, on_event).map_err(|(error, _)| error)?;
+                Ok((terminal, Some(error)))
+            }
+            Err((error, _)) => Err(error),
+        }
+    }
+
+    /// Start a terminal. On failure the callback is handed back, unless the failure came
+    /// after it had been given to its thread.
+    fn start(
+        config: TermConfig,
+        on_event: Callback,
+    ) -> std::result::Result<Terminal, (TermError, Option<Callback>)> {
         let geometry = Geometry::new(
             config.cols,
             config.rows,
@@ -489,10 +528,16 @@ impl Terminal {
         let on_abandon = Box::new(move || {
             let _ = queue.send(Internal::Lost);
         });
-        let pty = pty::spawn(&config, geometry.window_size(), tap, on_abandon)?;
+        let pty = match pty::spawn(&config, geometry.window_size(), tap, on_abandon) {
+            Ok(pty) => pty,
+            Err(error) => return Err((error, Some(on_event))),
+        };
         let child = pty.child_handle();
 
-        let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
+        let event_loop = match EventLoop::new(term.clone(), listener, pty, true, false) {
+            Ok(event_loop) => event_loop,
+            Err(error) => return Err((error.into(), Some(on_event))),
+        };
         let sender = event_loop.channel();
         let dispatcher = Dispatcher {
             queue: receiver,
@@ -504,9 +549,10 @@ impl Terminal {
             last_bell: None,
             exit_reported: false,
         };
-        std::thread::Builder::new()
-            .name("bakedit-term-events".to_string())
-            .spawn(move || dispatcher.run())?;
+        let events = std::thread::Builder::new().name("bakedit-term-events".to_string());
+        if let Err(error) = events.spawn(move || dispatcher.run()) {
+            return Err((error.into(), None));
+        }
         // The reader thread is left to itself: it ends when the child does or when the
         // terminal is dropped, and takes the pty with it.
         drop(event_loop.spawn());
