@@ -42,3 +42,6 @@ mod shell_tests;
 
 #[cfg(test)]
 mod keys_tests;
+
+#[cfg(test)]
+mod handlers_tests;
