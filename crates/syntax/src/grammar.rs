@@ -371,7 +371,8 @@ fn custom_predicates(query: &Query, pattern: usize) -> Option<Vec<Predicate>> {
 ///
 /// * Numbers and booleans are filed under `constant.builtin`; Zed has `number` and `boolean`.
 /// * The all-caps pattern never matches because of a stray quote in its regex
-///   (`"^[A-Z][A-Z\\d_]+$'"`), so constants come out as constructors.
+///   (`"^[A-Z][A-Z\\d_]+$'"`), so constants come out as constructors. As in Zed, the pattern
+///   here also takes a single capital (`N`) and leading underscores (`_UNUSED`).
 /// * Only `*`, `&` and `'` are captured as operators. The list here is the one Zed uses. It
 ///   includes `<` and `>`, so the patterns that make them brackets around generics are
 ///   repeated after it.
@@ -379,7 +380,7 @@ const RUST_EXTRA: &str = r#"
 [(integer_literal) (float_literal)] @number
 (boolean_literal) @boolean
 ((identifier) @constant
- (#match? @constant "^[A-Z][A-Z\\d_]+$"))
+ (#match? @constant "^_*[A-Z][A-Z\\d_]*$"))
 
 [
   "!=" "%" "%=" "&" "&=" "&&" "*" "*=" "+" "+=" "-" "-=" "->" ".." "..=" "..." "/="

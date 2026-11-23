@@ -88,6 +88,23 @@ fn rust_macro_arguments_are_highlighted_as_rust() {
 }
 
 #[test]
+fn rust_constants_may_be_one_letter_or_start_with_an_underscore() {
+    let text = "fn fill<const N: usize>() -> [u8; N] {\n    [_FILL; N]\n}\nfn id<T>(value: T) -> T {\n    value\n}\n";
+    check_captures(
+        "rust",
+        text,
+        &[
+            ("const «N»", "constant"),
+            ("[u8; «N»]", "constant"),
+            ("«_FILL»", "constant"),
+            // A type parameter is still a type, whatever its length.
+            ("id<«T»>", "type"),
+            ("value: «T»", "type"),
+        ],
+    );
+}
+
+#[test]
 fn python() {
     check(
         "python",
