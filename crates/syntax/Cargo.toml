@@ -7,9 +7,45 @@ publish.workspace = true
 
 [dependencies]
 bakedit-core.workspace = true
-tree-sitter.workspace = true
-tree-sitter-highlight.workspace = true
+crossbeam-channel.workspace = true
+regex.workspace = true
 thiserror.workspace = true
+tree-sitter.workspace = true
+
+# Grammars. Every one of these exports a `LanguageFn` through `tree-sitter-language`, so
+# none pins its own copy of the tree-sitter runtime (the runtime `links` to a native
+# library, so a second copy would not even resolve).
+tree-sitter-bash = "0.25.1"
+tree-sitter-c = "0.24.2"
+tree-sitter-c-sharp = "0.24.0"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-css = "0.25.0"
+tree-sitter-dart = "0.3.0"
+tree-sitter-diff = "0.1.0"
+tree-sitter-dockerfile-orchard = "0.1.0"
+tree-sitter-gitcommit = "0.5.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-gomod-orchard = "0.5.8"
+tree-sitter-html = "0.23.2"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-json = "0.24.8"
+tree-sitter-kotlin-sg = "0.4.1"
+tree-sitter-lua = "0.5.0"
+tree-sitter-make = "1.1.1"
+tree-sitter-md = "0.5.4"
+tree-sitter-nix = "0.3.0"
+tree-sitter-php = "0.25.2"
+tree-sitter-python = "0.25.0"
+tree-sitter-regex = "0.25.0"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.2"
+tree-sitter-sequel = "0.3.13"
+tree-sitter-swift = "0.7.4"
+tree-sitter-toml-ng = "0.7.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-yaml = "0.7.2"
+tree-sitter-zig = "1.1.2"
 
 [dev-dependencies]
 tempfile.workspace = true
