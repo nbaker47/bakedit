@@ -6,13 +6,17 @@
 //! - [`Parser`] turns the bytes read from the host terminal into
 //!   [`InputEvent`](bakedit_core::InputEvent)s.
 //! - [`host`] holds every control string the app writes to the host terminal.
+//! - [`NavLayer`] is the built-in nav layer: hold `;` and the home row becomes arrows and
+//!   modifiers.
 //! - [`HeldMods`] tracks which modifier keys are physically down, for mouse clicks.
 
 #![warn(missing_docs)]
 
 mod held;
 pub mod host;
+mod nav;
 mod parser;
 
 pub use held::HeldMods;
+pub use nav::{NavLayer, NavLayerConfig};
 pub use parser::{Parser, MAX_PASTE_LEN, MAX_STRING_LEN};
