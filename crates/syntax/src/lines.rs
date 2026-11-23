@@ -195,6 +195,58 @@ mod tests {
     }
 
     #[test]
+    fn counts_lines_exactly_as_a_rope_does() {
+        // Every line break a rope knows, bytes that begin like one, and ordinary text.
+        let pieces = [
+            "\n", "\r", "\r\n", "\u{b}", "\u{c}", "\u{85}", "\u{2028}", "\u{2029}", "\u{86}",
+            "\u{2027}", "\u{202a}", "a", " ", "é", "漢", "\t",
+        ];
+        let breaks = &pieces[..8];
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as usize
+        };
+        for _ in 0..2000 {
+            let text: String = (0..next() % 24)
+                .map(|_| pieces[next() % pieces.len()])
+                .collect();
+            let rope = ropey::Rope::from_str(&text);
+            let ranges: Vec<Range<usize>> = line_ranges(&text, LineBreaks::Unicode).collect();
+            assert_eq!(ranges.len(), rope.len_lines(), "{text:?}");
+            for (line, range) in ranges.iter().enumerate() {
+                assert_eq!(range.start, rope.line_to_byte(line), "{text:?} line {line}");
+                // What lies between this line's content and the next line is one break.
+                let next_start = ranges.get(line + 1).map_or(text.len(), |next| next.start);
+                let between = &text[range.end..next_start];
+                let is_last = line + 1 == ranges.len();
+                assert_eq!(between.is_empty(), is_last, "{text:?} line {line}");
+                assert!(is_last || breaks.contains(&between), "{text:?} line {line}");
+            }
+            // The first and last byte offsets of each line's content are on that line.
+            let offsets: Vec<usize> = ranges
+                .iter()
+                .flat_map(|range| [range.start, range.end])
+                .collect();
+            let expected: Vec<usize> = offsets
+                .iter()
+                .map(|&offset| rope.byte_to_line(offset))
+                .collect();
+            assert_eq!(
+                lines_of_offsets(&text, &offsets, LineBreaks::Unicode),
+                expected,
+                "{text:?}"
+            );
+            assert_eq!(
+                LineHighlights::new(&text, &[]).line_count(),
+                rope.len_lines()
+            );
+        }
+    }
+
+    #[test]
     fn lf_mode_breaks_only_at_line_feeds() {
         use LineBreaks::Lf;
         assert_eq!(lines_of("a\nb", Lf), ["a", "b"]);
