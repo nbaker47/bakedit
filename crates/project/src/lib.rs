@@ -2,6 +2,7 @@
 
 pub mod fileops;
 pub mod icons;
+pub mod tree;
 
 mod ignore_rules;
 mod order;
@@ -9,3 +10,4 @@ mod order;
 pub use fileops::FileOpError;
 pub use icons::{ascii_icon_for, icon_for, Icon};
 pub use ignore_rules::{is_always_hidden, ALWAYS_HIDDEN};
+pub use tree::{Clipboard, FileTree, Row, RowKind};
