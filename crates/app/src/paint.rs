@@ -326,7 +326,25 @@ pub struct ScrollMarks {
     pub cursor_line: Option<usize>,
 }
 
-// A drawing call: position, extent and scroll state are all plain numbers.
+/// How many lines the scrollbar's track stands for: the file plus the empty page you can
+/// scroll into past its end (`visible` is how many lines the view holds).
+fn scrollbar_span(total_lines: usize, visible: usize) -> usize {
+    (total_lines.max(1) + visible.saturating_sub(1)).max(1)
+}
+
+/// The line a click on row `row` of a scrollbar `height` rows tall points at: the inverse of
+/// where [`scrollbar`] draws a line's marks, clamped to the file.
+pub fn scrollbar_line_at(row: u16, height: u16, total_lines: usize, visible: usize) -> usize {
+    let track = height.max(1) as usize;
+    let span = scrollbar_span(total_lines, visible);
+    let row = (row as usize).min(track - 1);
+    // The first line drawn on this row.
+    (row * span).div_ceil(track).min(total_lines.saturating_sub(1))
+}
+
+// A drawing call: position, extent and scroll state are all plain numbers. `visible` is how
+// many lines the view holds (its height), not how many the file has on screen: the track
+// keeps its scale when a short file, or the end of a long one, leaves the view part empty.
 #[allow(clippy::too_many_arguments)]
 pub fn scrollbar(
     canvas: &mut Canvas<'_>,
@@ -344,8 +362,7 @@ pub fn scrollbar(
     }
     let track = height as usize;
     let total = total_lines.max(1);
-    // The track stands for the file plus the empty page you can scroll into past its end.
-    let span = (total + visible.saturating_sub(1)).max(1);
+    let span = scrollbar_span(total_lines, visible);
     let row_of = |line: usize| -> usize { (line.min(span - 1) * track / span).min(track - 1) };
     let thumb_start = row_of(top);
     let thumb_len = (visible.max(1) * track).div_ceil(span).clamp(1, track - thumb_start);
@@ -617,6 +634,16 @@ mod tests {
             scrollbar(&mut canvas, 0, 0, 10, 5, 0, 20, &ScrollMarks::default(), &theme);
         }
         assert!((0..10).all(|y| buf[(0, y)].bg != thumb));
+        // A click on a row lands on the line whose marks are drawn there.
+        for line in [0, 37, 50, 99] {
+            let span = 100 + 20 - 1;
+            let row = (line * 10 / span) as u16;
+            let back = scrollbar_line_at(row, 10, 100, 20);
+            assert_eq!((back * 10 / span) as u16, row, "line {line}: row {row}, back to line {back}");
+        }
+        assert_eq!(scrollbar_line_at(0, 10, 100, 20), 0);
+        assert_eq!(scrollbar_line_at(99, 10, 100, 20), 99, "past the end: the last line");
+        assert_eq!(scrollbar_line_at(3, 0, 0, 0), 0, "odd sizes");
         // Odd sizes do not panic.
         let mut buf = Buffer::empty(area);
         let mut canvas = Canvas::new(&mut buf, area);

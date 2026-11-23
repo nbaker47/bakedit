@@ -738,6 +738,21 @@ fn clicks_drags_double_and_triple_clicks_and_alt_click() {
 }
 
 #[test]
+fn a_short_file_marks_the_scrollbar_where_its_lines_are() {
+    let mut harness = Harness::new("/project");
+    harness.settings.breadcrumbs = false;
+    let mut item = plain(&mut harness, "one\ntwo\nthree\n");
+    act(&mut item, &mut harness, "editor::MoveDown");
+    let (frame, _, _) = harness.draw(&mut item, 60, 30);
+    let bar = item.geo.scrollbar;
+    let rows: Vec<&str> = frame.lines().collect();
+    let marker = rows.iter().position(|row| row.chars().nth(bar.x as usize) == Some('━'));
+    // Three lines in a 30-row view: the track stands for 3 + 29 lines, so line 2's mark is
+    // on the first row, beside it, not stretched down the bar.
+    assert_eq!(marker, Some(bar.y as usize), "{frame}");
+}
+
+#[test]
 fn the_minimap_and_scrollbar_jump_on_a_click() {
     let mut harness = Harness::new("/project");
     harness.settings.breadcrumbs = false;

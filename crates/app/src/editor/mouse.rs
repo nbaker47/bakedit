@@ -104,8 +104,8 @@ impl EditorItem {
     fn scrollbar_jump(&mut self, row: u16) {
         let area = self.geo.scrollbar;
         let total = self.editor.buffer().len_lines();
-        let rel = row.saturating_sub(area.y).min(area.height.saturating_sub(1)) as usize;
-        let line = rel * total / (area.height.max(1) as usize);
+        // The same scale the bar is drawn at: the file and one page past its end.
+        let line = crate::paint::scrollbar_line_at(row.saturating_sub(area.y), area.height, total, area.height as usize);
         self.jump_to_line(line);
     }
 

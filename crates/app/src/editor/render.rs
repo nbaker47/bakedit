@@ -395,7 +395,8 @@ impl EditorItem {
             let match_color = theme.search_match_bg.lerp(theme.text_accent, 0.45);
             marks.extend(self.match_lines(MATCH_MARKS).into_iter().map(|line| (line, match_color)));
             let marks = ScrollMarks { marks, cursor_line: Some(cursor_line) };
-            paint::scrollbar(canvas, self.geo.scrollbar.x, body.y, body.height, line_count, self.scroll.line, self.geo.viewport_lines, &marks, theme);
+            // The track's scale is the view's height, so marks stay put while scrolling.
+            paint::scrollbar(canvas, self.geo.scrollbar.x, body.y, body.height, line_count, self.scroll.line, body.height as usize, &marks, theme);
         }
 
         // ---- breadcrumbs and the find bar ---------------------------------------------
