@@ -52,7 +52,7 @@ const WHEEL_ROWS: usize = 3;
 /// The commit message box grows with its text up to this many rows, then scrolls.
 const MESSAGE_MAX_ROWS: usize = 8;
 /// ...and is never shorter than this, so it reads as a box.
-const MESSAGE_MIN_ROWS: usize = 3;
+const MESSAGE_MIN_ROWS: usize = 2;
 /// The list never gets fewer rows than this when the panel is short.
 const MIN_LIST_ROWS: u16 = 2;
 /// The counts of added and removed lines are read at most this often.
@@ -160,6 +160,8 @@ pub struct GitPanel {
     // Where things were drawn, for the mouse.
     list_area: Rect,
     message_area: Rect,
+    /// The rows of the message box that hold text (the band minus its padding).
+    message_text: Rect,
     commit_button: Rect,
     amend_button: Rect,
     visual: Vec<VisualRow>,
@@ -374,6 +376,7 @@ impl GitPanel {
             pending: Vec::new(),
             list_area: Rect::default(),
             message_area: Rect::default(),
+            message_text: Rect::default(),
             commit_button: Rect::default(),
             amend_button: Rect::default(),
             visual: Vec::new(),
@@ -783,7 +786,7 @@ impl GitPanel {
         if self.committing() {
             return true;
         }
-        let rows = self.message_area.height.max(1) as usize;
+        let rows = self.message_text.height.max(1) as usize;
         let outcome = self.message.apply(command.with_page_rows(rows));
         if let Some(clip) = outcome.clipboard {
             cx.clipboard.set(&clip.text, clip.linewise);
@@ -832,10 +835,10 @@ impl GitPanel {
     }
 
     fn message_position_at(&self, col: u16, row: u16) -> usize {
-        let index = (self.message_top + row.saturating_sub(self.message_area.y) as usize).min(self.visual.len().saturating_sub(1));
+        let index = (self.message_top + row.saturating_sub(self.message_text.y) as usize).min(self.visual.len().saturating_sub(1));
         let Some(visual) = self.visual.get(index) else { return 0 };
         let first = self.message.line_rows(visual.line).iter().position(|range| *range == visual.range).unwrap_or(0);
-        let x = col.saturating_sub(self.message_area.x + 1) as usize;
+        let x = col.saturating_sub(self.message_text.x) as usize;
         self.message.position_at(DisplayPosition { line: visual.line, row: first, col: x })
     }
 }
@@ -1089,16 +1092,17 @@ impl GitPanel {
 
     fn draw_message(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
         let theme = cx.theme;
-        canvas.fill(area, theme.editor_bg);
+        // The box is a band of its own colour: no border, a row of padding above and below.
+        let bg = theme.elevated_surface;
+        canvas.fill(area, bg);
         if area.height == 0 || area.width < 4 {
             return None;
         }
-        let text_x = area.x + 1;
-        let text_w = area.width - 2;
-        self.message.settings_mut().wrap_width = Some(text_w as usize);
-        self.visual = self.visual_rows();
+        let pad = u16::from(area.height >= 4);
+        let text_area = Rect::new(area.x + 1, area.y + pad, area.width - 2, area.height - 2 * pad);
+        self.message_text = text_area;
+        let rows = text_area.height as usize;
         let (cursor_row, cursor_col) = self.message_cursor();
-        let rows = area.height as usize;
         if self.reveal_message {
             if cursor_row < self.message_top {
                 self.message_top = cursor_row;
@@ -1111,11 +1115,13 @@ impl GitPanel {
         let buffer = self.message.buffer();
         if buffer.is_empty() {
             let hint = if self.amending.is_some() { "Amended commit message" } else { "Commit message" };
-            canvas.text_truncated(text_x, area.y, hint, Style::colors(theme.text_placeholder, theme.editor_bg), text_w);
+            canvas.text_truncated(text_area.x, text_area.y, hint, Style::colors(theme.text_placeholder, bg), text_area.width);
         }
         let selections: Vec<Range<usize>> = self.message.selections().iter().filter(|s| !s.is_empty()).map(|s| s.range()).collect();
         let options = PaintOptions { tab_size: 4, left: 0, show_indent_guides: false, colorize_brackets: false, show_whitespace_in_selection: false };
+        let editor_bg = ui::color(theme.editor_bg);
         for (offset, visual) in self.visual.iter().skip(self.message_top).take(rows).enumerate() {
+            let y = text_area.y + offset as u16;
             let text = buffer.line_text(visual.line);
             let line_start = buffer.line_to_char(visual.line);
             let line_len = buffer.line_len(visual.line);
@@ -1127,13 +1133,22 @@ impl GitPanel {
             let mut row = Row::plain(&text);
             row.segment = visual.range.clone();
             row.selections = &local;
-            paint::row(canvas, text_x, area.y + offset as u16, text_w, &row, &options, theme);
+            paint::row(canvas, text_area.x, y, text_area.width, &row, &options, theme);
+            // The row painter fills with the editor's colour: put the box's own back.
+            for x in text_area.x..text_area.right() {
+                if let Some(cell) = canvas.cell_mut(x, y) {
+                    if cell.bg == editor_bg {
+                        cell.bg = ui::color(bg);
+                    }
+                }
+            }
         }
         let shown = cursor_row >= self.message_top && cursor_row < self.message_top + rows;
         if !(cx.focused && self.focus == PanelFocus::Editor && shown) {
             return None;
         }
-        Some(Cursor { col: text_x + (cursor_col as u16).min(text_w.saturating_sub(1)), row: area.y + (cursor_row - self.message_top) as u16, shape: CursorShape::Bar })
+        let col = text_area.x + (cursor_col as u16).min(text_area.width.saturating_sub(1));
+        Some(Cursor { col, row: text_area.y + (cursor_row - self.message_top) as u16, shape: CursorShape::Bar })
     }
 
     fn draw_buttons(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
@@ -1175,6 +1190,7 @@ impl View for GitPanel {
         canvas.fill(area, theme.panel_bg);
         self.list_area = Rect::default();
         self.message_area = Rect::default();
+        self.message_text = Rect::default();
         self.commit_button = Rect::default();
         self.amend_button = Rect::default();
         if area.width < 4 || area.height == 0 {
@@ -1185,8 +1201,11 @@ impl View for GitPanel {
             self.draw_empty(canvas, area, cx);
             return None;
         }
-        let wanted = self.message.buffer().len_lines().max(self.visual.len()).clamp(MESSAGE_MIN_ROWS, MESSAGE_MAX_ROWS);
-        let layout = layout(area, wanted);
+        // The box is as tall as its wrapped text (and its padding), so wrap first.
+        self.message.settings_mut().wrap_width = Some(area.width.saturating_sub(2) as usize);
+        self.visual = self.visual_rows();
+        let padding = 2;
+        let layout = layout(area, self.visual.len().clamp(MESSAGE_MIN_ROWS, MESSAGE_MAX_ROWS) + padding);
         self.draw_header(canvas, layout.header, cx);
         self.list_area = layout.list;
         self.draw_list(canvas, layout.list, cx);
@@ -1283,7 +1302,7 @@ impl View for GitPanel {
             MouseKind::ScrollDown | MouseKind::ScrollUp => {
                 let down = event.kind == MouseKind::ScrollDown;
                 if inside(self.message_area) {
-                    let max = self.visual.len().saturating_sub(self.message_area.height as usize);
+                    let max = self.visual.len().saturating_sub(self.message_text.height as usize);
                     self.message_top = if down { (self.message_top + 1).min(max) } else { self.message_top.saturating_sub(1) };
                 } else {
                     let max = self.list_rows().len().saturating_sub(self.list_area.height as usize);
@@ -1690,7 +1709,7 @@ mod tests {
         panel.handle_mouse(&click(1, 2), area, &mut harness.cx());
         until(&mut harness, &mut panel, "a.txt staged", |p| p.changes.iter().any(|c| c.path == Path::new("a.txt") && c.stage == StageState::Staged));
         // A click in the message box moves the focus there.
-        let box_row = panel.message_area.y;
+        let box_row = panel.message_text.y;
         panel.handle_mouse(&click(5, box_row), area, &mut harness.cx());
         assert_eq!(panel.focus, PanelFocus::Editor);
     }

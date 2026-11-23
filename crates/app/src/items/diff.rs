@@ -517,7 +517,7 @@ impl ProjectDiff {
     fn draw_file_header(&self, canvas: &mut Canvas<'_>, area: Rect, y: u16, index: usize, selected: bool, cx: &RenderCx<'_>) {
         let theme = cx.theme;
         let file = &self.files[index];
-        let bg = if selected { theme.element_selected } else { theme.surface };
+        let bg = if selected { theme.element_selected } else { theme.elevated_surface };
         canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
         let mut x = area.x + 1;
         let (box_glyph, box_color) = match (cx.settings.icons, self.stage_state(file, cx)) {
