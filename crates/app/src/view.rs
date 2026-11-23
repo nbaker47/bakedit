@@ -16,6 +16,8 @@ use ratatui::layout::Rect;
 
 use crate::chrome::Tab;
 use crate::clipboard::Clipboard;
+use crate::picker::PickerItem;
+use crate::project::Project;
 use crate::settings::Settings;
 use crate::ui::Canvas;
 use crate::workspace::{Focus, PanelId};
@@ -110,6 +112,9 @@ pub enum Effect {
     PathsChanged(Vec<PathBuf>),
     /// Close the tab this view lives in (sent by an item about itself).
     CloseItem,
+    /// Leave this project and open another directory in this window. Unsaved files are
+    /// asked about first, as when quitting.
+    OpenProject(PathBuf),
     Quit,
 }
 
@@ -127,14 +132,46 @@ impl Effect {
     }
 }
 
+/// Files that changed on disk: what the file watcher saw, or what a view did itself and
+/// reported with [`Effect::PathsChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FsChange {
+    /// Absolute paths that were created, written, renamed or removed.
+    pub paths: Vec<PathBuf>,
+    /// So much changed that the paths were not listed: treat everything as changed.
+    pub rescan: bool,
+}
+
+impl FsChange {
+    /// A change of exactly these paths.
+    pub fn of(paths: Vec<PathBuf>) -> FsChange {
+        FsChange { paths, rescan: false }
+    }
+
+    /// Whether `path` may have changed: it is listed, something above it is listed (its
+    /// folder was renamed or removed), or everything is to be re-read.
+    pub fn touches(&self, path: &Path) -> bool {
+        self.rescan || self.paths.iter().any(|changed| path.starts_with(changed))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.rescan && self.paths.is_empty()
+    }
+}
+
 /// What a view may read and use while it handles input.
 pub struct Cx<'a> {
     pub settings: &'a Settings,
     pub theme: &'a Theme,
     pub clipboard: &'a mut Clipboard,
     pub effects: &'a mut Vec<Effect>,
-    /// The project directory.
+    /// What every view shares: the git repository and its status, the file index, recent
+    /// files, the waker for background work. See `project.rs`.
+    pub project: &'a Project,
+    /// The project directory (`project.root()`).
     pub root: &'a Path,
+    /// The file in the front tab of the centre, if that tab shows a file.
+    pub active_path: Option<&'a Path>,
     pub now: Instant,
     /// Modifier keys physically held right now, including the command key, which mouse
     /// events cannot report.
@@ -159,7 +196,10 @@ impl Cx<'_> {
 pub struct RenderCx<'a> {
     pub settings: &'a Settings,
     pub theme: &'a Theme,
+    pub project: &'a Project,
     pub root: &'a Path,
+    /// The file in the front tab of the centre, if that tab shows a file.
+    pub active_path: Option<&'a Path>,
     pub now: Instant,
     /// This view has the keyboard focus.
     pub focused: bool,
@@ -178,7 +218,10 @@ pub trait View {
     /// Offer an action. Return false to let the next candidate or the shell have it.
     fn handle_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool;
 
-    /// A key press no binding claimed (typed text, mostly). Return false if unused.
+    /// A key event no binding claimed. Mostly that is a press that types text
+    /// (`key.text`), but the releases of such presses and modifier keys pressed on their
+    /// own arrive here too, so that a terminal can pass them to a program that asked for
+    /// them: check [`KeyEvent::is_down`] before acting. Return false if unused.
     fn handle_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool;
 
     /// Pasted text from the host terminal.
@@ -187,22 +230,52 @@ pub trait View {
         false
     }
 
-    /// A mouse event inside `area` (coordinates are screen cells).
+    /// A mouse event for this view, drawn in `area` (coordinates are screen cells).
+    /// `event.mods` already includes the command key when it is held. Once a button goes
+    /// down in a view, the drags and the release that follow come to that view even when
+    /// the pointer has left `area`.
     fn handle_mouse(&mut self, event: &MouseEvent, area: Rect, cx: &mut Cx<'_>) -> bool {
         let _ = (event, area, cx);
         false
     }
 
-    /// The view gained or lost the keyboard focus.
+    /// The view gained or lost the keyboard focus. Losing it includes the whole window
+    /// losing the focus to another application.
     fn focus_changed(&mut self, focused: bool, cx: &mut Cx<'_>) {
         let _ = (focused, cx);
     }
 
-    /// Called regularly (and after background work signals): poll channels, advance timers.
+    /// Called after background work signals ([`Waker::wake`](crate::background::Waker::wake))
+    /// and at any time asked for with `wake_at`: poll tasks and channels, advance timers.
     /// Return true if the view needs redrawing.
     fn tick(&mut self, cx: &mut Cx<'_>) -> bool {
         let _ = cx;
         false
+    }
+
+    /// Files changed on disk: reload or re-read what this view shows of them.
+    fn paths_changed(&mut self, change: &FsChange, cx: &mut Cx<'_>) {
+        let _ = (change, cx);
+    }
+
+    /// Every row for a picker only this view can fill: [`PickerKind::Links`] is asked of
+    /// the terminal panel, [`PickerKind::Outline`] of the tab in front. The shell filters
+    /// the rows by what is typed and draws them. `None` means this view has no such list.
+    fn picker_rows(&mut self, kind: PickerKind, cx: &mut Cx<'_>) -> Option<Vec<PickerItem>> {
+        let _ = (kind, cx);
+        None
+    }
+
+    /// The row highlighted in that picker changed (`row` indexes what
+    /// [`View::picker_rows`] returned), or with `None` the picker was dismissed without a
+    /// choice: show a preview, or put back whatever a preview moved.
+    fn picker_preview(&mut self, kind: PickerKind, row: Option<usize>, cx: &mut Cx<'_>) {
+        let _ = (kind, row, cx);
+    }
+
+    /// A row of that picker was chosen (`secondary` for cmd-enter).
+    fn picker_confirm(&mut self, kind: PickerKind, row: usize, secondary: bool, cx: &mut Cx<'_>) {
+        let _ = (kind, row, secondary, cx);
     }
 }
 
@@ -229,6 +302,9 @@ pub trait ItemFactory {
     fn project_diff(&mut self, cx: &mut Cx<'_>) -> Box<dyn Item>;
     /// The project search view.
     fn project_search(&mut self, replace: bool, cx: &mut Cx<'_>) -> Box<dyn Item>;
+    /// A page of text that cannot be edited (the list of key bindings, the built-in
+    /// keymap). `language` is a language name to colour it as ("JSON"), if any.
+    fn read_only(&mut self, title: &str, text: &str, language: Option<&str>, cx: &mut Cx<'_>) -> Box<dyn Item>;
 }
 
 /// The pickers whose rows come from outside the shell.
@@ -244,12 +320,21 @@ pub enum PickerKind {
     RecentProjects,
 }
 
-/// Supplies rows for the pickers the shell does not fill itself, and acts on the choice.
+/// Supplies rows for the pickers whose rows depend on what is typed and come from the
+/// project rather than from one view (files, branches, recent projects), and acts on the
+/// choice.
 pub trait PickerSource {
-    fn rows(&mut self, kind: PickerKind, query: &str, cx: &mut Cx<'_>) -> Vec<crate::picker::PickerItem>;
+    fn rows(&mut self, kind: PickerKind, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem>;
     /// `row` is the selected row's index in what `rows` last returned, or `None` when the
     /// list was empty and the bare query was confirmed.
     fn confirm(&mut self, kind: PickerKind, row: Option<usize>, query: &str, secondary: bool, cx: &mut Cx<'_>);
+    /// A number that changes when `rows` would answer differently for the same query (the
+    /// file index grew, the branch list arrived). The shell asks while the picker is open
+    /// and refills it, keeping the selection, when the number moves.
+    fn version(&mut self, kind: PickerKind, cx: &mut Cx<'_>) -> u64 {
+        let _ = (kind, cx);
+        0
+    }
 }
 
 /// A view that lives in a tab of the centre.
@@ -259,7 +344,8 @@ pub trait Item: View {
         ItemStatus::default()
     }
 
-    /// A stable name for what this item is ("editor", "project_diff", "project_search").
+    /// A stable name for what this item is ("editor", "project_diff", "project_search",
+    /// "page" for read-only text).
     fn kind(&self) -> &'static str {
         "editor"
     }
@@ -292,9 +378,20 @@ pub trait Item: View {
         None
     }
 
-    /// Files on disk changed: reload if this item shows one of them.
-    fn paths_changed(&mut self, paths: &[PathBuf], cx: &mut Cx<'_>) {
-        let _ = (paths, cx);
+    /// The first line shown (0-based), for the session file.
+    fn scroll_top(&self) -> Option<u32> {
+        None
+    }
+
+    /// Scroll so that `line` (0-based) is the first one shown, when a session is restored.
+    fn set_scroll_top(&mut self, line: u32) {
+        let _ = line;
+    }
+
+    /// What a search started from this tab should look for first: the selection, or the
+    /// word at the cursor.
+    fn query_suggestion(&self) -> Option<String> {
+        None
     }
 
     fn as_any(&self) -> &dyn Any;
@@ -311,6 +408,20 @@ mod tests {
         assert_eq!(context.name, "Editor");
         assert_eq!(context.flags, vec!["multibuffer", "yes"]);
         assert_eq!(context.values, vec![("mode", "full".to_string())]);
+    }
+
+    #[test]
+    fn fs_changes_touch_listed_paths_and_what_is_below_them() {
+        let change = FsChange::of(vec!["/p/src".into(), "/p/a.rs".into()]);
+        assert!(change.touches(Path::new("/p/a.rs")));
+        assert!(change.touches(Path::new("/p/src/deep/b.rs")), "a renamed folder touches its files");
+        assert!(!change.touches(Path::new("/p/src2/b.rs")), "a name that merely starts the same is another folder");
+        assert!(!change.touches(Path::new("/p")));
+        assert!(!change.is_empty());
+        let rescan = FsChange { paths: Vec::new(), rescan: true };
+        assert!(rescan.touches(Path::new("/anything")));
+        assert!(!rescan.is_empty());
+        assert!(FsChange::default().is_empty());
     }
 
     #[test]
