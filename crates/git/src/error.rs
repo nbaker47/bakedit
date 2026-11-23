@@ -33,7 +33,7 @@ pub enum GitError {
 
     /// A network command ran longer than the repository's network timeout and was
     /// stopped. `output` is whatever it had written until then.
-    #[error("git {command} did not finish within {} seconds and was stopped", .limit.as_secs())]
+    #[error("git {command} did not finish within {limit:?} and was stopped")]
     TimedOut {
         /// The git subcommand, for example `fetch`.
         command: String,
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(timed_out.git_output(), Some("From somewhere"));
         assert_eq!(
             timed_out.to_string(),
-            "git fetch did not finish within 300 seconds and was stopped"
+            "git fetch did not finish within 300s and was stopped"
         );
     }
 
