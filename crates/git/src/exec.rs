@@ -311,9 +311,10 @@ fn supervise(
         None => None,
     };
 
-    let status = match limit {
+    // A limit too long to be a point in time is no limit.
+    let status = match limit.and_then(|limit| Instant::now().checked_add(limit)) {
         None => Some(child.wait()?),
-        Some(limit) => match wait_until(child, Instant::now() + limit)? {
+        Some(deadline) => match wait_until(child, deadline)? {
             Some(status) => Some(status),
             None => {
                 stop(child)?;
