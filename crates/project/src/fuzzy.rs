@@ -103,6 +103,55 @@ pub struct FileMatch {
     pub indices: Vec<usize>,
 }
 
+/// The set of characters a text contains, folded to one bit each: a cheap way to tell
+/// that a path cannot match a query without looking at the path itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CharBag(u64);
+
+impl CharBag {
+    const NON_ASCII: u64 = 1 << 63;
+
+    /// The characters of a path. A path with a non-ASCII character counts as having
+    /// every character, because the matcher treats `e` and `é` as the same letter.
+    pub(crate) fn of_path(path: &str) -> CharBag {
+        if !path.is_ascii() {
+            return CharBag(u64::MAX);
+        }
+        CharBag(path.bytes().fold(0, |bag, byte| bag | CharBag::bit(byte)))
+    }
+
+    /// The characters a path needs to have for `word` to match it.
+    fn needed_for(word: &str) -> CharBag {
+        CharBag(word.chars().fold(0, |bag, c| {
+            bag | match u8::try_from(c) {
+                Ok(byte) if byte.is_ascii() => CharBag::bit(byte),
+                _ => CharBag::NON_ASCII,
+            }
+        }))
+    }
+
+    /// Whether this bag has every character of `needed`.
+    pub(crate) fn has_all(self, needed: CharBag) -> bool {
+        self.0 & needed.0 == needed.0
+    }
+
+    /// Letters ignore case; everything that is not a letter, a digit or one of the
+    /// usual path punctuation marks shares one bit.
+    fn bit(byte: u8) -> u64 {
+        let index = match byte {
+            b'a'..=b'z' => byte - b'a',
+            b'A'..=b'Z' => byte - b'A',
+            b'0'..=b'9' => 26 + (byte - b'0'),
+            b'/' => 36,
+            b'.' => 37,
+            b'_' => 38,
+            b'-' => 39,
+            _ => 40,
+        };
+        1 << index
+    }
+}
+
 /// One whitespace-separated word of the query, prepared for matching.
 struct Word {
     /// The word as typed.
@@ -117,12 +166,14 @@ struct Word {
 /// A parsed file finder query: the words that all have to match.
 pub(crate) struct Query {
     words: Vec<Word>,
+    /// The characters a path must contain to have any chance of matching.
+    needed: CharBag,
 }
 
 impl Query {
     /// Prepare `text` for matching. A leading `./` on a word is dropped.
     pub(crate) fn new(text: &str) -> Query {
-        let words = text
+        let words: Vec<Word> = text
             .split_whitespace()
             .map(|word| word.strip_prefix("./").unwrap_or(word))
             .filter(|word| !word.is_empty())
@@ -142,13 +193,22 @@ impl Query {
                 }
             })
             .collect();
-        Query { words }
+        let needed = words.iter().fold(CharBag::default(), |bag, word| {
+            CharBag(bag.0 | CharBag::needed_for(&word.text).0)
+        });
+        Query { words, needed }
     }
 
     /// Whether the query has no words, in which case nothing is matched and the finder
     /// shows recent files instead.
     pub(crate) fn is_empty(&self) -> bool {
         self.words.is_empty()
+    }
+
+    /// Whether a path with these characters could match. `false` is certain; `true`
+    /// still needs [`Scorer::score`].
+    pub(crate) fn could_match(&self, path: CharBag) -> bool {
+        path.has_all(self.needed)
     }
 }
 
@@ -556,6 +616,69 @@ mod tests {
             score("./src/main.rs", "src/main.rs"),
             score("src/main.rs", "src/main.rs")
         );
+    }
+
+    #[test]
+    fn char_bags_never_reject_a_path_that_matches() {
+        let paths = [
+            "src/main.rs",
+            "crates/core/src/keys.rs",
+            "README.md",
+            "docs/café-menu.md",
+            "数据/日本語.txt",
+            "a_b-c.d/e f:g",
+            "v2/file10.txt",
+        ];
+        let queries = [
+            "main",
+            "MAIN",
+            "srcmain",
+            "core/keys",
+            "readme",
+            "README",
+            "cafe",
+            "é",
+            "本",
+            "txt",
+            "a_b",
+            "c.d",
+            "f:g",
+            "10",
+            "v2 file",
+            "zzz",
+            "q",
+            "x/y",
+            "main.rs",
+        ];
+        for path in paths {
+            for text in queries {
+                let query = Query::new(text);
+                let matches = Scorer::new().score(&query, path).is_some();
+                let could = query.could_match(CharBag::of_path(path));
+                assert!(
+                    could || !matches,
+                    "{text:?} matches {path:?} but its bag was refused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn char_bags_reject_paths_missing_a_character() {
+        let bag = CharBag::of_path("src/main.rs");
+        assert!(Query::new("main").could_match(bag));
+        assert!(Query::new("MAIN").could_match(bag), "case is folded");
+        assert!(Query::new("s/m.r").could_match(bag));
+        assert!(!Query::new("maze").could_match(bag));
+        assert!(!Query::new("main2").could_match(bag));
+        assert!(!Query::new("main_").could_match(bag));
+        assert!(
+            !Query::new("é").could_match(bag),
+            "an ASCII path has no accents"
+        );
+        assert!(Query::new("é").could_match(CharBag::of_path("café")));
+        assert!(Query::new("zebra").could_match(CharBag::of_path("café")));
+        assert!(Query::new("").could_match(bag));
     }
 
     fn candidate(path: &str, score: u32, recent_rank: usize) -> Candidate<'_> {

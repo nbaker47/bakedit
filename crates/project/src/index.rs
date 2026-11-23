@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, WalkState};
 
-use crate::fuzzy::{best_candidates, Candidate, FileMatch, Query, Scorer};
+use crate::fuzzy::{best_candidates, Candidate, CharBag, FileMatch, Query, Scorer};
 use crate::ignore_rules::{
     display_relative, has_hidden_component, is_ignore_file, is_own_temp_file, resolve,
     walk_builder, IgnoreRules,
@@ -33,8 +33,8 @@ use crate::ignore_rules::{
 /// whole project again instead of looking at each path.
 const MAX_INCREMENTAL_PATHS: usize = 2_000;
 
-/// The fewest files worth giving a search thread of their own.
-const FILES_PER_SEARCH_THREAD: usize = 8_192;
+/// The fewest candidate files worth giving a search thread of their own.
+const FILES_PER_SEARCH_THREAD: usize = 2_048;
 
 /// The most threads one search uses.
 const MAX_SEARCH_THREADS: usize = 8;
@@ -58,6 +58,8 @@ pub struct IndexSnapshot {
     text: String,
     /// Where each path ends in `text`.
     ends: Vec<u32>,
+    /// Which characters each path contains, to rule paths out of a search quickly.
+    bags: Vec<CharBag>,
     /// The real relative path of the entries whose displayed text is lossy.
     raw: HashMap<String, PathBuf>,
 }
@@ -86,6 +88,7 @@ impl IndexSnapshot {
         let mut snapshot = IndexSnapshot {
             text: String::with_capacity(found.iter().map(|entry| entry.display.len()).sum()),
             ends: Vec::with_capacity(found.len()),
+            bags: Vec::with_capacity(found.len()),
             raw: HashMap::new(),
         };
         for entry in found {
@@ -103,6 +106,7 @@ impl IndexSnapshot {
         };
         self.text.push_str(display);
         self.ends.push(end);
+        self.bags.push(CharBag::of_path(display));
         if let Some(raw) = raw {
             self.raw.insert(display.to_string(), raw);
         }
@@ -201,27 +205,35 @@ impl IndexSnapshot {
             .collect()
     }
 
-    /// Score every file, on several threads when the list is long. Each thread already
-    /// narrows its share down to its best `limit`.
+    /// Score every file that could match, on several threads when there are many. Each
+    /// thread already narrows its share down to its best `limit`.
     fn score_all<'a>(
         &'a self,
         query: &Query,
         ranks: &HashMap<&str, usize>,
         limit: usize,
     ) -> Vec<Candidate<'a>> {
-        let len = self.len();
+        // One cheap pass rules out every path that lacks a character of the query;
+        // only what is left gets the real matcher.
+        let possible: Vec<u32> = self
+            .bags
+            .iter()
+            .enumerate()
+            .filter(|(_, bag)| query.could_match(**bag))
+            .map(|(index, _)| index as u32)
+            .collect();
+
         let available = thread::available_parallelism().map_or(1, usize::from);
-        let threads = (len / FILES_PER_SEARCH_THREAD).clamp(1, available.min(MAX_SEARCH_THREADS));
+        let threads =
+            (possible.len() / FILES_PER_SEARCH_THREAD).clamp(1, available.min(MAX_SEARCH_THREADS));
         if threads == 1 {
-            return self.score_range(0..len, query, ranks, limit);
+            return self.score_files(&possible, query, ranks, limit);
         }
-        let chunk = len.div_ceil(threads);
+        let share = possible.len().div_ceil(threads);
         thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads)
-                .map(|worker| {
-                    let range = worker * chunk..((worker + 1) * chunk).min(len);
-                    scope.spawn(move || self.score_range(range, query, ranks, limit))
-                })
+            let workers: Vec<_> = possible
+                .chunks(share)
+                .map(|files| scope.spawn(move || self.score_files(files, query, ranks, limit)))
                 .collect();
             workers
                 .into_iter()
@@ -230,17 +242,18 @@ impl IndexSnapshot {
         })
     }
 
-    fn score_range<'a>(
+    /// Score the files at the given indexes and keep the best `limit`.
+    fn score_files<'a>(
         &'a self,
-        range: Range<usize>,
+        files: &[u32],
         query: &Query,
         ranks: &HashMap<&str, usize>,
         limit: usize,
     ) -> Vec<Candidate<'a>> {
         let mut scorer = Scorer::new();
         let mut candidates = Vec::new();
-        for index in range {
-            let Some(path) = self.get(index) else {
+        for index in files {
+            let Some(path) = self.get(*index as usize) else {
                 continue;
             };
             if let Some(score) = scorer.score(query, path) {
@@ -295,6 +308,7 @@ impl IndexSnapshot {
         let mut snapshot = IndexSnapshot {
             text: String::with_capacity(self.text.len()),
             ends: Vec::with_capacity(self.len() + changes.added.len()),
+            bags: Vec::with_capacity(self.len() + changes.added.len()),
             raw: HashMap::new(),
         };
         let mut added = changes.added.into_iter().peekable();
@@ -1054,6 +1068,52 @@ mod tests {
         assert!(matches[0].score >= crate::fuzzy::NAME_BONUS);
     }
 
+    /// Not a test of behaviour: prints what a search costs on one core and in all.
+    /// `cargo test --release -p bakedit-project --lib search_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn search_cost() {
+        let paths: Vec<String> = (0..200_000)
+            .map(|n| {
+                let dir = n / 24;
+                format!(
+                    "crates/project_{}/src/module_{}/handler_{}.rs",
+                    dir % 331,
+                    dir % 53,
+                    n
+                )
+            })
+            .collect();
+        let snapshot = IndexSnapshot::from_paths(paths);
+        let ranks = HashMap::new();
+        let all: Vec<u32> = (0..snapshot.len() as u32).collect();
+        for text in [
+            "zzzzqqq",
+            "filetree",
+            "h",
+            "handler",
+            "handler 199",
+            "crates/src",
+            "h1999",
+        ] {
+            let query = Query::new(text);
+            let (mut one_core, mut whole) = (Duration::MAX, Duration::MAX);
+            let mut kept = 0;
+            for _ in 0..7 {
+                let started = Instant::now();
+                kept = snapshot.score_files(&all, &query, &ranks, 50).len();
+                one_core = one_core.min(started.elapsed());
+                let started = Instant::now();
+                let _ = snapshot.search(text, 50, &[]);
+                whole = whole.min(started.elapsed());
+            }
+            println!(
+                "{text:>12}: {:>4} ns per file on one core, search() {whole:>10.3?}, {kept} kept",
+                one_core.as_nanos() / snapshot.len() as u128
+            );
+        }
+    }
+
     #[test]
     fn long_lists_search_the_same_on_many_threads() {
         let paths: Vec<String> = (0..40_000)
@@ -1068,7 +1128,8 @@ mod tests {
         let query = Query::new("file77");
         let ranks = HashMap::new();
         let parallel = best_candidates(snapshot.score_all(&query, &ranks, 20), 20);
-        let serial = snapshot.score_range(0..snapshot.len(), &query, &ranks, 20);
+        let every_file: Vec<u32> = (0..snapshot.len() as u32).collect();
+        let serial = snapshot.score_files(&every_file, &query, &ranks, 20);
         assert_eq!(parallel, serial);
         assert_eq!(parallel.len(), 20);
     }
