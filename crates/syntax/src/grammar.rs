@@ -7,9 +7,12 @@
 //!
 //! * [`Precedence`]: when two patterns capture the same node, which one wins.
 //! * [`InjectedChildren`]: what an injection leaves out of the injected document.
-//! * A few lines of extra patterns (the `*_EXTRA` constants) where a bundled query has an
-//!   outright bug or files a literal under a name the theme does not colour the way Zed
-//!   does.
+//! * Extra patterns (the `*_EXTRA` constants) laid over a bundled query where it has an
+//!   outright bug or draws the language unlike Zed does. For the languages Zed itself ships
+//!   (Rust, Python, JavaScript, TypeScript, TSX, JSON, YAML, Markdown, shell, Go, C, C++,
+//!   CSS, diff) the extras bring the result to within a fraction of a percent of Zed's own
+//!   query, measured by the style the built-in theme gives each byte of a few megabytes of
+//!   real code. The other languages are as their grammars' queries draw them.
 
 use std::sync::OnceLock;
 
@@ -365,6 +368,11 @@ fn custom_predicates(query: &Query, pattern: usize) -> Option<Vec<Predicate>> {
 // something under a capture that Zed's own queries, and so the user's theme, draw
 // differently. They go after the bundled query where the last pattern wins and before it
 // where the first one does.
+//
+// Taking one out of a grammar's `highlights` list returns that language to its bundled
+// query. They were written against each grammar's node types to reproduce what Zed's
+// queries (which are GPL-licensed) make of the same text; short as they are, several are
+// bound to resemble the patterns they agree with.
 // ---------------------------------------------------------------------------------------
 
 /// tree-sitter-rust, brought into line with the query Zed uses for Rust:
