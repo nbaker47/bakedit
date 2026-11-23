@@ -12,15 +12,18 @@ pub const DEFAULT_COMMAND: &str = "herdr";
 
 /// Everything [`Terminal::spawn`](crate::Terminal::spawn) needs to know.
 ///
-/// Three constructors cover what a terminal panel is asked to run: [`TermConfig::herdr`]
-/// (the default), [`TermConfig::shell`] and [`TermConfig::command`] for a command line the
-/// user wrote in their settings. The rest are plain fields; set them with struct update
-/// syntax.
+/// The constructors cover what a terminal panel is asked to run:
+/// [`TermConfig::default_command`] when the user has not said (herdr),
+/// [`TermConfig::shell`] when they turned that off, and [`TermConfig::command`] for a
+/// command line they wrote in their settings. The rest are plain fields; set them with
+/// struct update syntax. Pair the first with [`TermConfig::shell`] in
+/// [`Terminal::spawn_with_fallback`](crate::Terminal::spawn_with_fallback), so that a
+/// machine without herdr still gets a terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TermConfig {
     /// The program to run, looked up on `PATH` unless it has a slash in it. `None` runs
-    /// the user's login shell (`$SHELL`, else the account's shell, else `/bin/sh`) as a
-    /// login shell.
+    /// the user's shell as a login shell: `SHELL` as the child will see it (so `env` can
+    /// choose), else the shell of the user's account, else `/bin/sh`.
     pub program: Option<String>,
     /// Arguments for the program (or for the login shell).
     pub args: Vec<String>,
