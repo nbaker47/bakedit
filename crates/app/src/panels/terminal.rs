@@ -283,18 +283,9 @@ impl TerminalPanel {
     /// Add a terminal running the user's shell, in the directory the one in front is in,
     /// and bring it to the front. It starts at the next draw.
     fn new_tab(&mut self, cx: &Cx<'_>) {
-        let mut config = self.launch.fallback.clone().unwrap_or_else(|| self.launch.config.clone());
-        // The shell, not the program that may be the panel's own (a custom command).
-        if self.launch.fallback.is_none() && self.launch.config.program.is_some() {
-            config.program = None;
-            config.args.clear();
-        }
+        let mut config = self.launch.shell.clone();
         config.cwd = Some(self.tab().cwd.clone().unwrap_or_else(|| cx.root.to_path_buf()));
-        let program = std::env::var("SHELL")
-            .ok()
-            .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "shell".to_string());
-        self.tabs.push(Tab::new(program, config, None, false));
+        self.tabs.push(Tab::new(self.launch.shell_name.clone(), config, None, false));
         let last = self.tabs.len() - 1;
         self.activate(last);
     }
@@ -490,6 +481,9 @@ impl TerminalPanel {
     fn tab_action(&mut self, name: &str, action: &Action, cx: &mut Cx<'_>) -> bool {
         let count = self.tabs.len();
         match name {
+            // A terminal that has not started yet starts when the panel is shown: that one is
+            // the new terminal, rather than a second one beside a program never seen.
+            "workspace::NewTerminal" if self.tab().pending() => {}
             "workspace::NewTerminal" => self.new_tab(cx),
             "pane::CloseActiveItem" => self.close_active(cx),
             "pane::ActivateNextItem" => self.activate((self.active + 1) % count),
@@ -661,14 +655,14 @@ impl View for TerminalPanel {
         }
         let Some(terminal) = self.terminal() else { return false };
         match name {
-            "terminal::Copy" => match terminal.selection_text() {
-                Some(text) => {
+            // Nothing selected: nothing happens, and cmd-c does not reach the program either
+            // (Zed's terminal, and every Mac terminal, keep cmd-c for themselves).
+            "terminal::Copy" => {
+                if let Some(text) = terminal.selection_text() {
                     cx.clipboard.set(&text, false);
                     terminal.selection_clear();
                 }
-                // Nothing selected: the key goes to the program, as Ghostty does.
-                None => return false,
-            },
+            }
             "terminal::Paste" => {
                 if let Some(clip) = cx.clipboard.get() {
                     terminal.send_paste(&clip.text);

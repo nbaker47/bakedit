@@ -709,8 +709,15 @@ impl Shell {
             "zed::OpenKeymap" => self.open_config_file("keymap.json"),
             "zed::OpenDefaultKeymap" => self.open_page("Default Keymap", crate::keys::DEFAULT_KEYMAP, Some("JSON")),
             "zed::Quit" => self.request_quit(action.arg_str("save_intent")),
-            // One terminal lives in the panel; a "new terminal" from outside it brings that up.
-            "workspace::NewTerminal" => self.set_focus(Focus::Panel(PanelId::Terminal)),
+            // From outside the terminal (ctrl-~ in the editor): show the panel and add a terminal
+            // to it, as Zed does. The panel itself handles it while it has the keyboard.
+            "workspace::NewTerminal" => {
+                self.set_focus(Focus::Panel(PanelId::Terminal));
+                let mut cx = cx!(self);
+                if let Some(view) = self.panels.get_mut(&PanelId::Terminal) {
+                    view.handle_action(action, &mut cx);
+                }
+            }
             "bakedit::ToggleNavLayer" => self.requests.push(Request::ToggleNavLayer),
             "bakedit::ReloadConfig" => self.requests.push(Request::ReloadConfig),
             "bakedit::ShowKeybindings" => self.requests.push(Request::ShowKeybindings),

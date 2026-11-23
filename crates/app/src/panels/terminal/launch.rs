@@ -24,6 +24,11 @@ pub struct TerminalLaunch {
     pub notice: Option<String>,
     /// A short name for what runs: "herdr", "zsh", "tmux".
     pub program: String,
+    /// What a terminal added later (`workspace::NewTerminal`, the header's `+`) runs: the
+    /// login shell, with the panel's environment and colours.
+    pub shell: TermConfig,
+    /// The name of [`TerminalLaunch::shell`] for its tab ("zsh").
+    pub shell_name: String,
 }
 
 /// The parts of the environment that decide what the panel runs.
@@ -80,7 +85,15 @@ impl TerminalLaunch {
                 .and_then(|shell| Path::new(shell).file_name().map(|n| n.to_string_lossy().into_owned()))
                 .unwrap_or_else(|| "shell".to_string())
         };
-        let shell = |notice: Option<String>| TerminalLaunch { config: base.clone(), fallback: None, herdr: None, notice, program: shell_name() };
+        let shell = |notice: Option<String>| TerminalLaunch {
+            config: base.clone(),
+            fallback: None,
+            herdr: None,
+            notice,
+            program: shell_name(),
+            shell: base.clone(),
+            shell_name: shell_name(),
+        };
         let herdr_client = |session: launch::Session| -> Option<Client> {
             let config_dir = launch::config_dir(env.xdg_config_home.as_deref(), home.as_deref())?;
             Some(Client::from_env_or_default().with_socket_path(session.socket_path(&config_dir)).allow_live_mutations(true))
@@ -99,6 +112,8 @@ impl TerminalLaunch {
                         herdr: herdr_client(launch::Session::Default),
                         notice: None,
                         program: "herdr".to_string(),
+                        shell: base.clone(),
+                        shell_name: shell_name(),
                     },
                 }
             }
@@ -111,6 +126,8 @@ impl TerminalLaunch {
                     herdr: launch::session_of_command(words).and_then(herdr_client),
                     notice: None,
                     program: name,
+                    shell: base.clone(),
+                    shell_name: shell_name(),
                 }
             }
         }

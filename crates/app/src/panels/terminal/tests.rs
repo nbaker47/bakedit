@@ -9,15 +9,16 @@ use bakedit_term::TermColors;
 
 const WAIT: Duration = Duration::from_secs(15);
 
-/// A panel running `script` with `sh -c` in `dir`.
+/// A panel running `script` with `sh -c` in `dir`. Terminals added to it run plain `sh`:
+/// a test never starts the user's login shell, which would read their dotfiles.
 fn panel(dir: &Path, script: &str) -> TerminalPanel {
-    let config = TermConfig {
-        program: Some("/bin/sh".into()),
-        args: vec!["-c".into(), script.into()],
-        cwd: Some(dir.to_path_buf()),
-        ..TermConfig::shell()
-    };
-    TerminalPanel::new(TerminalLaunch { config, fallback: None, herdr: None, notice: None, program: "sh".into() })
+    TerminalPanel::new(launch(dir, script))
+}
+
+fn launch(dir: &Path, script: &str) -> TerminalLaunch {
+    let sh = TermConfig { program: Some("/bin/sh".into()), cwd: Some(dir.to_path_buf()), ..TermConfig::shell() };
+    let config = TermConfig { args: vec!["-c".into(), script.into()], ..sh.clone() };
+    TerminalLaunch { config, fallback: None, herdr: None, notice: None, program: "sh".into(), shell: sh, shell_name: "sh".into() }
 }
 
 /// Tick until `done` says so.
@@ -142,7 +143,8 @@ fn menu_keys_and_unknown_actions_fall_through_to_the_program() {
     for name in ["menu::Confirm", "menu::Cancel", "menu::SelectNext", "editor::MoveUp", "herdr::Bogus"] {
         assert!(!panel.handle_action(&Action::new(name), &mut harness.cx()), "{name} is not the terminal's while sh runs");
     }
-    assert!(!panel.handle_action(&Action::new("terminal::Copy"), &mut harness.cx()), "nothing selected: cmd-c goes to the program");
+    assert!(panel.handle_action(&Action::new("terminal::Copy"), &mut harness.cx()), "nothing selected: cmd-c is still the terminal's");
+    assert!(harness.clipboard.get().is_none(), "and copies nothing");
     let mut contexts = Vec::new();
     panel.contexts(&mut contexts);
     assert_eq!(contexts.iter().map(|c| c.name).collect::<Vec<_>>(), ["Pane", "Terminal"]);
@@ -153,7 +155,7 @@ fn a_program_that_cannot_start_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let mut harness = Harness::new(dir.path());
     let config = TermConfig { program: Some("/nonexistent/bakedit-test-program".into()), ..TermConfig::shell() };
-    let mut panel = TerminalPanel::new(TerminalLaunch { config, fallback: None, herdr: None, notice: None, program: "x".into() });
+    let mut panel = TerminalPanel::new(TerminalLaunch { config, program: "x".into(), ..launch(dir.path(), "true") });
     let (text, _, _) = harness.draw(&mut panel, 70, 6);
     assert!(text.contains("The terminal could not start"), "{text}");
     panel.tick(&mut harness.cx());
@@ -282,6 +284,22 @@ fn new_terminals_are_tabs_in_the_header_and_close_one_at_a_time() {
     assert_eq!(harness.take_effects(), vec![Effect::Dispatch(Action::new("terminal_panel::Toggle"))]);
     assert_eq!(panel.tab_count(), 1);
     assert!(!panel.is_running());
+}
+
+#[test]
+fn a_new_terminal_before_the_first_one_started_is_that_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut harness = Harness::new(dir.path());
+    let mut panel = panel(dir.path(), "printf first; sleep 30");
+    // ctrl-~ from the editor before the panel was ever shown: its own program is the new one.
+    assert!(panel.handle_action(&Action::new("workspace::NewTerminal"), &mut harness.cx()));
+    assert_eq!(panel.tab_count(), 1);
+    harness.draw(&mut panel, 60, 6);
+    until(&mut panel, &mut harness, |p| p.screen_text().contains("first"));
+    // Once it runs, another one is added beside it, running the panel's shell.
+    assert!(panel.handle_action(&Action::new("workspace::NewTerminal"), &mut harness.cx()));
+    assert_eq!((panel.tab_count(), panel.active_tab()), (2, 1));
+    assert_eq!(panel.program(), "sh", "new terminals run the launch's shell, never the user's login shell in a test");
 }
 
 #[test]
