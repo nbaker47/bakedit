@@ -153,6 +153,30 @@ fn paths_through_a_symbolic_link_are_resolved() {
 }
 
 #[test]
+fn a_path_spelled_in_another_case_is_resolved_where_the_file_system_ignores_case() {
+    let test = TestRepo::with_commit();
+    test.write("src/Lib.rs", "pub fn lib() {}\n");
+    let shouting = PathBuf::from(test.root().to_str().unwrap().to_uppercase());
+    // On a file system that tells cases apart this other spelling is another path.
+    if !shouting.join("README.md").exists() {
+        return;
+    }
+
+    let repo = Repo::discover(&shouting).expect("found whatever the spelling");
+    assert_eq!(repo.root(), test.root());
+    // The part above the work tree is put right; the part inside it is the caller's.
+    assert_eq!(
+        repo.relative_path(shouting.join("src/Lib.rs")).unwrap(),
+        Path::new("src/Lib.rs")
+    );
+    assert_eq!(
+        repo.relative_path(shouting.join("src/not-there-yet.rs"))
+            .unwrap(),
+        Path::new("src/not-there-yet.rs")
+    );
+}
+
+#[test]
 fn a_repo_handle_can_be_used_from_other_threads() {
     let test = TestRepo::with_commit();
     let expected = test.head();

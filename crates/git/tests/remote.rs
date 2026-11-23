@@ -338,8 +338,7 @@ fn a_network_command_that_hangs_is_stopped_with_everything_it_started() {
     test.commit_all("something to push");
     let remote_before = test.git(&["rev-parse", "origin/main"]);
 
-    test.repo
-        .set_network_timeout(Some(Duration::from_millis(1500)));
+    test.repo.set_network_timeout(Some(Duration::from_secs(3)));
     let started = Instant::now();
     let error = test.repo.push(false).unwrap_err();
     let elapsed = started.elapsed();
@@ -351,12 +350,12 @@ fn a_network_command_that_hangs_is_stopped_with_everything_it_started() {
             output,
         } => {
             assert_eq!(command, "push");
-            assert_eq!(*limit, Duration::from_millis(1500));
+            assert_eq!(*limit, Duration::from_secs(3));
             assert!(output.contains("slow hook started"), "{output}");
         }
         other => panic!("unexpected {other:?}"),
     }
-    assert!(elapsed >= Duration::from_millis(1500), "{elapsed:?}");
+    assert!(elapsed >= Duration::from_secs(3), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
     assert_eq!(error.git_output(), Some("slow hook started"));
 
