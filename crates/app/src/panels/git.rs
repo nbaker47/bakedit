@@ -1113,10 +1113,6 @@ impl GitPanel {
         }
         self.message_top = self.message_top.min(self.visual.len().saturating_sub(rows));
         let buffer = self.message.buffer();
-        if buffer.is_empty() {
-            let hint = if self.amending.is_some() { "Amended commit message" } else { "Commit message" };
-            canvas.text_truncated(text_area.x, text_area.y, hint, Style::colors(theme.text_placeholder, bg), text_area.width);
-        }
         let selections: Vec<Range<usize>> = self.message.selections().iter().filter(|s| !s.is_empty()).map(|s| s.range()).collect();
         let options = PaintOptions { tab_size: 4, left: 0, show_indent_guides: false, colorize_brackets: false, show_whitespace_in_selection: false };
         let editor_bg = ui::color(theme.editor_bg);
@@ -1142,6 +1138,11 @@ impl GitPanel {
                     }
                 }
             }
+        }
+        // The placeholder goes over the (empty) first row, once the rows are painted.
+        if buffer.is_empty() {
+            let hint = if self.amending.is_some() { "Amended commit message" } else { "Commit message" };
+            canvas.text_truncated(text_area.x, text_area.y, hint, Style::colors(theme.text_placeholder, bg), text_area.width);
         }
         let shown = cursor_row >= self.message_top && cursor_row < self.message_top + rows;
         if !(cx.focused && self.focus == PanelFocus::Editor && shown) {
@@ -1477,6 +1478,8 @@ mod tests {
         assert!(rows[3].contains("A new.rs") && rows[3].contains("src") && rows[3].trim_end().ends_with("+1"), "{:?}", rows[3]);
         assert!(rows[4].contains("Untracked"), "{text}");
         assert!(rows[5].contains("U notes.md"), "{text}");
+        // The empty message box says what it is for.
+        assert!(text.contains(" Commit message"), "{text}");
     }
 
     #[test]
