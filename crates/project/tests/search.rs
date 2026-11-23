@@ -873,6 +873,70 @@ fn replace_keeps_line_endings_and_byte_order_marks() {
 }
 
 #[test]
+fn search_and_replace_agree_on_tricky_patterns() {
+    let project = Project::new();
+    project.write("unix.txt", "keep  \ntabs\t\t\nclean\n  \nlast  ");
+    project.write("dos.txt", "keep  \r\ntabs\t\r\nclean\r\n\r\nlast\t");
+
+    // Trailing whitespace: found on four lines of each file, never the line break itself.
+    let trailing = regex(r"[ \t]+$");
+    let found = run(&project, trailing.clone());
+    assert_eq!(
+        found.lines(),
+        [
+            "dos.txt:1: keep[  ]",
+            "dos.txt:2: tabs[\t]",
+            "dos.txt:5: last[\t]",
+            "unix.txt:1: keep[  ]",
+            "unix.txt:2: tabs[\t\t]",
+            "unix.txt:4: [  ]",
+            "unix.txt:5: last[  ]",
+        ]
+    );
+    let results = replace_all(project.root(), &trailing, "").unwrap();
+    assert_eq!(
+        replaced(&results),
+        [("dos.txt".to_string(), 3), ("unix.txt".to_string(), 4)],
+        "replace touches exactly the matches search reported"
+    );
+    assert_eq!(project.read("unix.txt"), "keep\ntabs\nclean\n\nlast");
+    assert_eq!(project.read("dos.txt"), "keep\r\ntabs\r\nclean\r\n\r\nlast");
+
+    // `\s` and `.` never swallow a line break, even with Windows line endings.
+    project.write("dos.txt", "a b\r\n\r\nc\r\n");
+    let results = replace_all(project.root(), &regex(r"^.*$"), "<$0>").unwrap();
+    assert_eq!(replaced(&results).len(), 2);
+    assert_eq!(project.read("dos.txt"), "<a b>\r\n<>\r\n<c>\r\n");
+    project.write("dos.txt", "a \r\n b\r\n");
+    let results = replace_all(project.root(), &regex(r"\s+"), "_").unwrap();
+    assert_eq!(replaced(&results), [("dos.txt".to_string(), 2)]);
+    assert_eq!(project.read("dos.txt"), "a_\r\n_b\r\n");
+}
+
+#[test]
+fn letters_outside_ascii_follow_the_case_setting() {
+    let project = Project::new();
+    project.write("a.txt", "Émile était là\nÉCOLE\n");
+    assert_eq!(
+        find(&project, "é").lines(),
+        ["a.txt:1: [É]mile [é]tait là", "a.txt:2: [É]COLE"]
+    );
+    let sensitive = SearchOptions {
+        case_sensitive: true,
+        ..SearchOptions::new("é")
+    };
+    assert_eq!(
+        run(&project, sensitive).lines(),
+        ["a.txt:1: Émile [é]tait là"]
+    );
+    let word = SearchOptions {
+        whole_word: true,
+        ..SearchOptions::new("là")
+    };
+    assert_eq!(run(&project, word).lines(), ["a.txt:1: Émile était [là]"]);
+}
+
+#[test]
 fn replace_leaves_binary_and_wide_files_alone() {
     let project = Project::new();
     project.write("text.txt", "needle\n");
