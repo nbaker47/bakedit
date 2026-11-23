@@ -94,12 +94,28 @@ impl Repo {
     /// Runs a command that talks to a remote: time limited, with both output streams
     /// captured as one text.
     fn run_network_command<S: AsRef<str>>(&self, args: &[S]) -> Result<String> {
-        let output = self
+        let result = self
             .git()
             .args(args.iter().map(AsRef::as_ref))
             .merged()
             .timeout(self.network_timeout())
-            .run()?;
-        Ok(output.stdout_text())
+            .run();
+        match result {
+            Ok(output) => Ok(output.stdout_text()),
+            // The one captured text holds what git wrote to standard error, which is
+            // where a reader of the error looks for the explanation.
+            Err(GitError::Failed {
+                command,
+                code,
+                stdout,
+                stderr,
+            }) if stderr.is_empty() => Err(GitError::Failed {
+                command,
+                code,
+                stdout: String::new(),
+                stderr: stdout,
+            }),
+            Err(error) => Err(error),
+        }
     }
 }

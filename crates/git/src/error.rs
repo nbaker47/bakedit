@@ -17,8 +17,8 @@ pub enum GitError {
 
     /// git ran and exited with a status the operation does not accept. `code` is `None`
     /// when a signal ended the process. The network commands (`fetch`, `pull`, `push`)
-    /// capture both output streams as one text, in the order it was written; it arrives
-    /// in `stdout` and `stderr` stays empty. [`GitError::git_output`] reads either.
+    /// capture both output streams as one text, in the order it was written; all of it
+    /// is in `stderr` and `stdout` is empty.
     #[error("{}", failure_text(.command, *.code, .stderr, .stdout))]
     Failed {
         /// The git subcommand, for example `commit`.

@@ -123,14 +123,24 @@ fn pull_that_conflicts_fails_and_leaves_the_conflict_to_resolve() {
     test.write("README.md", "# ours\n");
     test.commit_all("our change");
 
-    match test.repo.pull(false) {
-        Err(error @ GitError::Failed { .. }) => {
-            assert_eq!(error.exit_code(), Some(1));
-            let output = error.git_output().unwrap();
-            assert!(output.contains("CONFLICT"), "{output}");
-            assert!(error
-                .to_string()
-                .starts_with("git pull failed (exit code 1)"));
+    let error = test.repo.pull(false).unwrap_err();
+    assert_eq!(error.exit_code(), Some(1));
+    assert!(error
+        .to_string()
+        .starts_with("git pull failed (exit code 1)"));
+    assert!(error.git_output().unwrap().contains("CONFLICT"));
+    match error {
+        // Everything git said, on either of its output streams, is the error's text.
+        GitError::Failed {
+            command,
+            stdout,
+            stderr,
+            ..
+        } => {
+            assert_eq!(command, "pull");
+            assert_eq!(stdout, "");
+            assert!(stderr.contains("CONFLICT"), "{stderr}");
+            assert!(stderr.contains("Automatic merge failed"), "{stderr}");
         }
         other => panic!("unexpected {other:?}"),
     }
