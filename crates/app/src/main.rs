@@ -3,6 +3,8 @@ mod chrome;
 mod cli;
 mod clipboard;
 mod format;
+mod fuzzy;
+mod host;
 mod ipc;
 mod layout;
 mod line_input;

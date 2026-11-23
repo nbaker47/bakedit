@@ -130,6 +130,7 @@ dependencies = [
  "dirs",
  "libc",
  "log",
+ "nucleo-matcher",
  "ratatui",
  "serde",
  "serde_json",
