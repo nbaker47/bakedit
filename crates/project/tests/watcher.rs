@@ -6,6 +6,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -397,6 +398,127 @@ fn a_linked_worktree_sees_its_git_state_change() {
     // Ordinary files in the worktree still come through.
     let file = home.write("worktrees/feature/src/new.rs", "");
     assert!(watched.wait_for_path(&file));
+}
+
+/// Run git in `dir`, cut off from the user's own configuration. Returns whether it worked,
+/// which it does not when git is not installed.
+fn git(dir: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Wait for a batch with `git_changed`, and check that no git-internal path is listed.
+fn expect_git_change(watched: &mut Watched, what: &str) {
+    assert!(
+        watched.wait_for(|batches| batches.iter().any(|batch| batch.git_changed)),
+        "{what} should set git_changed: {:?}",
+        watched.batches
+    );
+    watched.listen(QUIET);
+    for path in watched.paths() {
+        assert!(
+            !path.components().any(|part| part.as_os_str() == ".git"),
+            "{what} listed {}",
+            path.display()
+        );
+    }
+    watched.forget();
+}
+
+#[test]
+fn real_git_commands_set_the_flag() {
+    let _turn = one_at_a_time();
+    let project = Project::new();
+    let root = project.root();
+    if !git(root, &["init", "--quiet", "--initial-branch=main"]) {
+        // No git on this machine: the hand-made layouts above still cover the logic.
+        return;
+    }
+    project.write("tracked.txt", "one\n");
+    assert!(git(root, &["add", "."]));
+    assert!(git(root, &["commit", "--quiet", "-m", "first"]));
+    let mut watched = Watched::start(root);
+
+    project.write("tracked.txt", "two\n");
+    assert!(watched.wait_for_path(&project.path("tracked.txt")));
+    watched.listen(QUIET);
+    assert!(
+        watched.batches.iter().all(|batch| !batch.git_changed),
+        "editing a file is not a git change: {:?}",
+        watched.batches
+    );
+    watched.forget();
+
+    assert!(git(root, &["add", "tracked.txt"]));
+    expect_git_change(&mut watched, "git add");
+    assert!(git(root, &["commit", "--quiet", "-m", "second"]));
+    expect_git_change(&mut watched, "git commit");
+    assert!(git(root, &["checkout", "--quiet", "-b", "feature"]));
+    expect_git_change(&mut watched, "git checkout -b");
+    assert!(git(root, &["stash", "list"]));
+    assert!(git(root, &["status", "--porcelain"]));
+    assert!(git(root, &["tag", "v1"]));
+    expect_git_change(&mut watched, "git tag");
+}
+
+#[test]
+fn real_git_worktrees_set_the_flag() {
+    let _turn = one_at_a_time();
+    let home = Project::new();
+    let main = home.mkdir("main");
+    if !git(&main, &["init", "--quiet", "--initial-branch=main"]) {
+        return;
+    }
+    home.write("main/tracked.txt", "one\n");
+    assert!(git(&main, &["add", "."]));
+    assert!(git(&main, &["commit", "--quiet", "-m", "first"]));
+    let worktree = home.path("linked");
+    assert!(git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap()
+        ]
+    ));
+    let mut watched = Watched::start(&worktree);
+
+    home.write("linked/tracked.txt", "two\n");
+    assert!(watched.wait_for_path(&worktree.join("tracked.txt")));
+    watched.listen(QUIET);
+    watched.forget();
+
+    // The worktree's index and branch both live in the main checkout's git directory.
+    assert!(git(&worktree, &["add", "tracked.txt"]));
+    expect_git_change(&mut watched, "git add in a worktree");
+    assert!(git(&worktree, &["commit", "--quiet", "-m", "second"]));
+    expect_git_change(&mut watched, "git commit in a worktree");
+
+    // A commit in the main checkout moves a branch too, which a worktree may show
+    // (ahead/behind), so it counts.
+    home.write("main/other.txt", "x\n");
+    assert!(git(&main, &["add", "."]));
+    assert!(git(&main, &["commit", "--quiet", "-m", "third"]));
+    expect_git_change(&mut watched, "a commit in the main checkout");
 }
 
 #[test]
