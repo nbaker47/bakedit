@@ -164,7 +164,10 @@ pub(crate) fn spawn(
     match config.cwd.as_deref() {
         Some(cwd) if cwd.is_dir() => {
             command.current_dir(cwd);
-            command.env("PWD", cwd);
+            // A shell takes PWD at its word when it names the directory it starts in.
+            if let Ok(absolute) = std::path::absolute(cwd) {
+                command.env("PWD", absolute);
+            }
         }
         Some(cwd) => log::warn!(
             "terminal working directory {} does not exist, starting in the current one",
