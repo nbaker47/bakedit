@@ -468,9 +468,52 @@ const JAVASCRIPT_EXTRA: &str = r#"
 /// which leaves a bare key coloured as a type while a dotted one is a property.
 const TOML_EXTRA: &str = "(pair (bare_key) @property)\n";
 
-/// The `)` that ends a `case` pattern is not a bracket. Calling it a delimiter keeps bracket
-/// matching from pairing it with an unrelated `(`.
-const BASH_EXTRA: &str = "(case_item \")\" @punctuation.delimiter)\n";
+/// tree-sitter-bash's query is a sketch: commands, variables, a few keywords and operators.
+/// Zed's shell scripts look different in almost every line, so the rest is filled in here to
+/// match:
+///
+/// * A bare word is a string, as a quoted one is; a word that starts with `-` stays a
+///   constant and the name of a command a function.
+/// * A variable's name is a plain variable, not a property.
+/// * `local` and `declare` are keywords, a `#!` line is a directive, numbers are numbers,
+///   test operators (`-n`, `-d`) are keyword operators and `case` patterns are regexes.
+/// * The rest of the operators and the punctuation, including the `$`, `${` and `$(` of an
+///   expansion.
+/// * The `)` that ends a `case` pattern is not a bracket. Calling it a delimiter keeps bracket
+///   matching from pairing it with an unrelated `(`.
+const BASH_EXTRA: &str = r###"
+[(word) (ansi_c_string) (heredoc_end)] @string
+(variable_name) @variable
+(special_variable_name) @variable.special
+["local" "declare"] @keyword
+(command_name (word) @function)
+(command_name [(string) (raw_string) (ansi_c_string)] @string)
+(function_definition name: (word) @function)
+((command (_) @constant)
+ (#match? @constant "^-"))
+(number) @number
+(regex) @string.regex
+(case_item value: (_) @string.regex)
+(test_operator) @keyword.operator
+((program . (comment) @keyword.directive)
+ (#match? @keyword.directive "^#![ \t]*/"))
+
+[
+  "||" "<<" ">&" ">&-" ":" "//" "/" "%" "%%" "#" "##" "=" "=~" "==" "!=" "+=" "-=" "*=" "/="
+  "%=" "**=" "<<=" ">>=" "&=" "^=" "|=" "-o" "-a" "^" "&" "<=" ">=" "+" "-" "*" "**" "!" "++"
+  "--" "~" "?"
+] @operator
+
+";" @punctuation.delimiter
+["(" ")" "{" "}" "[" "]"] @punctuation.bracket
+(test_command ["[[" "]]"] @punctuation.bracket)
+(compound_statement ["((" "))"] @punctuation.bracket)
+(simple_expansion "$" @punctuation.special)
+(expansion "${" @punctuation.special "}" @punctuation.special)
+(command_substitution "$(" @punctuation.special ")" @punctuation.special)
+(arithmetic_expansion ["$((" "$[" "))" "]"] @punctuation.special)
+(case_item ")" @punctuation.delimiter)
+"###;
 
 /// tree-sitter-kotlin's pattern for a function's name requires the name to be the
 /// declaration's first child, so a function with a modifier (`override fun`, `private fun`,
