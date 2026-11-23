@@ -193,6 +193,7 @@ config-file = ?~/.config/ghostty/config.ghostty
 config-file = ?~/Library/Application Support/com.mitchellh.ghostty/config
 config-file = ?~/Library/Application Support/com.mitchellh.ghostty/config.ghostty
 config-file = bakedit-window.ghostty
+config-file = ?bakedit-user.ghostty
 "#
     .to_string();
     GhosttyConfig { entry, window }
@@ -581,8 +582,9 @@ mod tests {
     fn the_entry_file_puts_the_users_config_first_and_ours_last() {
         let entry = ghostty_config(&keymap(None)).entry;
         let includes: Vec<&str> = entry.lines().filter(|l| l.starts_with("config-file")).collect();
-        assert_eq!(includes.last(), Some(&"config-file = bakedit-window.ghostty"));
-        assert!(includes[..includes.len() - 1].iter().all(|l| l.starts_with("config-file = ?")), "the user's files are optional");
+        assert_eq!(includes.get(includes.len() - 2), Some(&"config-file = bakedit-window.ghostty"));
+        assert_eq!(includes.last(), Some(&"config-file = ?bakedit-user.ghostty"));
+        assert!(includes[..includes.len() - 2].iter().all(|l| l.starts_with("config-file = ?")), "the user's files are optional");
     }
 
     #[test]
