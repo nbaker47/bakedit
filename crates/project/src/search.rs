@@ -42,6 +42,10 @@ pub const DEFAULT_MAX_RESULTS: usize = 10_000;
 /// Lines longer than this many bytes are not searched; the file is skipped from there.
 const MAX_LINE_BYTES: usize = 64 << 20;
 
+/// Files larger than this many bytes are not rewritten by [`replace_all`], which holds a
+/// file's old and new contents in memory while it works.
+const MAX_REWRITE_BYTES: u64 = 256 << 20;
+
 /// What to search for and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOptions {
@@ -782,6 +786,8 @@ pub enum SkipReason {
     Changed,
     /// The file is UTF-16. It can be searched but is not rewritten.
     UnsupportedEncoding,
+    /// The file is larger than 256 MiB.
+    TooLarge,
 }
 
 /// Replace every match of `options` under `root` with `replacement` and report what
@@ -796,7 +802,8 @@ pub enum SkipReason {
 /// Each file is rewritten in one step ([`crate::fileops::write_atomic`]): a reader sees
 /// the old contents or the new, never a mix. A file that changed on disk between being
 /// read and being written back is skipped ([`SkipReason::Changed`]) rather than
-/// overwritten.
+/// overwritten. Binary files are left alone, as in a search; UTF-16 files and files over
+/// 256 MiB are reported as skipped.
 ///
 /// This call blocks until every file is done, working on several threads. Run it off
 /// the UI thread.
@@ -953,6 +960,9 @@ enum Prepared {
 /// Read the file and work out its new contents, without writing anything.
 fn prepare_rewrite(context: &ReplaceContext, path: &Path) -> io::Result<Prepared> {
     let before = fs::metadata(path)?;
+    if before.len() > MAX_REWRITE_BYTES {
+        return Ok(Prepared::Skip(SkipReason::TooLarge));
+    }
     let original = fs::read(path)?;
     if original.starts_with(b"\xff\xfe") || original.starts_with(b"\xfe\xff") {
         return Ok(Prepared::Skip(SkipReason::UnsupportedEncoding));
@@ -1528,6 +1538,17 @@ mod tests {
             Prepared::Skip(SkipReason::UnsupportedEncoding)
         ));
         assert!(prepare_rewrite(&context, &dir.path().join("missing.txt")).is_err());
+
+        // Too large to hold in memory twice: a sparse file, so the test writes nothing.
+        let huge = dir.path().join("huge.log");
+        fs::File::create(&huge)
+            .unwrap()
+            .set_len(MAX_REWRITE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            prepare_rewrite(&context, &huge).unwrap(),
+            Prepared::Skip(SkipReason::TooLarge)
+        ));
     }
 
     fn replaced(options: &SearchOptions, replacement: &str, line: &str) -> (String, usize) {
