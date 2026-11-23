@@ -8,8 +8,9 @@
 //! * **Highlighting** with tree-sitter: a [`Highlighter`] turns text into
 //!   [`HighlightSpan`]s, each naming a [`CaptureId`] that a theme colours. Languages embedded
 //!   in other languages (code in a Markdown fence, a script in HTML) are highlighted as
-//!   themselves. [`LineHighlights`] files the spans by line for drawing and [`outline`]
-//!   lists a file's symbols.
+//!   themselves. [`LineHighlights`] files the spans by line for drawing,
+//!   [`bracket_marks`] works out bracket nesting for rainbow brackets, and [`outline`] lists
+//!   a file's symbols.
 //!
 //! ```
 //! use bakedit_syntax::{capture_name, detect, Highlighter};
@@ -34,6 +35,7 @@
 //! [`Highlighter`] is not shared: keep one per thread. Grammars load lazily, so the first
 //! text of a language costs a few milliseconds more than the rest.
 
+mod brackets;
 mod capture;
 mod error;
 mod grammar;
@@ -44,6 +46,7 @@ mod lua_pattern;
 mod outline;
 mod registry;
 
+pub use brackets::{bracket_marks, BracketMark};
 pub use capture::{capture_count, capture_id, capture_name, CaptureId, StyleCache};
 pub use error::SyntaxError;
 pub use highlight::{spans_in, HighlightSpan, Highlighter};
