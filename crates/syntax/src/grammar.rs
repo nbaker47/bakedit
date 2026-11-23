@@ -969,3 +969,241 @@ pub(crate) static ALL: &[&GrammarSpec] = &[
     &GIT_COMMIT,
     &REGEX,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bakedit_core::Theme;
+    use std::collections::BTreeSet;
+
+    /// Captures the built-in theme leaves in the editor's foreground colour on purpose:
+    ///
+    /// * `embedded` and `none` mark code inside a string or a fence that is *not* string:
+    ///   they exist to stop the surrounding colour, so they must not have one.
+    /// * `label` (lifetimes, YAML anchors, goto labels) and `link_text` (the text of a
+    ///   Markdown link, a branch name in a commit message) are in Zed's vocabulary but the
+    ///   theme does not colour them.
+    /// * `error` and `text.*` are tree-sitter-make's: a stray `/` in an automatic variable
+    ///   and the message of `$(error ...)`, `$(warning ...)` and `$(info ...)`.
+    const UNSTYLED: &[&str] = &[
+        "embedded",
+        "none",
+        "label",
+        "link_text",
+        "error",
+        "text.danger",
+        "text.warning",
+        "text.note",
+    ];
+
+    /// Captures in the bundled queries that are not highlights at all.
+    const NOT_HIGHLIGHTS: &[&str] = &[
+        "_class",
+        "_function",
+        "clean",
+        "spell",
+        "nospell",
+        "local.scope",
+        "local.definition",
+        "local.definition.function",
+        "local.definition.import",
+        "local.reference",
+    ];
+
+    /// Every `(grammar, raw capture name)` in the highlight and locals queries.
+    fn raw_captures() -> Vec<(&'static str, &'static str)> {
+        let mut captures = Vec::new();
+        for spec in ALL {
+            let grammar = load(spec).unwrap_or_else(|error| panic!("{error}"));
+            captures.extend(
+                grammar
+                    .query
+                    .capture_names()
+                    .iter()
+                    .map(|name| (spec.name, *name)),
+            );
+        }
+        captures
+    }
+
+    #[test]
+    fn every_capture_has_a_style_in_the_builtin_theme_or_is_deliberately_unstyled() {
+        let theme = Theme::builtin();
+        let mut unexpected = BTreeSet::new();
+        for (grammar, raw) in raw_captures() {
+            let Some(name) = capture::normalize(raw) else {
+                continue;
+            };
+            if theme.syntax(&name).is_none() && !UNSTYLED.contains(&name.as_str()) {
+                unexpected.insert(format!("{grammar}: @{raw} -> {name}"));
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "captures the theme cannot draw: {unexpected:#?}"
+        );
+    }
+
+    #[test]
+    fn only_bookkeeping_captures_are_dropped() {
+        let mut unexpected = BTreeSet::new();
+        for (grammar, raw) in raw_captures() {
+            if capture::normalize(raw).is_none() && !NOT_HIGHLIGHTS.contains(&raw) {
+                unexpected.insert(format!("{grammar}: @{raw}"));
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "captures dropped without a reason: {unexpected:#?}"
+        );
+    }
+
+    #[test]
+    fn the_exception_lists_have_no_stale_entries() {
+        let theme = Theme::builtin();
+        let raw: BTreeSet<&str> = raw_captures().into_iter().map(|(_, name)| name).collect();
+        let normalized: BTreeSet<String> = raw
+            .iter()
+            .filter_map(|name| capture::normalize(name))
+            .collect();
+        for name in UNSTYLED {
+            assert!(
+                normalized.contains(*name),
+                "no grammar produces `{name}` any more"
+            );
+            assert!(
+                theme.syntax(name).is_none(),
+                "the theme now styles `{name}`"
+            );
+        }
+        for name in NOT_HIGHLIGHTS {
+            assert!(raw.contains(name), "no grammar captures `@{name}` any more");
+        }
+    }
+
+    #[test]
+    fn the_theme_vocabulary_is_what_the_grammars_speak() {
+        // Every capture the built-in theme styles is produced by some grammar, directly or
+        // as the root of a dotted name, so the theme and the normalisation agree.
+        let theme = Theme::builtin();
+        let produced: BTreeSet<String> = raw_captures()
+            .into_iter()
+            .filter_map(|(_, raw)| capture::normalize(raw))
+            .collect();
+        for styled in theme.syntax_captures() {
+            let used = produced
+                .iter()
+                .any(|name| name == styled || name.starts_with(&format!("{styled}.")));
+            assert!(
+                used,
+                "no grammar produces anything the theme's `{styled}` would colour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_language_lists_its_normalised_captures() {
+        let rust = crate::language_by_id("rust").unwrap().capture_names();
+        assert!(rust.is_sorted());
+        for expected in [
+            "keyword",
+            "string",
+            "string.escape",
+            "comment",
+            "function",
+            "function.macro",
+            "type",
+        ] {
+            assert!(
+                rust.contains(&expected),
+                "{expected} is missing from {rust:?}"
+            );
+        }
+        assert!(!rust.contains(&"escape") && !rust.contains(&"injection.content"));
+        let markdown = crate::language_by_id("markdown").unwrap().capture_names();
+        assert!(markdown.contains(&"title") && !markdown.contains(&"text.title"));
+    }
+
+    #[test]
+    fn locals_patterns_come_first_and_are_counted() {
+        let javascript = load(&JAVASCRIPT).unwrap();
+        assert!(javascript.locals_patterns > 0);
+        assert!(javascript.locals_patterns < javascript.query.pattern_count());
+        assert_eq!(javascript.patterns.len(), javascript.query.pattern_count());
+        let scope = javascript
+            .query
+            .capture_index_for_name("local.scope")
+            .unwrap() as usize;
+        assert_eq!(javascript.local_roles[scope], LocalRole::Scope);
+        assert_eq!(javascript.capture_ids[scope], None);
+        assert_eq!(load(&RUST).unwrap().locals_patterns, 0);
+        // `(#is-not? local)` marks the builtin patterns.
+        assert!(javascript.patterns.iter().any(|pattern| pattern.non_local));
+        // Ruby's methods do not see the locals of the code around them.
+        let ruby = load(&RUBY).unwrap();
+        assert!(ruby.patterns[..ruby.locals_patterns]
+            .iter()
+            .any(|pattern| !pattern.scope_inherits));
+    }
+
+    #[test]
+    fn injection_patterns_know_their_language_and_flags() {
+        let markdown = load(&MARKDOWN).unwrap();
+        let injections = markdown.injections.as_ref().unwrap();
+        assert!(injections.language_capture.is_some());
+        let named = |pattern: &InjectionPattern| match pattern.language {
+            Some(FixedLanguage::Named(Some(spec))) => Some(spec.name),
+            _ => None,
+        };
+        let names: Vec<&str> = injections.patterns.iter().filter_map(named).collect();
+        for expected in ["markdown_inline", "html", "yaml", "toml"] {
+            assert!(names.contains(&expected), "{expected} is not in {names:?}");
+        }
+        let rust = load(&RUST).unwrap();
+        let rust_injections = rust.injections.as_ref().unwrap();
+        assert!(rust_injections
+            .patterns
+            .iter()
+            .all(|pattern| pattern.include_children));
+        assert!(rust_injections
+            .patterns
+            .iter()
+            .all(|pattern| named(pattern) == Some("rust")));
+        let php = load(&PHP).unwrap();
+        assert!(php
+            .injections
+            .as_ref()
+            .unwrap()
+            .patterns
+            .iter()
+            .any(|pattern| pattern.combined));
+        // A language this crate does not have resolves to nothing, not to an error.
+        let zig = load(&ZIG).unwrap();
+        let comment = &zig.injections.as_ref().unwrap().patterns[0];
+        assert!(matches!(comment.language, Some(FixedLanguage::Named(None))));
+    }
+
+    #[test]
+    fn a_predicate_that_is_not_implemented_disables_its_pattern() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let source = r#"
+((identifier) @keyword (#has-ancestor? @keyword function_item))
+((identifier) @string (#lua-match? @string "^%l+$"))
+((identifier) @comment (#not-lua-match? @comment "^%u"))
+((identifier) @number (#lua-match? @number "%b()"))
+((identifier) @type (#offset! @type 0 1 0 -1))
+(identifier) @variable
+"#;
+        let query = Query::new(&language, source).unwrap();
+        let predicates: Vec<Option<usize>> = (0..query.pattern_count())
+            .map(|pattern| custom_predicates(&query, pattern).map(|predicates| predicates.len()))
+            .collect();
+        // Unknown test, two Lua patterns, an untranslatable Lua pattern, a directive, nothing.
+        assert_eq!(predicates, [None, Some(1), Some(1), None, Some(0), Some(0)]);
+        let negated = custom_predicates(&query, 2).unwrap();
+        assert!(matches!(
+            negated[0],
+            Predicate::LuaMatch { negated: true, .. }
+        ));
+    }
+}
