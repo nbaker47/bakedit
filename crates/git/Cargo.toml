@@ -9,6 +9,7 @@ publish.workspace = true
 similar.workspace = true
 thiserror.workspace = true
 log.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

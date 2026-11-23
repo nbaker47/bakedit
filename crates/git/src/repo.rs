@@ -1,0 +1,250 @@
+//! A repository: where it lives and how its git commands are run.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use crate::error::{GitError, Result};
+use crate::exec::Git;
+use crate::paths::{normalize_relative, path_from_bytes};
+
+/// How long `fetch`, `pull` and `push` may run before they are stopped, unless
+/// [`Repo::set_network_timeout`] says otherwise. Generous on purpose: a push may run a
+/// test suite in its pre-push hook.
+pub const DEFAULT_NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A git work tree.
+///
+/// A `Repo` is only a handful of paths: it is cheap to clone and can be sent to and
+/// shared between threads. Every operation starts a `git` process and blocks until it has
+/// finished, so call them from worker threads.
+///
+/// Path arguments may be absolute (anywhere inside the work tree) or relative to
+/// [`Repo::root`], which is also the form in which paths come back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repo {
+    root: PathBuf,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    network_timeout: Option<Duration>,
+}
+
+impl Repo {
+    /// Finds the work tree that contains `path`, which may be a directory, a file, or a
+    /// file that does not exist yet (its nearest existing directory is used).
+    ///
+    /// Works from inside linked work trees and submodules, where the result is that work
+    /// tree or submodule and not the repository it belongs to. Returns `None` when `path`
+    /// is not inside a work tree (which includes bare repositories and the inside of a
+    /// `.git` directory), and when git cannot be run.
+    pub fn discover(path: impl AsRef<Path>) -> Option<Repo> {
+        let start = nearest_directory(path.as_ref())?;
+        let root = rev_parse_path(&start, "--show-toplevel")?;
+        let git_dir = rev_parse_path(&start, "--absolute-git-dir")?;
+        let common_dir = rev_parse_path(&start, "--git-common-dir")?;
+        let common_dir = start.join(common_dir);
+        Some(Repo {
+            root,
+            git_dir,
+            common_dir: common_dir.canonicalize().unwrap_or(common_dir),
+            network_timeout: Some(DEFAULT_NETWORK_TIMEOUT),
+        })
+    }
+
+    /// The top directory of the work tree, as git reports it: absolute, with symbolic
+    /// links resolved.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// This work tree's git directory. For an ordinary clone that is `<root>/.git`; for a
+    /// linked work tree it is `<main>/.git/worktrees/<name>`, and for a submodule
+    /// `<superproject>/.git/modules/<name>`. `HEAD`, `index` and the files that mark a
+    /// merge or rebase in progress live here.
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    /// The git directory all work trees of the repository share, where branches, remotes
+    /// and objects are stored. The same as [`Repo::git_dir`] unless this is a linked work
+    /// tree.
+    pub fn common_dir(&self) -> &Path {
+        &self.common_dir
+    }
+
+    /// The time limit for `fetch`, `pull` and `push`; `None` means they may run forever.
+    pub fn network_timeout(&self) -> Option<Duration> {
+        self.network_timeout
+    }
+
+    /// Changes the time limit for `fetch`, `pull` and `push`. `None` removes it.
+    pub fn set_network_timeout(&mut self, limit: Option<Duration>) {
+        self.network_timeout = limit;
+    }
+
+    /// `path` relative to [`Repo::root`], which is how git names it.
+    ///
+    /// A relative path is taken as relative to the root already and is only tidied (`.`
+    /// and `..` components resolved). An absolute path has the root removed; if it reaches
+    /// the work tree through a symbolic link it is resolved first, and that also works
+    /// for files that no longer exist. The root itself gives the empty path.
+    ///
+    /// Fails with [`GitError::PathOutsideRepo`] when the path is not inside the work
+    /// tree.
+    pub fn relative_path(&self, path: impl AsRef<Path>) -> Result<PathBuf> {
+        let path = path.as_ref();
+        let outside = || GitError::PathOutsideRepo(path.to_path_buf());
+        if path.is_relative() {
+            return normalize_relative(path).ok_or_else(outside);
+        }
+        if let Ok(rest) = path.strip_prefix(&self.root) {
+            return normalize_relative(rest).ok_or_else(outside);
+        }
+        let resolved = resolve_existing_part(path);
+        let rest = resolved.strip_prefix(&self.root).map_err(|_| outside())?;
+        normalize_relative(rest).ok_or_else(outside)
+    }
+
+    /// The full hash of the commit `HEAD` points at, or `None` before the first commit.
+    pub fn head_sha(&self) -> Result<Option<String>> {
+        let output = self
+            .git()
+            .args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"])
+            .probe()?;
+        Ok((output.code == Some(0)).then(|| output.line_text()))
+    }
+
+    /// The name of the branch that is checked out (also before its first commit), or
+    /// `None` when `HEAD` is detached.
+    pub fn current_branch(&self) -> Result<Option<String>> {
+        let output = self
+            .git()
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .probe()?;
+        Ok((output.code == Some(0)).then(|| output.line_text()))
+    }
+
+    /// A git command that runs at the top of this work tree.
+    pub(crate) fn git(&self) -> Git<'_> {
+        Git::new(&self.root)
+    }
+
+    /// The value of the configuration variable `key`, or `None` when it is not set.
+    pub(crate) fn config(&self, key: &str) -> Result<Option<String>> {
+        let output = self.git().args(["config", "--get", key]).probe()?;
+        Ok((output.code == Some(0)).then(|| output.line_text()))
+    }
+
+    /// Every path of `paths` relative to the root. See [`Repo::relative_path`].
+    pub(crate) fn relative_paths<P: AsRef<Path>>(&self, paths: &[P]) -> Result<Vec<PathBuf>> {
+        paths.iter().map(|path| self.relative_path(path)).collect()
+    }
+}
+
+/// The directory to start looking from: `path` itself or its closest ancestor that exists
+/// and is a directory.
+fn nearest_directory(path: &Path) -> Option<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    absolute
+        .ancestors()
+        .find(|ancestor| ancestor.is_dir())
+        .map(Path::to_path_buf)
+}
+
+/// One path answer from `git rev-parse`, or `None` when git says no.
+///
+/// Each question gets a run of its own: `rev-parse` separates answers with line feeds,
+/// which a path may contain, so only a single answer can be read back exactly.
+fn rev_parse_path(dir: &Path, question: &str) -> Option<PathBuf> {
+    match Git::new(dir).args(["rev-parse", question]).run() {
+        Ok(output) if !output.line().is_empty() => Some(path_from_bytes(output.line())),
+        Ok(_) => None,
+        Err(error) => {
+            log::debug!("no repository at {}: {error}", dir.display());
+            None
+        }
+    }
+}
+
+/// `path` with symbolic links resolved for as much of it as exists on disk. The rest (a
+/// file that was deleted, say) is appended unchanged.
+fn resolve_existing_part(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = ancestor.canonicalize() {
+            return match path.strip_prefix(ancestor) {
+                Ok(rest) => real.join(rest),
+                Err(_) => real,
+            };
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_at(root: &str) -> Repo {
+        Repo {
+            root: PathBuf::from(root),
+            git_dir: PathBuf::from(root).join(".git"),
+            common_dir: PathBuf::from(root).join(".git"),
+            network_timeout: Some(DEFAULT_NETWORK_TIMEOUT),
+        }
+    }
+
+    #[test]
+    fn relative_paths_are_taken_from_the_root() {
+        let repo = repo_at("/work/project");
+        let rel = |path: &str| repo.relative_path(path).ok();
+        assert_eq!(rel("src/main.rs"), Some(PathBuf::from("src/main.rs")));
+        assert_eq!(rel("./src/../README.md"), Some(PathBuf::from("README.md")));
+        assert_eq!(rel(""), Some(PathBuf::new()));
+        assert_eq!(rel("../elsewhere"), None);
+    }
+
+    #[test]
+    fn absolute_paths_lose_the_root() {
+        let repo = repo_at("/work/project");
+        let rel = |path: &str| repo.relative_path(path).ok();
+        assert_eq!(
+            rel("/work/project/src/main.rs"),
+            Some(PathBuf::from("src/main.rs"))
+        );
+        assert_eq!(rel("/work/project"), Some(PathBuf::new()));
+        assert_eq!(
+            rel("/work/project/src/../a.txt"),
+            Some(PathBuf::from("a.txt"))
+        );
+        assert_eq!(rel("/work/project/../other/a.txt"), None);
+        assert_eq!(rel("/work/projector/a.txt"), None);
+    }
+
+    #[test]
+    fn paths_outside_report_the_path() {
+        let repo = repo_at("/work/project");
+        match repo.relative_path("/elsewhere/file") {
+            Err(GitError::PathOutsideRepo(path)) => assert_eq!(path, Path::new("/elsewhere/file")),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_timeout_can_be_changed_and_removed() {
+        let mut repo = repo_at("/work/project");
+        assert_eq!(repo.network_timeout(), Some(DEFAULT_NETWORK_TIMEOUT));
+        repo.set_network_timeout(Some(Duration::from_secs(5)));
+        assert_eq!(repo.network_timeout(), Some(Duration::from_secs(5)));
+        repo.set_network_timeout(None);
+        assert_eq!(repo.network_timeout(), None);
+    }
+
+    #[test]
+    fn repositories_cross_threads() {
+        fn assert_send_sync<T: Send + Sync + 'static>() {}
+        assert_send_sync::<Repo>();
+    }
+}
