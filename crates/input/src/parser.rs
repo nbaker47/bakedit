@@ -215,9 +215,10 @@ impl Parser {
 
     /// Parse `bytes` and return the events they complete, in order.
     ///
-    /// An unfinished sequence at the end stays buffered. Bytes that are not valid input
-    /// (broken UTF-8, control characters inside a sequence, sequences bakedit does not
-    /// know) produce no event and never turn into text.
+    /// An unfinished sequence at the end stays buffered. Input that makes no sense (broken
+    /// UTF-8, a sequence broken off by a byte it cannot contain, a sequence bakedit does
+    /// not know) produces no event and never turns into text; the byte that broke a
+    /// sequence off is then read on its own.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<InputEvent> {
         let mut out = Vec::new();
         if bytes.is_empty() {
