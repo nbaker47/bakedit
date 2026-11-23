@@ -31,8 +31,8 @@ pub struct BracketMark {
 /// text order. One pass over the text, linear in its length.
 pub fn bracket_marks(text: &str, spans: &[HighlightSpan]) -> Vec<BracketMark> {
     let mut marks: Vec<BracketMark> = Vec::new();
-    // Indexes into `marks` of the brackets still open, and how many of each kind.
-    let mut open: Vec<usize> = Vec::new();
+    // The brackets still open, as (index into `marks`, kind), and how many of each kind.
+    let mut open: Vec<(usize, usize)> = Vec::new();
     let mut open_of_kind = [0usize; 3];
     let mut opaque = OpaqueCaptures::default();
     let mut span_index = 0;
@@ -48,7 +48,7 @@ pub fn bracket_marks(text: &str, spans: &[HighlightSpan]) -> Vec<BracketMark> {
             continue;
         }
         if is_open {
-            open.push(marks.len());
+            open.push((marks.len(), kind));
             open_of_kind[kind] += 1;
             marks.push(BracketMark {
                 byte,
@@ -68,9 +68,7 @@ pub fn bracket_marks(text: &str, spans: &[HighlightSpan]) -> Vec<BracketMark> {
             continue;
         }
         // Close the nearest opener of this kind; the ones above it stay unmatched.
-        while let Some(opener) = open.pop() {
-            let opener_kind =
-                classify(text.as_bytes()[marks[opener].byte]).map_or(kind, |(kind, _)| kind);
+        while let Some((opener, opener_kind)) = open.pop() {
             open_of_kind[opener_kind] -= 1;
             if opener_kind == kind {
                 marks[opener].matched = true;
