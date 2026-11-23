@@ -10,6 +10,7 @@ pub mod input;
 pub mod keys;
 pub mod links;
 mod osc;
+mod pty;
 
 pub use config::{
     find_program, inherited_env_names, split_command_line, TermColors, TermConfig, DEFAULT_COMMAND,
