@@ -5,7 +5,7 @@ mod common;
 
 use bakedit_core::{Color, Rgb};
 use bakedit_term::{
-    CursorShape, LinkTarget, Scroll, SelectionKind, TermConfig, Terminal, Underline,
+    CursorShape, LinkTarget, Scroll, SelectionKind, TermConfig, TermEvent, Terminal, Underline,
 };
 use common::{sh, size_reporter, start};
 
@@ -170,6 +170,45 @@ fn scrollback_can_be_read_and_left_again() {
     assert!(term.cursor().is_some());
     assert!(!term.scroll(Scroll::Bottom));
     assert!(!term.scroll(Scroll::PageDown));
+}
+
+#[test]
+fn output_in_a_scroll_region_cannot_push_the_view_out_of_the_scrollback() {
+    // With the view at the oldest line, the child scrolls a region that starts below the
+    // top row. The emulator moves the view for every line although the history did not
+    // grow; reading the screen has to stay inside it all the same.
+    let script = "seq 1 30; read go; printf '\\033[2;4r\\033[4;1H\\n\\n\\n\\n\\n\\n\\n\\n\\033]0;scrolled\\007'; exec cat";
+    let mut session = start(TermConfig {
+        rows: 6,
+        ..sh(script)
+    });
+    session.wait_for_text("30");
+    assert!(session.term.scroll(Scroll::Top));
+    let history = session.term.history_len();
+    assert_eq!((history, session.term.scroll_offset()), (25, 25));
+    assert_eq!(session.term.row_text(0), "1");
+
+    // Written as it is: typing would bring the view back to the live screen.
+    assert!(session.term.write(b"\r"));
+    session.wait_for_event("the child to finish scrolling", |event| {
+        *event == TermEvent::Title("scrolled".to_string())
+    });
+
+    // The Enter was echoed on the last row, which scrolled one more line into the history;
+    // the eight line feeds inside the region added none.
+    let term = &session.term;
+    assert_eq!(term.history_len(), history + 1);
+    assert_eq!(term.scroll_offset(), history + 1);
+    assert_eq!(term.row_text(0), "1");
+    assert_eq!(term.row_text(5), "6");
+    assert_eq!(cells(term).len(), 6);
+    assert_eq!(term.cursor(), None);
+    let _ = term.visible_links();
+    assert!(!term.scroll(Scroll::Lines(1)), "already at the oldest line");
+    assert!(term.scroll(Scroll::Lines(-1)));
+    assert_eq!(term.row_text(0), "2");
+    assert!(term.scroll(Scroll::Bottom));
+    assert!(term.cursor().is_some());
 }
 
 #[test]

@@ -288,9 +288,19 @@ fn shown_char(cell: &GridCell) -> char {
     }
 }
 
+/// How many lines the view is scrolled back.
+///
+/// alacritty_terminal 0.26 can report more than there is history: when a scroll region
+/// that does not start at the top row scrolls while the view is scrolled back, the view is
+/// moved though no line was added to the history. Indexing the grid with such an offset
+/// reads outside of it, so everything here goes through this clamp instead.
+pub(crate) fn view_offset<T>(term: &Term<T>) -> usize {
+    term.grid().display_offset().min(term.history_size())
+}
+
 /// The grid line shown on `row` of the screen.
 fn line_of_row<T>(term: &Term<T>, row: usize) -> Line {
-    Line(row as i32 - term.grid().display_offset() as i32)
+    Line(row as i32 - view_offset(term) as i32)
 }
 
 /// Visit every cell of the visible screen, row by row.
@@ -358,7 +368,7 @@ pub(crate) fn cursor<T>(term: &Term<T>, focused: bool) -> Option<Cursor> {
     };
     let grid = term.grid();
     let mut point = grid.cursor.point;
-    let row = point.line.0 + grid.display_offset() as i32;
+    let row = point.line.0 + view_offset(term) as i32;
     if row < 0 || row >= term.screen_lines() as i32 {
         return None;
     }
@@ -499,8 +509,92 @@ pub(crate) fn selection_update<T>(term: &mut Term<T>, drag: &mut Drag, col: u16,
 }
 
 /// The selected text, or `None` when nothing is selected.
+///
+/// Rows are joined by newlines, except where a row is the soft-wrapped continuation of the
+/// one before; blanks after the last character of a row are left out; a line selection
+/// ends with a newline.
+///
+/// This does what alacritty's `Term::selection_to_string` does. That function is not used
+/// because in 0.26 it reads the row *above* a row that ends in the placeholder for a wide
+/// character that did not fit, which is the wrong row, and outside the grid when there is
+/// no row above.
 pub(crate) fn selection_text<T>(term: &Term<T>) -> Option<String> {
-    term.selection_to_string().filter(|text| !text.is_empty())
+    let selection = term.selection.as_ref()?;
+    let range = selection.to_range(term)?;
+    let grid = term.grid();
+    let last = term.last_column().0;
+    let first_line = range.start.line.max(term.topmost_line());
+    let last_line = range.end.line.min(term.bottommost_line());
+
+    let mut text = String::new();
+    let mut line = first_line;
+    while line <= last_line {
+        let row = &grid[line][..];
+        let mut from = if line == range.start.line {
+            range.start.column.0.min(last)
+        } else {
+            0
+        };
+        let to = if line == range.end.line {
+            range.end.column.0.min(last)
+        } else {
+            last
+        };
+        // Starting on the second half of a wide character takes the character.
+        if from > 0 && row[from].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            from -= 1;
+        }
+        // A soft-wrapped row is text to its edge; any other ends at its last character.
+        let content = if row[last].flags.contains(Flags::WRAPLINE) {
+            row.len()
+        } else {
+            row.iter()
+                .rposition(|cell| !is_blank(cell))
+                .map_or(0, |index| index + 1)
+        };
+        let length = content.min(to + 1);
+        let mut skipping_tab = false;
+        for (col, cell) in row.iter().enumerate().take(length).skip(from) {
+            // A tab is one character in the cell it started at; the blanks up to the next
+            // tab stop (every eighth column, unless the child moved them) belong to it.
+            if skipping_tab && col % 8 != 0 && cell.c == ' ' {
+                continue;
+            }
+            skipping_tab = cell.c == '\t';
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            text.push(cell.c);
+            text.extend(cell.zerowidth().unwrap_or(&[]));
+        }
+        // The row ends here unless its last selected cell says the text wraps on.
+        if to >= last && (length == 0 || !row[length - 1].flags.contains(Flags::WRAPLINE)) {
+            text.push('\n');
+        }
+        // The selection ends on the placeholder for a wide character that moved to the
+        // next row: the character is what was meant.
+        let placeholder =
+            length == row.len() && row[last].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
+        if placeholder && line == range.end.line && line < term.bottommost_line() {
+            text.push(grid[line + 1i32][Column(0)].c);
+        }
+        line += 1i32;
+    }
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    if selection.ty == SelectionType::Lines {
+        text.push('\n');
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+/// Whether a cell holds nothing: no character and no combining mark.
+fn is_blank(cell: &GridCell) -> bool {
+    cell.c == ' ' && cell.zerowidth().is_none_or(|marks| marks.is_empty())
 }
 
 /// The cell a character of a logical line sits in.
@@ -519,7 +613,7 @@ struct CellRef {
 /// detected in their text.
 pub(crate) fn links<T>(term: &Term<T>) -> Vec<ScreenLink> {
     let grid = term.grid();
-    let offset = grid.display_offset() as i32;
+    let offset = view_offset(term) as i32;
     let top = Line(-offset);
     let bottom = Line(term.screen_lines() as i32 - 1 - offset);
     let last_column = term.last_column();
@@ -559,14 +653,12 @@ pub(crate) fn links<T>(term: &Term<T>) -> Vec<ScreenLink> {
                 {
                     continue;
                 }
+                // A resize can leave half a wide character in the last column.
+                let wide = cell.flags.contains(Flags::WIDE_CHAR) && col < last_column.0;
                 let place = CellRef {
                     line: current,
                     col,
-                    width: if cell.flags.contains(Flags::WIDE_CHAR) {
-                        2
-                    } else {
-                        1
-                    },
+                    width: if wide { 2 } else { 1 },
                 };
                 text.push(shown_char(cell));
                 cells.push(place);
@@ -1164,6 +1256,50 @@ mod tests {
     }
 
     #[test]
+    fn selected_tabs_are_copied_as_tabs() {
+        let mut term = term_with(20, 2, "a\tb\tc");
+        selection_start(&mut term, 0, 0, SelectionKind::Line);
+        assert_eq!(selection_text(&term).as_deref(), Some("a\tb\tc\n"));
+        // From inside the blanks of the first tab to the cell after the second.
+        let mut drag = selection_start(&mut term, 4, 0, SelectionKind::Simple);
+        assert!(selection_update(&mut term, &mut drag, 16, 0));
+        assert_eq!(selection_text(&term).as_deref(), Some("    b\tc"));
+    }
+
+    #[test]
+    fn a_selection_takes_whole_wide_characters() {
+        // Row one is "abc" and the placeholder for the 日 that had to move down a row.
+        let mut term = term_with(4, 2, "abc日");
+        let mut drag = selection_start(&mut term, 0, 0, SelectionKind::Simple);
+        assert!(selection_update(&mut term, &mut drag, 2, 0));
+        assert_eq!(selection_text(&term).as_deref(), Some("abc"));
+        // Ending on the placeholder means the character it stands for.
+        assert!(selection_update(&mut term, &mut drag, 3, 0));
+        assert_eq!(selection_text(&term).as_deref(), Some("abc日"));
+        selection_start(&mut term, 1, 0, SelectionKind::Line);
+        assert_eq!(selection_text(&term).as_deref(), Some("abc日\n"));
+
+        // Starting on the second half of a wide character takes all of it.
+        let mut term = term_with(10, 1, "x日本y");
+        let mut drag = selection_start(&mut term, 2, 0, SelectionKind::Simple);
+        assert!(selection_update(&mut term, &mut drag, 3, 0));
+        assert_eq!(selection_text(&term).as_deref(), Some("日本"));
+        assert!(selection_update(&mut term, &mut drag, 5, 0));
+        assert_eq!(selection_text(&term).as_deref(), Some("日本y"));
+    }
+
+    #[test]
+    fn selecting_nothing_but_blanks_is_no_selection() {
+        let mut term = term_with(10, 2, "ab");
+        let mut drag = selection_start(&mut term, 4, 0, SelectionKind::Simple);
+        assert!(selection_update(&mut term, &mut drag, 8, 0));
+        assert_eq!(selection_text(&term), None);
+        // Combining marks count as text even on a blank.
+        feed(&mut term, "\x1b[1;6H \u{301}");
+        assert_eq!(selection_text(&term).as_deref(), Some("  \u{301}"));
+    }
+
+    #[test]
     fn a_line_selection_follows_soft_wraps() {
         let mut term = term_with(5, 3, "abcdefgh\r\nxyz");
         selection_start(&mut term, 1, 1, SelectionKind::Line);
@@ -1505,6 +1641,260 @@ mod tests {
                 link(0, 16, 27, "src/b.rs", Some(22), 1)
             ]
         );
+    }
+
+    #[test]
+    fn a_view_the_emulator_scrolled_past_the_history_reads_as_the_top() {
+        // Scrolled back to the oldest line, then a scroll region that starts below the top
+        // row scrolls: alacritty moves the view up again although no history was added.
+        let mut term = term_with(10, 4, "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
+        term.scroll_display(Scroll::Top);
+        let history = term.history_size();
+        assert_eq!((history, view_offset(&term)), (2, 2));
+        assert_eq!(row_text(&term, 0), "one");
+        feed(&mut term, "\x1b[2;4r\x1b[4;1H\n\n\n\n\n");
+
+        assert_eq!(term.history_size(), history);
+        assert_eq!(view_offset(&term), history);
+        assert_eq!(row_text(&term, 0), "one");
+        assert_eq!(row_text(&term, 1), "two");
+        assert_eq!(cells(&term).len(), 4);
+        assert_eq!(cursor(&term, true), None);
+        let _ = links(&term);
+        assert_eq!(point_at(&term, 0, 0), Point::new(Line(-2), Column(0)));
+        // Back at the live screen the region has scrolled its three rows away.
+        term.scroll_display(Scroll::Bottom);
+        assert_eq!(view_offset(&term), 0);
+        assert_eq!(row_text(&term, 0), "three");
+        assert_eq!(screen_text(&term), "three\n\n\n");
+    }
+
+    /// A small deterministic generator, so a failure can be reproduced from its seed.
+    struct Noise(u64);
+
+    impl Noise {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, limit: u64) -> u64 {
+            self.next() % limit
+        }
+
+        /// A piece of terminal output: text, wide and combining characters, and escape
+        /// sequences both sensible and broken.
+        fn output(&mut self) -> String {
+            const PIECES: &[&str] = &[
+                "a",
+                "Z",
+                " ",
+                "/",
+                ".",
+                ":",
+                "7",
+                "src/a.rs:1",
+                "日",
+                "本",
+                "e\u{301}",
+                "\u{200d}",
+                "🦀",
+                "│",
+                "\t",
+                "\r",
+                "\n",
+                "\r\n",
+                "\x08",
+                "\x1b[",
+                "\x1b]",
+                "\x1b",
+                ";",
+                "m",
+                "H",
+                "J",
+                "K",
+                "L",
+                "M",
+                "P",
+                "@",
+                "S",
+                "T",
+                "X",
+                "r",
+                "h",
+                "l",
+                "?",
+                "1049",
+                "25",
+                "2026",
+                "1",
+                "0",
+                "99",
+                "\x1b[2J",
+                "\x1b[H",
+                "\x1b[1;31m",
+                "\x1b[0m",
+                "\x1b[7m",
+                "\x1b[4:3m",
+                "\x1b[?1049h",
+                "\x1b[?1049l",
+                "\x1b[3;2H",
+                "\x1b[2;4r",
+                "\x1b[r",
+                "\x1bM",
+                "\x1bD",
+                "\x1b7",
+                "\x1b8",
+                "\x1bc",
+                "\x1b]8;;https://example.com\x07",
+                "\x1b]8;;file:///tmp/x#L2\x07",
+                "\x1b]8;;\x07",
+                "\x1b]0;t\x07",
+                "\x1b[5 q",
+                "\x1b[?25l",
+                "\x1b[?25h",
+                "\x1b[>7u",
+                "\x1b[<u",
+                "\x1b[4h",
+                "\x1b[4l",
+                "\x1b[?7l",
+                "\x1b[?7h",
+                "\x1b[10b",
+                "\x1b(0",
+                "\x1b(B",
+                "\x0e",
+                "\x0f",
+                "\x07",
+                "\x18",
+                "\u{9b}",
+                "\u{feff}",
+            ];
+            let mut out = String::new();
+            for _ in 0..self.below(40) {
+                out.push_str(PIECES[self.below(PIECES.len() as u64) as usize]);
+            }
+            out
+        }
+    }
+
+    /// Check the selected text against alacritty's own idea of it, wherever alacritty's
+    /// function can be trusted: not where it reads the wrong row (a row ending in the
+    /// placeholder of a wide character), not where it would index below column 0, and not
+    /// across tabs, whose stops only alacritty knows when the child has moved them.
+    fn compare_with_upstream(term: &Term<VoidListener>, ours: Option<String>, context: &str) {
+        let Some(range) = term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(term))
+        else {
+            assert_eq!(ours, None, "{context}");
+            return;
+        };
+        let grid = term.grid();
+        let placeholder_at_end = grid[range.end.line][term.last_column()]
+            .flags
+            .contains(Flags::LEADING_WIDE_CHAR_SPACER);
+        // A row that starts with the second half of a wide character, left behind by a
+        // resize, makes alacritty step to the column before the first.
+        let spacer_at_row_start = (range.start.line.0..=range.end.line.0).any(|line| {
+            let first = if line == range.start.line.0 {
+                range.start.column
+            } else {
+                Column(0)
+            };
+            first.0 == 0
+                && grid[Line(line)][first]
+                    .flags
+                    .contains(Flags::WIDE_CHAR_SPACER)
+        });
+        if placeholder_at_end || spacer_at_row_start {
+            return;
+        }
+        let theirs = term.selection_to_string().filter(|text| !text.is_empty());
+        if theirs.as_deref().is_some_and(|text| text.contains('\t')) {
+            return;
+        }
+        assert_eq!(ours, theirs, "{context}: {:?}", term.selection);
+    }
+
+    #[test]
+    fn nothing_the_child_writes_can_make_reading_the_screen_panic() {
+        for seed in 1..=300u64 {
+            let mut noise = Noise(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let mut term = term_with(13, 5, "");
+            let mut drag = None;
+            for step in 0..120 {
+                feed(&mut term, &noise.output());
+                match noise.below(12) {
+                    0 => term.resize(super::testing::Size(
+                        2 + noise.below(30) as usize,
+                        1 + noise.below(12) as usize,
+                    )),
+                    1 => term.scroll_display(Scroll::Delta(noise.below(9) as i32 - 4)),
+                    2 => term.scroll_display(Scroll::Top),
+                    3 => term.scroll_display(Scroll::Bottom),
+                    4 => {
+                        let kind = [
+                            SelectionKind::Simple,
+                            SelectionKind::Word,
+                            SelectionKind::Line,
+                        ][noise.below(3) as usize];
+                        drag = Some(selection_start(
+                            &mut term,
+                            noise.below(40) as u16,
+                            noise.below(20) as u16,
+                            kind,
+                        ));
+                    }
+                    5 | 6 => {
+                        if let Some(drag) = drag.as_mut() {
+                            selection_update(
+                                &mut term,
+                                drag,
+                                noise.below(40) as u16,
+                                noise.below(20) as u16,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+
+                let (cols, rows) = (term.columns(), term.screen_lines());
+                let context = format!("seed {seed}, step {step}, {cols}x{rows}");
+                let mut visited = 0;
+                render(&term, &TermColors::default(), &mut |col, row, _| {
+                    assert!(
+                        usize::from(col) < cols && usize::from(row) < rows,
+                        "{context}"
+                    );
+                    visited += 1;
+                });
+                assert_eq!(visited, cols * rows, "{context}");
+                if let Some(cursor) = cursor(&term, true) {
+                    assert!(
+                        usize::from(cursor.col) < cols && usize::from(cursor.row) < rows,
+                        "{context}"
+                    );
+                }
+                let text = screen_text(&term);
+                assert_eq!(text.split('\n').count(), rows, "{context}");
+                for row in 0..rows as u16 + 2 {
+                    let _ = row_text(&term, row);
+                }
+                for link in links(&term) {
+                    assert!(link.col_start < link.col_end, "{context}: {link:?}");
+                    assert!(
+                        usize::from(link.col_end) <= cols && usize::from(link.row) < rows,
+                        "{context}: {link:?}"
+                    );
+                }
+                let selected = selection_text(&term);
+                compare_with_upstream(&term, selected, &context);
+                let _ = TermModes::from_mode(*term.mode());
+            }
+        }
     }
 
     #[test]

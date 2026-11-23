@@ -10,6 +10,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt;
+use std::ops::DerefMut;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -612,7 +613,7 @@ impl Terminal {
             resized
         };
         // The grid first: the child redraws as soon as it hears of the new size.
-        self.term.lock().resize(window);
+        self.locked().resize(window);
         *lock(&self.shared.drag) = None;
         let _ = self.pty.send(Msg::Resize(window.window_size()));
         self.touch();
@@ -641,7 +642,7 @@ impl Terminal {
 
     /// The modes the child has put the terminal in.
     pub fn modes(&self) -> TermModes {
-        TermModes::from_mode(*self.term.lock().mode())
+        TermModes::from_mode(*self.locked().mode())
     }
 
     /// A counter that goes up whenever what [`Terminal::render`] or [`Terminal::cursor`]
@@ -665,7 +666,7 @@ impl Terminal {
     ///
     /// The terminal is locked for the duration: `f` must not call back into it.
     pub fn render(&self, f: &mut dyn FnMut(u16, u16, &Cell<'_>)) {
-        let term = self.term.lock();
+        let term = self.locked();
         let colors = *lock(&self.shared.colors);
         screen::render(&term, &colors, f);
     }
@@ -674,20 +675,20 @@ impl Terminal {
     /// that its row is off the screen.
     pub fn cursor(&self) -> Option<Cursor> {
         let focused = self.shared.focused.load(Ordering::Relaxed);
-        screen::cursor(&self.term.lock(), focused)
+        screen::cursor(&self.locked(), focused)
     }
 
     /// The text of one row of the visible screen, without trailing blanks. A wide
     /// character is one character, and combining marks follow their base. Empty for a row
     /// past the bottom.
     pub fn row_text(&self, row: u16) -> String {
-        screen::row_text(&self.term.lock(), row)
+        screen::row_text(&self.locked(), row)
     }
 
     /// The text of the visible screen: every row as [`Terminal::row_text`] gives it,
     /// joined by newlines.
     pub fn screen_text(&self) -> String {
-        screen::screen_text(&self.term.lock())
+        screen::screen_text(&self.locked())
     }
 
     // ---- scrollback -------------------------------------------------------------------
@@ -696,8 +697,8 @@ impl Terminal {
     /// screen has no scrollback, so there this never moves anything.
     pub fn scroll(&self, scroll: Scroll) -> bool {
         let moved = {
-            let mut term = self.term.lock();
-            let before = term.grid().display_offset();
+            let mut term = self.locked();
+            let before = screen::view_offset(&term);
             term.scroll_display(match scroll {
                 Scroll::Lines(lines) => GridScroll::Delta(lines),
                 Scroll::PageUp => GridScroll::PageUp,
@@ -705,7 +706,7 @@ impl Terminal {
                 Scroll::Top => GridScroll::Top,
                 Scroll::Bottom => GridScroll::Bottom,
             });
-            term.grid().display_offset() != before
+            screen::view_offset(&term) != before
         };
         if moved {
             self.touch();
@@ -715,12 +716,12 @@ impl Terminal {
 
     /// How many lines the view is scrolled back: 0 is the live screen.
     pub fn scroll_offset(&self) -> usize {
-        self.term.lock().grid().display_offset()
+        screen::view_offset(&self.locked())
     }
 
     /// How many lines of scrollback there are above the live screen.
     pub fn history_len(&self) -> usize {
-        self.term.lock().history_size()
+        self.locked().history_size()
     }
 
     // ---- selection --------------------------------------------------------------------
@@ -733,7 +734,7 @@ impl Terminal {
     /// under the cell at once. Positions off the screen are clamped to it.
     pub fn selection_start(&self, col: u16, row: u16, kind: SelectionKind) {
         {
-            let mut term = self.term.lock();
+            let mut term = self.locked();
             let drag = screen::selection_start(&mut term, col, row, kind);
             *lock(&self.shared.drag) = Some(drag);
         }
@@ -745,7 +746,7 @@ impl Terminal {
     /// has been started, or when the terminal dropped it because its text was erased.
     pub fn selection_update(&self, col: u16, row: u16) {
         let changed = {
-            let mut term = self.term.lock();
+            let mut term = self.locked();
             let mut drag = lock(&self.shared.drag);
             match drag.as_mut() {
                 Some(drag) => screen::selection_update(&mut term, drag, col, row),
@@ -760,7 +761,7 @@ impl Terminal {
     /// Drop the selection.
     pub fn selection_clear(&self) {
         let cleared = {
-            let mut term = self.term.lock();
+            let mut term = self.locked();
             *lock(&self.shared.drag) = None;
             term.selection.take().is_some()
         };
@@ -772,7 +773,7 @@ impl Terminal {
     /// The selected text: rows joined by newlines, except where a row is the soft-wrapped
     /// continuation of the one before. `None` when nothing is selected.
     pub fn selection_text(&self) -> Option<String> {
-        screen::selection_text(&self.term.lock())
+        screen::selection_text(&self.locked())
     }
 
     // ---- input ------------------------------------------------------------------------
@@ -815,7 +816,7 @@ impl Terminal {
     /// event means locally: selecting, or scrolling the scrollback.
     pub fn send_mouse(&self, mouse: &MouseEvent) -> bool {
         let (modes, cols, rows) = {
-            let term = self.term.lock();
+            let term = self.locked();
             (
                 TermModes::from_mode(*term.mode()),
                 term.columns(),
@@ -900,7 +901,7 @@ impl Terminal {
     /// File paths are candidates, not checked against the disk: resolve one with
     /// [`LinkTarget::resolve`](crate::LinkTarget::resolve) before treating it as a link.
     pub fn visible_links(&self) -> Vec<ScreenLink> {
-        screen::links(&self.term.lock())
+        screen::links(&self.locked())
     }
 
     // ---- internals --------------------------------------------------------------------
@@ -909,11 +910,23 @@ impl Terminal {
         self.shared.generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Lock the terminal for this thread. Should the emulator have left the view scrolled
+    /// back further than there is history (see [`screen::view_offset`]), that is put right
+    /// before anything looks at it.
+    fn locked(&self) -> impl DerefMut<Target = Term<Listener>> + '_ {
+        let mut term = self.term.lock();
+        if term.grid().display_offset() > term.history_size() {
+            // Scrolling by nothing clamps the offset to the history.
+            term.scroll_display(GridScroll::Delta(0));
+        }
+        term
+    }
+
     /// What typing does to the view: back to the live screen, selection gone.
     fn follow_input(&self) {
         let changed = {
-            let mut term = self.term.lock();
-            let scrolled = term.grid().display_offset() != 0;
+            let mut term = self.locked();
+            let scrolled = screen::view_offset(&term) != 0;
             if scrolled {
                 term.scroll_display(GridScroll::Bottom);
             }
