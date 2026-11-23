@@ -695,11 +695,11 @@ impl Shell {
             }
             "editor::RevealInFileManager" => {
                 let Some(path) = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) else { return false };
-                reveal_in_file_manager(&path);
+                crate::external::reveal(&path);
             }
             "bakedit::RevealPath" => {
                 let Some(path) = action.arg_str("path") else { return false };
-                reveal_in_file_manager(Path::new(path));
+                crate::external::reveal(Path::new(path));
             }
             "zed::OpenSettingsFile" | "zed::OpenSettings" => self.effects.push(Effect::open(crate::settings::settings_path())),
             "zed::OpenKeymap" => self.effects.push(Effect::open(crate::settings::keymap_path())),
@@ -1347,7 +1347,7 @@ impl Shell {
             }
             Effect::Status { text, error } => self.set_status(text, error),
             Effect::Ask(question) => self.ask(question.message, question.detail, question.answers),
-            Effect::OpenExternally(target) => open_externally(&target),
+            Effect::OpenExternally(target) => crate::external::open(&target),
             Effect::RefreshGit => self.project.refresh_git(),
             Effect::PathsChanged(paths) => {
                 // The view that made the change knows of it already; the index, the status
@@ -1769,22 +1769,4 @@ fn draw_input_modal(canvas: &mut Canvas<'_>, screen: Rect, title: &str, input: &
         Style::colors(theme.text_muted, bg),
     );
     Cursor { col, row: field.y, shape: CursorShape::Bar }
-}
-
-fn open_externally(target: &str) {
-    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(program)
-        .arg(target)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-fn reveal_in_file_manager(path: &Path) {
-    if cfg!(target_os = "macos") {
-        let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
-    } else if let Some(parent) = path.parent() {
-        open_externally(&parent.to_string_lossy());
-    }
 }

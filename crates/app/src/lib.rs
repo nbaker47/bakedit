@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod dump;
 pub mod editor;
+pub mod external;
 pub mod factory;
 pub mod format;
 pub mod fuzzy;
