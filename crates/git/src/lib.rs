@@ -10,6 +10,7 @@ mod line_diff;
 mod log;
 mod patch;
 mod paths;
+mod permalink;
 mod remote;
 mod repo;
 mod status;
@@ -26,6 +27,7 @@ pub use line_diff::{
 };
 pub use log::Commit;
 pub use patch::HunkAction;
+pub use permalink::{build_permalink, parse_remote_url, HostKind, RemoteUrl};
 pub use repo::{Repo, DEFAULT_NETWORK_TIMEOUT};
 pub use status::{
     parse_status, ConflictKind, DisplayStatus, FileState, RepoState, StageState, Status,
