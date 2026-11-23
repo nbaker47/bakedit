@@ -690,6 +690,10 @@ impl Shell {
                 let Some(path) = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) else { return false };
                 reveal_in_file_manager(&path);
             }
+            "bakedit::RevealPath" => {
+                let Some(path) = action.arg_str("path") else { return false };
+                reveal_in_file_manager(Path::new(path));
+            }
             "zed::OpenSettingsFile" | "zed::OpenSettings" => self.effects.push(Effect::open(crate::settings::settings_path())),
             "zed::OpenKeymap" => self.effects.push(Effect::open(crate::settings::keymap_path())),
             "zed::OpenDefaultKeymap" => self.open_page("Default Keymap", crate::keys::DEFAULT_KEYMAP, Some("JSON")),
