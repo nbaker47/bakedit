@@ -752,6 +752,9 @@ impl Shell {
                 };
                 self.set_status(text, false);
             }
+            // The editor takes it while it has the keys. Anywhere else the key is used up here,
+            // so ctrl-] i types no stray i into the terminal, a picker or a text field.
+            "bakedit::ToggleMode" => self.set_status("Nav and edit modes are the editor's: no editor has the keys", false),
             "bakedit::OpenProject" => {
                 let Some(path) = action.arg_str("path").map(PathBuf::from) else { return false };
                 self.request_open_project(path, action.arg_str("save_intent"));

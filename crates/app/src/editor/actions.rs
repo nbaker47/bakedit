@@ -120,6 +120,13 @@ impl EditorItem {
             self.set_modal(true);
         } else if self.insert {
             self.leave_insert();
+            // Nav mode holds cursors, never a selection (one kept from SELECT, say): each
+            // collapses onto its head before the block is clamped onto a character.
+            if !self.editor.selections().is_single_cursor() {
+                let mut selections = self.editor.selections().clone();
+                selections.transform(|selection| Selection::cursor(selection.head));
+                self.editor.set_selections(selections);
+            }
         } else {
             let mark = self.editor.undo_steps();
             self.enter_insert();

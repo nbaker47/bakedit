@@ -1373,6 +1373,48 @@ fn cmd_i_and_ctrl_bracket_i_switch_the_mode_through_the_keymap() {
 }
 
 #[test]
+fn cmd_i_from_select_and_back_leaves_no_selection_in_nav_mode() {
+    use bakedit_core::Key;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", "hello world\nsecond\n");
+    let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
+    shell.open_file(&path, None, None, false, true);
+    let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
+    router.key(&mut shell, &KeyEvent::typed('v'));
+    router.key(&mut shell, &KeyEvent::typed('w'));
+    router.key(&mut shell, &cmd_i);
+    let editor = |shell: &crate::shell::Shell| shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap().editor.selections().clone();
+    assert!(!editor(&shell).is_single_cursor(), "edit mode keeps the selection to replace");
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Nav));
+    assert!(editor(&shell).is_single_cursor(), "nav mode holds a cursor, not a selection");
+    // So d cuts the line, not the word that was selected.
+    router.key(&mut shell, &KeyEvent::typed('d'));
+    let text = text_of(shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap());
+    assert_eq!(text, "second\n");
+}
+
+#[test]
+fn cmd_i_from_the_find_bar_switches_the_texts_mode_through_the_keymap() {
+    use bakedit_core::Key;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", "hello world\n");
+    let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
+    shell.open_file(&path, None, None, false, true);
+    let item = |shell: &crate::shell::Shell| shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap().find_focused();
+    router.key(&mut shell, &KeyEvent::typed('/'));
+    assert!(item(&shell), "the find bar has the keys");
+    let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Edit));
+    assert!(item(&shell), "the bar keeps the keys");
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Nav));
+}
+
+#[test]
 fn a_click_on_the_mode_in_the_status_bar_switches_it() {
     use crate::shell::Shell;
     use crate::workspace::{Focus, PanelId};

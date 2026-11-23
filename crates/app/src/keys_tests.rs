@@ -155,25 +155,27 @@ fn the_fallback_prefix_works_without_cmd() {
 }
 
 #[test]
-fn the_mode_keys_fall_through_where_no_editor_takes_them() {
+fn the_mode_keys_type_nothing_where_no_editor_takes_them() {
     let (mut router, _) = setup();
     let (mut shell, log) = shell();
-    // In the terminal ctrl-] i is offered, nothing takes it, and the i reaches the program.
+    // In the terminal ctrl-] i is offered, the terminal passes, the shell uses it up: no i
+    // reaches the program, and the status bar says why nothing switched.
     ch(&mut router, &mut shell, 't', CMD);
     assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Terminal));
     ch(&mut router, &mut shell, ']', Mods::CTRL);
     router.key(&mut shell, &KeyEvent::typed('i'));
     assert!(log.borrow().contains(&"Terminal action bakedit::ToggleMode null".to_string()), "{:?}", log.borrow());
-    assert!(log.borrow().contains(&"Terminal key i".to_string()), "{:?}", log.borrow());
+    assert!(!log.borrow().iter().any(|l| l == "Terminal key i"), "{:?}", log.borrow());
+    assert!(shell.status_message().is_some_and(|(text, _)| text.contains("no editor has the keys")));
     // cmd-i is the editor's alone: the terminal gets it as a key.
     ch(&mut router, &mut shell, 'i', CMD);
     assert_eq!(log.borrow().iter().filter(|l| l.contains("bakedit::ToggleMode")).count(), 1);
-    // In a picker the i goes into the query.
+    // In a picker the query stays empty.
     ch(&mut router, &mut shell, 'p', CMD);
     ch(&mut router, &mut shell, ']', Mods::CTRL);
     router.key(&mut shell, &KeyEvent::typed('i'));
     let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder stays open") };
-    assert_eq!(picker.query(), "i");
+    assert_eq!(picker.query(), "");
 }
 
 #[test]

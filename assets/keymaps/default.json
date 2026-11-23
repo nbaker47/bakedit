@@ -676,9 +676,16 @@
   // cmd-i switches between the two either way (so do ctrl-] i, in any terminal, and a click
   // on the mode in the status bar): into edit mode with the cursor where it is, back to nav
   // mode without escape's step to the left. With the modes off it turns them on, as
-  // bakedit::ToggleEditMode does (settings.json is left alone).
+  // bakedit::ToggleEditMode does (settings.json is left alone). From the find bar it switches
+  // the text's mode and the bar keeps the keys.
   {
     "context": "Editor && mode == full",
+    "bindings": {
+      "cmd-i": "bakedit::ToggleMode"
+    }
+  },
+  {
+    "context": "BufferSearchBar",
     "bindings": {
       "cmd-i": "bakedit::ToggleMode"
     }
