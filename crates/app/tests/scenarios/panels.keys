@@ -55,6 +55,12 @@ key cmd-g
 expect Tracked
 expect Nothing staged
 snap git
+# shift-escape (Zed's workspace::ToggleZoom) puts whatever has the keyboard fullscreen.
+key shift-escape
+expect-not src › main.rs
+expect Tracked
+key shift-escape
+expect src › main.rs
 key cmd-g
 expect-not Tracked
 expect NAV
@@ -77,6 +83,10 @@ expect src › main.rs
 key cmd-e
 key cmd-shift-e
 expect lib.rs
+key shift-escape
+expect-not src › main.rs
+key shift-escape
+expect src › main.rs
 key cmd-shift-e
 expect-not ▾ demo
 key cmd-shift-e
