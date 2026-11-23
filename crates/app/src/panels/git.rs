@@ -98,6 +98,12 @@ enum PanelFocus {
     Editor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListSection {
+    Uncommitted,
+    Branch,
+}
+
 /// What to do when a background job the panel started has finished.
 enum After {
     /// A commit: clear the message when it worked.
@@ -142,16 +148,26 @@ pub struct GitPanel {
     /// The selection moved: scroll it into view at the next draw.
     reveal: bool,
     focus: PanelFocus,
+    active_section: ListSection,
 
     /// Lines added and removed per file, from a background read of the diff.
     counts: HashMap<PathBuf, (usize, usize)>,
     counts_task: Option<Task<HashMap<PathBuf, (usize, usize)>>>,
     counts_stale: bool,
     counts_started: Option<Instant>,
-    /// Active diff base (`Uncommitted` vs `Branch(ref_name)`) and background loader for branch diffs.
+    /// Bottom half: changes since the repo's base branch (e.g. `origin/main` or `main`).
     diff_base: DiffBase,
-    branch_task: Option<Task<Result<(Vec<Change>, HashMap<PathBuf, (usize, usize)>), String>>>,
+    branch_repo_root: Option<PathBuf>,
+    branch_base: String,
+    branch_changes: Vec<Change>,
+    branch_counts: HashMap<PathBuf, (usize, usize)>,
+    branch_selected_path: Option<PathBuf>,
+    branch_selected: usize,
+    branch_scroll: usize,
+    branch_reveal: bool,
+    branch_task: Option<Task<Result<(String, Vec<Change>, HashMap<PathBuf, (usize, usize)>), String>>>,
     branch_stale: bool,
+    branch_error: Option<String>,
 
     message: Editor,
     /// First visual row of the message shown.
@@ -166,6 +182,8 @@ pub struct GitPanel {
     branch_button: Rect,
     mode_button: Rect,
     list_area: Rect,
+    branch_header: Rect,
+    branch_list_area: Rect,
     message_area: Rect,
     /// The rows of the message box that hold text (the band minus its padding).
     message_text: Rect,
@@ -388,6 +406,11 @@ pub(crate) fn request_discard(cx: &mut Cx<'_>, rel: &Path, skip_prompt: bool, co
 impl GitPanel {
     /// The changes of the project's repository. Empty until the first status arrives.
     pub fn new(cx: &mut Cx<'_>) -> GitPanel {
+        let branch_repo_root = cx.project.repo().map(|r| r.root().to_path_buf());
+        let branch_base = match cx.project.diff_base() {
+            DiffBase::Branch(base) => base.clone(),
+            DiffBase::Uncommitted => cx.project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
+        };
         let mut panel = GitPanel {
             changes: Vec::new(),
             status: None,
@@ -397,13 +420,23 @@ impl GitPanel {
             scroll: 0,
             reveal: false,
             focus: PanelFocus::Changes,
+            active_section: ListSection::Uncommitted,
             counts: HashMap::new(),
             counts_task: None,
             counts_stale: true,
             counts_started: None,
             diff_base: cx.project.diff_base().clone(),
+            branch_repo_root,
+            branch_base,
+            branch_changes: Vec::new(),
+            branch_counts: HashMap::new(),
+            branch_selected_path: None,
+            branch_selected: 0,
+            branch_scroll: 0,
+            branch_reveal: false,
             branch_task: None,
             branch_stale: true,
+            branch_error: None,
             message: message_editor(""),
             message_top: 0,
             reveal_message: false,
@@ -414,6 +447,8 @@ impl GitPanel {
             branch_button: Rect::default(),
             mode_button: Rect::default(),
             list_area: Rect::default(),
+            branch_header: Rect::default(),
+            branch_list_area: Rect::default(),
             message_area: Rect::default(),
             message_text: Rect::default(),
             commit_button: Rect::default(),
@@ -426,53 +461,72 @@ impl GitPanel {
 
     // ---- the list --------------------------------------------------------------------
 
-    /// Rebuild the list when the project has a newer status or diff base. Returns true if it changed.
+    /// Rebuild the uncommitted list and mark the branch diff stale when status, repo or
+    /// diff base changes. Returns true if anything changed.
     fn refresh(&mut self, project: &Project) -> bool {
         let generation = project.git_generation();
         let status = project.status().cloned();
         let diff_base = project.diff_base().clone();
+        let repo_root = project.repo().map(|r| r.root().to_path_buf());
+        let repo_changed = self.branch_repo_root != repo_root;
         let base_changed = self.diff_base != diff_base;
         let same = status.as_ref().map(Arc::as_ptr) == self.status.as_ref().map(Arc::as_ptr);
-        if self.generation == Some(generation) && same && !base_changed {
+        if self.generation == Some(generation) && same && !base_changed && !repo_changed {
             return false;
         }
         self.generation = Some(generation);
         self.status = status.clone();
-        if base_changed {
-            self.diff_base = diff_base;
+        if repo_changed {
+            self.branch_repo_root = repo_root;
+            self.branch_base = match &diff_base {
+                DiffBase::Branch(base) => base.clone(),
+                DiffBase::Uncommitted => project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
+            };
+            self.branch_changes.clear();
+            self.branch_counts.clear();
+            self.branch_selected = 0;
+            self.branch_selected_path = None;
+            self.branch_scroll = 0;
+            self.branch_error = None;
             self.branch_task = None;
             self.branch_stale = true;
+            self.counts.clear();
             self.counts_stale = true;
-            if matches!(self.diff_base, DiffBase::Branch(_)) {
-                self.changes.clear();
-                self.counts.clear();
-                self.selected = 0;
-                self.selected_path = None;
-                return true;
+        }
+        if base_changed {
+            self.diff_base = diff_base.clone();
+            if let DiffBase::Branch(base) = &diff_base {
+                if self.branch_base != *base {
+                    self.branch_base = base.clone();
+                    self.branch_changes.clear();
+                    self.branch_counts.clear();
+                    self.branch_selected = 0;
+                    self.branch_selected_path = None;
+                    self.branch_scroll = 0;
+                    self.branch_error = None;
+                    self.branch_task = None;
+                    self.branch_stale = true;
+                }
             }
         }
-        if matches!(self.diff_base, DiffBase::Branch(_)) {
+        if !same || repo_changed {
+            self.counts_stale = true;
             self.branch_stale = true;
-            return true;
+            let mut changes: Vec<Change> = status
+                .as_deref()
+                .map(|status| {
+                    let entry = |e: &StatusEntry| Change { path: e.path.clone(), status: e.display_status(), stage: e.stage_state(), group: group_of(e) };
+                    status.entries.iter().map(entry).collect()
+                })
+                .unwrap_or_default();
+            // Conflicts first, then what git tracks, then what it does not (stable within each).
+            changes.sort_by_key(|change| match change.group {
+                Group::Conflicts => 0,
+                Group::Tracked => 1,
+                Group::Untracked => 2,
+            });
+            self.apply_changes(changes);
         }
-        if same && !base_changed {
-            return false;
-        }
-        self.counts_stale = true;
-        let mut changes: Vec<Change> = status
-            .as_deref()
-            .map(|status| {
-                let entry = |e: &StatusEntry| Change { path: e.path.clone(), status: e.display_status(), stage: e.stage_state(), group: group_of(e) };
-                status.entries.iter().map(entry).collect()
-            })
-            .unwrap_or_default();
-        // Conflicts first, then what git tracks, then what it does not (stable within each).
-        changes.sort_by_key(|change| match change.group {
-            Group::Conflicts => 0,
-            Group::Tracked => 1,
-            Group::Untracked => 2,
-        });
-        self.apply_changes(changes);
         true
     }
 
@@ -485,6 +539,22 @@ impl GitPanel {
             None => self.selected = self.selected.min(self.changes.len().saturating_sub(1)),
         }
         self.selected_path = self.changes.get(self.selected).map(|change| change.path.clone());
+        if self.changes.is_empty() && !self.branch_changes.is_empty() {
+            self.active_section = ListSection::Branch;
+        }
+    }
+
+    fn apply_branch_changes(&mut self, changes: Vec<Change>) {
+        self.branch_changes = changes;
+        let kept = self.branch_selected_path.as_ref().and_then(|path| self.branch_changes.iter().position(|change| &change.path == path));
+        match kept {
+            Some(index) => self.branch_selected = index,
+            None => self.branch_selected = self.branch_selected.min(self.branch_changes.len().saturating_sub(1)),
+        }
+        self.branch_selected_path = self.branch_changes.get(self.branch_selected).map(|change| change.path.clone());
+        if self.branch_changes.is_empty() && self.active_section == ListSection::Branch {
+            self.active_section = ListSection::Uncommitted;
+        }
     }
 
     fn list_rows(&self) -> Vec<ListRow> {
@@ -501,21 +571,66 @@ impl GitPanel {
     }
 
     fn selected_change(&self) -> Option<&Change> {
-        self.changes.get(self.selected)
+        match self.active_section {
+            ListSection::Uncommitted => self.changes.get(self.selected),
+            ListSection::Branch => self.branch_changes.get(self.branch_selected),
+        }
     }
 
     fn select(&mut self, index: usize) {
         if self.changes.is_empty() {
+            if !self.branch_changes.is_empty() {
+                self.select_branch(index);
+            }
             return;
         }
+        self.active_section = ListSection::Uncommitted;
         self.selected = index.min(self.changes.len() - 1);
         self.selected_path = self.changes.get(self.selected).map(|change| change.path.clone());
         self.reveal = true;
     }
 
+    fn select_branch(&mut self, index: usize) {
+        if self.branch_changes.is_empty() {
+            return;
+        }
+        self.active_section = ListSection::Branch;
+        self.branch_selected = index.min(self.branch_changes.len() - 1);
+        self.branch_selected_path = self.branch_changes.get(self.branch_selected).map(|change| change.path.clone());
+        self.branch_reveal = true;
+    }
+
     fn move_selection(&mut self, delta: isize) {
-        let target = (self.selected as isize + delta).clamp(0, self.changes.len().saturating_sub(1) as isize);
-        self.select(target as usize);
+        match self.active_section {
+            ListSection::Uncommitted => {
+                if self.changes.is_empty() {
+                    if !self.branch_changes.is_empty() {
+                        self.select_branch(0);
+                    }
+                    return;
+                }
+                let next = self.selected as isize + delta;
+                if next >= self.changes.len() as isize && !self.branch_changes.is_empty() {
+                    self.select_branch(0);
+                } else {
+                    self.select(next.clamp(0, self.changes.len().saturating_sub(1) as isize) as usize);
+                }
+            }
+            ListSection::Branch => {
+                if self.branch_changes.is_empty() {
+                    if !self.changes.is_empty() {
+                        self.select(self.changes.len() - 1);
+                    }
+                    return;
+                }
+                let next = self.branch_selected as isize + delta;
+                if next < 0 && !self.changes.is_empty() {
+                    self.select(self.changes.len() - 1);
+                } else {
+                    self.select_branch(next.clamp(0, self.branch_changes.len().saturating_sub(1) as isize) as usize);
+                }
+            }
+        }
     }
 
     fn group_state(&self, group: Group) -> StageState {
@@ -817,10 +932,7 @@ impl GitPanel {
     // ---- counts of added and removed lines -------------------------------------------
 
     fn kick_counts(&mut self, project: &Project) {
-        if matches!(self.diff_base, DiffBase::Branch(_)) {
-            self.kick_branch_diff(project);
-            return;
-        }
+        self.kick_branch_diff(project);
         if self.counts_task.is_some() || !self.counts_stale {
             return;
         }
@@ -852,12 +964,11 @@ impl GitPanel {
         if self.branch_task.is_some() || !self.branch_stale {
             return;
         }
-        let DiffBase::Branch(base_ref) = &self.diff_base else { return };
         let Some(repo) = project.repo().cloned() else {
             self.branch_stale = false;
             return;
         };
-        let base_ref = base_ref.clone();
+        let base_ref = self.branch_base.clone();
         let status_snapshot = self.status.clone();
         self.branch_stale = false;
         self.branch_task = Some(project.spawn(move || {
@@ -886,7 +997,7 @@ impl GitPanel {
                 Group::Tracked => 1,
                 Group::Untracked => 2,
             });
-            Ok((changes, counts))
+            Ok((base_ref, changes, counts))
         }));
     }
 
@@ -959,12 +1070,15 @@ impl GitPanel {
 struct Layout {
     header: Rect,
     list: Rect,
+    branch_header: Rect,
+    branch_list: Rect,
     message: Rect,
     buttons: Rect,
 }
 
 /// The header on top, the button row at the bottom, the message box above it with a gap,
-/// and the list in between. A short panel gives up the message box before the list.
+/// and the split changes lists in between (top: uncommitted changes, bottom: changes since
+/// the base branch). A short panel gives up the message box and bottom split before the top list.
 fn layout(area: Rect, message_rows: usize) -> Layout {
     let header = Rect::new(area.x, area.y, area.width, 1.min(area.height));
     let below = area.height - header.height;
@@ -972,10 +1086,20 @@ fn layout(area: Rect, message_rows: usize) -> Layout {
     let room = below.saturating_sub(buttons_h + MIN_LIST_ROWS);
     let message_h = if room >= 2 { (message_rows as u16).clamp(1, room - 1) } else { 0 };
     let gap = u16::from(message_h > 0);
-    let list = Rect::new(area.x, area.y + header.height, area.width, below - buttons_h - message_h - gap);
-    let message = Rect::new(area.x, list.bottom() + gap, area.width, message_h);
+    let lists_h = below - buttons_h - message_h - gap;
+    let (list, branch_header, branch_list) = if lists_h >= 8 {
+        let top_h = (lists_h - 1) / 2;
+        let bottom_h = lists_h - top_h - 1;
+        let top = Rect::new(area.x, area.y + header.height, area.width, top_h);
+        let b_header = Rect::new(area.x, top.bottom(), area.width, 1);
+        let bottom = Rect::new(area.x, b_header.bottom(), area.width, bottom_h);
+        (top, b_header, bottom)
+    } else {
+        (Rect::new(area.x, area.y + header.height, area.width, lists_h), Rect::default(), Rect::default())
+    };
+    let message = Rect::new(area.x, area.y + header.height + lists_h + gap, area.width, message_h);
     let buttons = Rect::new(area.x, message.bottom(), area.width, buttons_h);
-    Layout { header, list, message, buttons }
+    Layout { header, list, branch_header, branch_list, message, buttons }
 }
 
 /// A button whose right edge is at `right` (exclusive). Returns where it was drawn.
@@ -1026,18 +1150,16 @@ impl GitPanel {
             }
             return;
         };
-        // The right side: the job that is running, else the active diff base / change count.
-        let (right, right_accent) = match cx.project.busy() {
-            Some(job) => (format!("{job}…"), false),
-            None => match &self.diff_base {
-                DiffBase::Branch(base) => (format!("vs {base} ▾"), true),
-                DiffBase::Uncommitted => match self.changes.len() {
-                    0 => ("Uncommitted ▾".to_string(), false),
-                    1 => ("1 change ▾".to_string(), false),
-                    n => (format!("{n} changes ▾"), false),
-                },
+        // The right side: the job that is running, else the uncommitted change count.
+        let right = match cx.project.busy() {
+            Some(job) => format!("{job}…"),
+            None => match self.changes.len() {
+                0 => String::new(),
+                1 => "1 change".to_string(),
+                n => format!("{n} changes"),
             },
         };
+        let right_accent = false;
         let right_width = ui::width(&right) as u16;
         let end = area.x + 1 + if right.is_empty() { inner } else { inner.saturating_sub(right_width + 2) };
         let mut x = area.x + 1;
@@ -1111,13 +1233,6 @@ impl GitPanel {
         if cx.project.repo().is_none() {
             lines.push(("Not a git repository".to_string(), text));
             lines.push(("Run git init in the terminal to track changes".to_string(), muted));
-        } else if let DiffBase::Branch(base) = &self.diff_base {
-            if self.branch_task.is_some() || self.branch_stale {
-                lines.push((format!("Comparing against {base}…"), muted));
-            } else {
-                lines.push((format!("No changes since {base}"), text));
-                lines.push(("Press ctrl-g b or click the header to switch back to uncommitted changes".to_string(), muted));
-            }
         } else if let Some(status) = &self.status {
             lines.push(("No changes".to_string(), text));
             lines.push(("Everything is committed. Edit a file and it appears here".to_string(), muted));
@@ -1195,7 +1310,8 @@ impl GitPanel {
                 continue;
             };
             let change = &self.changes[*index];
-            let row_bg = if *index == self.selected { theme.element_selected } else { bg };
+            let is_selected = self.active_section == ListSection::Uncommitted && *index == self.selected;
+            let row_bg = if is_selected { theme.element_selected } else { bg };
             canvas.fill(line, row_bg);
             let mut x = area.x + 1;
             x += self.checkbox(canvas, x, y, change.stage, row_bg, cx);
@@ -1240,6 +1356,112 @@ impl GitPanel {
         let count_x = x + used + 2;
         if count_x < line.right() {
             canvas.text_truncated(count_x, line.y, &count.to_string(), Style::colors(theme.text_muted, bg), line.right() - count_x);
+        }
+    }
+
+    fn draw_branch_header(&self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
+        if area.height == 0 || area.width < 6 {
+            return;
+        }
+        let theme = cx.theme;
+        let bg = theme.elevated_surface;
+        canvas.fill(area, bg);
+        let right = if self.branch_task.is_some() {
+            "…".to_string()
+        } else {
+            format!("{} ▾", self.branch_changes.len())
+        };
+        let right_w = ui::width(&right) as u16;
+        let title_color = if self.active_section == ListSection::Branch { theme.text_accent } else { theme.text };
+        let title = format!("Since {}", self.branch_base);
+        let room = area.width.saturating_sub(right_w + 3);
+        canvas.text_truncated(area.x + 1, area.y, &title, Style::colors(title_color, bg).bold(), room);
+        canvas.text_right(area.right() - 1, area.y, &right, Style::colors(theme.text_muted, bg));
+    }
+
+    fn draw_branch_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
+        let theme = cx.theme;
+        let bg = theme.panel_bg;
+        canvas.fill(area, bg);
+        if area.height == 0 || area.width < 6 {
+            return;
+        }
+        if self.branch_changes.is_empty() {
+            let msg = if self.branch_task.is_some() || self.branch_stale {
+                format!("Comparing against {}…", self.branch_base)
+            } else if let Some(err) = &self.branch_error {
+                err.clone()
+            } else {
+                format!("No changes since {}", self.branch_base)
+            };
+            canvas.text_truncated(area.x + 1, area.y, &msg, Style::colors(theme.text_muted, bg), area.width.saturating_sub(2));
+            return;
+        }
+        let visible = area.height as usize;
+        if self.branch_reveal {
+            if self.branch_selected < self.branch_scroll {
+                self.branch_scroll = self.branch_selected;
+            } else if self.branch_selected >= self.branch_scroll + visible {
+                self.branch_scroll = self.branch_selected + 1 - visible;
+            }
+            self.branch_reveal = false;
+        }
+        self.branch_scroll = self.branch_scroll.min(self.branch_changes.len().saturating_sub(visible));
+        let scrollbar = self.branch_changes.len() > visible && area.width > 8;
+        let width = area.width - u16::from(scrollbar);
+        if scrollbar {
+            let cursor_line = (self.active_section == ListSection::Branch).then_some(self.branch_selected);
+            let marks = ScrollMarks { marks: Vec::new(), cursor_line };
+            paint::scrollbar(canvas, area.right() - 1, area.y, area.height, self.branch_changes.len(), self.branch_scroll, visible, &marks, theme);
+        }
+        let (mut add_w, mut del_w) = (0u16, 0u16);
+        for change in self.branch_changes.iter().skip(self.branch_scroll).take(visible) {
+            if let Some(&(added, removed)) = self.branch_counts.get(&change.path) {
+                if added > 0 {
+                    add_w = add_w.max(digits(added) + 1);
+                }
+                if removed > 0 {
+                    del_w = del_w.max(digits(removed) + 1);
+                }
+            }
+        }
+        let counts_w = add_w + del_w + u16::from(add_w > 0 && del_w > 0);
+        let show_counts = counts_w > 0 && width > counts_w + 14;
+        for (offset, change) in self.branch_changes.iter().skip(self.branch_scroll).take(visible).enumerate() {
+            let index = self.branch_scroll + offset;
+            let y = area.y + offset as u16;
+            let line = Rect::new(area.x, y, width, 1);
+            let is_selected = self.active_section == ListSection::Branch && index == self.branch_selected;
+            let row_bg = if is_selected { theme.element_selected } else { bg };
+            canvas.fill(line, row_bg);
+            let mut x = area.x + 1;
+            canvas.text(x, y, status_letter(change.status), Style::colors(status_color(change.status, theme), row_bg).bold(), 1);
+            x += 2;
+            let mut right = line.right() - 1;
+            if show_counts {
+                let (added, removed) = self.branch_counts.get(&change.path).copied().unwrap_or((0, 0));
+                if del_w > 0 {
+                    if removed > 0 {
+                        canvas.text_right(right, y, &format!("−{removed}"), Style::colors(theme.deleted, row_bg));
+                    }
+                    right = right.saturating_sub(del_w + 1);
+                }
+                if add_w > 0 {
+                    if added > 0 {
+                        canvas.text_right(right, y, &format!("+{added}"), Style::colors(theme.created, row_bg));
+                    }
+                    right = right.saturating_sub(add_w + 1);
+                }
+            }
+            let room = right.saturating_sub(x);
+            let name = change.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name_color = if change.status == DisplayStatus::Deleted { theme.text_muted } else { theme.text };
+            let used = canvas.text_truncated(x, y, &name, Style::colors(name_color, row_bg), room);
+            let folder = change.path.parent().map(Path::to_string_lossy).unwrap_or_default().into_owned();
+            let left = room.saturating_sub(used + 2);
+            if !folder.is_empty() && left >= 4 {
+                canvas.text(x + used + 2, y, &ui::truncate_start(&folder, left as usize), Style::colors(theme.text_muted, row_bg), left);
+            }
         }
     }
 
@@ -1346,6 +1568,8 @@ impl View for GitPanel {
         self.branch_button = Rect::default();
         self.mode_button = Rect::default();
         self.list_area = Rect::default();
+        self.branch_header = Rect::default();
+        self.branch_list_area = Rect::default();
         self.message_area = Rect::default();
         self.message_text = Rect::default();
         self.commit_button = Rect::default();
@@ -1366,6 +1590,12 @@ impl View for GitPanel {
         self.draw_header(canvas, layout.header, cx);
         self.list_area = layout.list;
         self.draw_list(canvas, layout.list, cx);
+        self.branch_header = layout.branch_header;
+        self.branch_list_area = layout.branch_list;
+        if layout.branch_header.height > 0 {
+            self.draw_branch_header(canvas, layout.branch_header, cx);
+            self.draw_branch_list(canvas, layout.branch_list, cx);
+        }
         self.message_area = layout.message;
         let cursor = self.draw_message(canvas, layout.message, cx);
         self.draw_buttons(canvas, layout.buttons, cx);
@@ -1392,9 +1622,28 @@ impl View for GitPanel {
             "menu::SelectNext" | "git_panel::NextEntry" if in_list => self.move_selection(1),
             "menu::SelectPrevious" | "git_panel::PreviousEntry" if in_list => self.move_selection(-1),
             "menu::SelectFirst" | "git_panel::FirstEntry" if in_list => self.select(0),
-            "menu::SelectLast" | "git_panel::LastEntry" if in_list => self.select(usize::MAX),
+            "menu::SelectLast" | "git_panel::LastEntry" if in_list => {
+                if !self.branch_changes.is_empty() && self.branch_list_area.height > 0 {
+                    self.select_branch(usize::MAX);
+                } else {
+                    self.select(usize::MAX);
+                }
+            }
             "menu::Confirm" if in_list => {
                 let Some(path) = self.selected_change().and_then(|change| cx.project.abs_path(&change.path)) else { return false };
+                match self.active_section {
+                    ListSection::Uncommitted => {
+                        if *cx.project.diff_base() != DiffBase::Uncommitted {
+                            cx.push(Effect::SetDiffBase(None));
+                        }
+                    }
+                    ListSection::Branch => {
+                        let want = DiffBase::Branch(self.branch_base.clone());
+                        if *cx.project.diff_base() != want {
+                            cx.push(Effect::SetDiffBase(Some(self.branch_base.clone())));
+                        }
+                    }
+                }
                 cx.push(Effect::ShowProjectDiff { path: Some(path), focus: false });
             }
             "menu::Cancel" if in_list => cx.push(Effect::Focus(Focus::Center)),
@@ -1461,6 +1710,9 @@ impl View for GitPanel {
                 if inside(self.message_area) {
                     let max = self.visual.len().saturating_sub(self.message_text.height as usize);
                     self.message_top = if down { (self.message_top + 1).min(max) } else { self.message_top.saturating_sub(1) };
+                } else if inside(self.branch_list_area) {
+                    let max = self.branch_changes.len().saturating_sub(self.branch_list_area.height as usize);
+                    self.branch_scroll = if down { (self.branch_scroll + WHEEL_ROWS).min(max) } else { self.branch_scroll.saturating_sub(WHEEL_ROWS) };
                 } else {
                     let max = self.list_rows().len().saturating_sub(self.list_area.height as usize);
                     self.scroll = if down { (self.scroll + WHEEL_ROWS).min(max) } else { self.scroll.saturating_sub(WHEEL_ROWS) };
@@ -1476,7 +1728,7 @@ impl View for GitPanel {
                     cx.push(Effect::Dispatch(Action::new("branches::OpenRecent")));
                     return true;
                 }
-                if inside(self.mode_button) {
+                if inside(self.mode_button) || inside(self.branch_header) {
                     cx.push(Effect::Dispatch(Action::new("git::SelectDiffBase")));
                     return true;
                 }
@@ -1497,6 +1749,22 @@ impl View for GitPanel {
                     self.reveal_message = true;
                     return true;
                 }
+                if inside(self.branch_list_area) {
+                    self.focus = PanelFocus::Changes;
+                    let index = self.branch_scroll + (event.row - self.branch_list_area.y) as usize;
+                    if let Some(change) = self.branch_changes.get(index).cloned() {
+                        self.select_branch(index);
+                        self.branch_reveal = false;
+                        if let Some(path) = cx.project.abs_path(&change.path) {
+                            let want = DiffBase::Branch(self.branch_base.clone());
+                            if *cx.project.diff_base() != want {
+                                cx.push(Effect::SetDiffBase(Some(self.branch_base.clone())));
+                            }
+                            cx.push(Effect::ShowProjectDiff { path: Some(path), focus: false });
+                        }
+                    }
+                    return true;
+                }
                 if !inside(self.list_area) {
                     return true;
                 }
@@ -1514,6 +1782,9 @@ impl View for GitPanel {
                         if on_checkbox {
                             self.stage(self.entry_paths(&change), change.stage != StageState::Staged, cx);
                         } else if let Some(path) = cx.project.abs_path(&change.path) {
+                            if *cx.project.diff_base() != DiffBase::Uncommitted {
+                                cx.push(Effect::SetDiffBase(None));
+                            }
                             cx.push(Effect::ShowProjectDiff { path: Some(path), focus: false });
                         }
                     }
@@ -1541,16 +1812,20 @@ impl View for GitPanel {
         }
         if let Some(loaded) = self.branch_task.as_mut().and_then(Task::poll) {
             self.branch_task = None;
-            if matches!(self.diff_base, DiffBase::Branch(_)) {
-                match loaded {
-                    Ok((changes, counts)) => {
-                        self.counts = counts;
-                        self.apply_changes(changes);
-                    }
-                    Err(error) => cx.error(format!("Branch diff failed: {error}")),
+            match loaded {
+                Ok((base_ref, changes, counts)) if base_ref == self.branch_base => {
+                    self.branch_error = None;
+                    self.branch_counts = counts;
+                    self.apply_branch_changes(changes);
                 }
-                dirty = true;
+                Ok(_) => {}
+                Err(error) => {
+                    self.branch_error = Some(error);
+                    self.branch_changes.clear();
+                    self.branch_counts.clear();
+                }
             }
+            dirty = true;
         }
         if self.branch_task.as_ref().is_some_and(Task::is_finished) {
             self.branch_task = None;
