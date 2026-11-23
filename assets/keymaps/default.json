@@ -773,7 +773,9 @@
       "cmd-shift-up": ["herdr::Scroll", { "direction": "up", "lines": 9 }],
       "cmd-shift-down": ["herdr::Scroll", { "direction": "down", "lines": 9 }],
       // Pick a file path or URL shown in the terminal and open it, without the mouse.
-      "cmd-o": "terminal::OpenLinks"
+      "cmd-o": "terminal::OpenLinks",
+      // Enter herdr copy mode and start searching scrollback.
+      "cmd-f": ["terminal::SendText", "\u0002[/"]
     }
   },
   // The nav layer (hold ; for arrows on S E D F and modifiers on J K L H).
