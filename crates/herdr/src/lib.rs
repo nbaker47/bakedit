@@ -7,6 +7,7 @@ mod layout;
 pub mod mock;
 mod move_pane;
 mod nav;
+mod query;
 mod state;
 mod types;
 
@@ -16,4 +17,7 @@ pub use client::{
 pub use collapse::{collapse, collapse_pane, CollapseMode, CollapseOutcome};
 pub use move_pane::{move_pane, MoveOutcome};
 pub use nav::{navigate, NavOutcome};
+pub use query::{
+    focused_pane, pane_at, pane_info, pane_layout, PaneAt, PaneLayout, PaneRect, ScreenSize,
+};
 pub use types::{Direction, PaneInfo, ParseDirectionError, Rect, ScrollInfo, SplitDirection};
