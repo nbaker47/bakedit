@@ -5,9 +5,11 @@
 //!
 //! - [`Parser`] turns the bytes read from the host terminal into
 //!   [`InputEvent`](bakedit_core::InputEvent)s.
+//! - [`host`] holds every control string the app writes to the host terminal.
 
 #![warn(missing_docs)]
 
+pub mod host;
 mod parser;
 
 pub use parser::{Parser, MAX_PASTE_LEN, MAX_STRING_LEN};
