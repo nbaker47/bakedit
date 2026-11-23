@@ -225,9 +225,36 @@ impl History {
     }
 
     /// Number of applied steps.
-    #[cfg(test)]
     pub fn undo_depth(&self) -> usize {
         self.undo.len()
+    }
+
+    /// Fuse the applied steps above the first `keep` into one, so that one undo takes back
+    /// all of them (an edit-mode session, say). The fused step reverts to the first one's
+    /// selections and redoes to the last one's, and keeps the last one's id, so the state
+    /// id of the text does not change. Returns false, changing nothing, when there are not
+    /// two steps above `keep` or a step is open.
+    pub fn squash_from(&mut self, keep: usize) -> bool {
+        if self.open.is_some() || self.undo.len() < keep.saturating_add(2) {
+            return false;
+        }
+        let fused = self.undo.split_off(keep);
+        let selections_before = fused.first().and_then(|step| step.selections_before.clone());
+        let last = fused.last().expect("two or more steps");
+        let mut step = Transaction {
+            id: last.id,
+            kind: UndoKind::Other,
+            batches: Vec::new(),
+            selections_before,
+            selections_after: last.selections_after.clone(),
+            last_edit_ms: last.last_edit_ms,
+            sealed: true,
+        };
+        for part in fused {
+            step.batches.extend(part.batches);
+        }
+        self.undo.push(step);
+        true
     }
 }
 
@@ -247,6 +274,26 @@ mod tests {
 
     fn cursor(pos: usize) -> Selections {
         Selections::single(Selection::cursor(pos))
+    }
+
+    #[test]
+    fn squashing_fuses_the_steps_above_a_mark() {
+        let mut history = History::default();
+        for (i, now) in [(0, 0), (1, 1000), (2, 2000)] {
+            history.begin(UndoKind::Other, Some(&cursor(i)), now);
+            history.record(vec![edit(i, "x")]);
+            history.end(Some(&cursor(i + 1)), now);
+        }
+        let newest = history.state_id();
+        assert!(!history.squash_from(2), "one step above the mark: nothing to fuse");
+        assert!(history.squash_from(1));
+        assert_eq!(history.undo_depth(), 2);
+        assert_eq!(history.state_id(), newest, "the text's state id stays");
+        let fused = history.pop_undo().unwrap();
+        assert_eq!(fused.batches.len(), 2);
+        assert_eq!(fused.selections_before, Some(cursor(1)));
+        assert_eq!(fused.selections_after, Some(cursor(3)));
+        assert!(!history.squash_from(5), "a mark above the stack");
     }
 
     /// Record one typed character at `pos` at time `now`.

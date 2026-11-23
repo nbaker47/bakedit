@@ -687,6 +687,19 @@ impl Buffer {
         self.history.seal();
     }
 
+    /// How many steps there are to undo.
+    pub fn undo_steps(&self) -> usize {
+        self.history.undo_depth()
+    }
+
+    /// Make the steps above the first `keep` one step, so that one undo takes back all of
+    /// them (the editing of one edit-mode session, say). Returns false, changing nothing,
+    /// when fewer than two steps are above `keep` or a transaction is open. Whether the
+    /// buffer is dirty does not change.
+    pub fn squash_undo_steps(&mut self, keep: usize) -> bool {
+        self.history.squash_from(keep)
+    }
+
     /// Whether there is a step to undo.
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()

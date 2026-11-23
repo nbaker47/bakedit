@@ -808,6 +808,18 @@ impl Editor {
         self.buffer.set_clock(clock);
     }
 
+    /// How many steps there are to undo (see [`Editor::squash_undo_steps`]).
+    pub fn undo_steps(&self) -> usize {
+        self.buffer.undo_steps()
+    }
+
+    /// Make the undo steps above the first `keep` one step: remember
+    /// [`Editor::undo_steps`] when a run of editing starts and squash at its end, and one
+    /// undo takes the whole run back. Returns false when there was nothing to fuse.
+    pub fn squash_undo_steps(&mut self, keep: usize) -> bool {
+        self.buffer.squash_undo_steps(keep)
+    }
+
     /// Make the next edit start a new undo step even if it would otherwise merge with the
     /// previous one.
     pub fn break_undo_group(&mut self) {
