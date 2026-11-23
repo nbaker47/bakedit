@@ -100,13 +100,18 @@ impl IndexSnapshot {
     /// Append a path. The caller keeps the paths sorted and unique. Paths beyond 4 GiB
     /// of total text are dropped rather than corrupting the offsets.
     fn push(&mut self, display: &str, raw: Option<PathBuf>) {
+        self.push_with_bag(display, CharBag::of_path(display), raw);
+    }
+
+    /// [`IndexSnapshot::push`] for a path whose character bag is already known.
+    fn push_with_bag(&mut self, display: &str, bag: CharBag, raw: Option<PathBuf>) {
         let Ok(end) = u32::try_from(self.text.len() + display.len()) else {
             log::warn!("file index is full, dropping {display}");
             return;
         };
         self.text.push_str(display);
         self.ends.push(end);
-        self.bags.push(CharBag::of_path(display));
+        self.bags.push(bag);
         if let Some(raw) = raw {
             self.raw.insert(display.to_string(), raw);
         }
@@ -288,6 +293,24 @@ impl IndexSnapshot {
         start..end
     }
 
+    /// Whether applying `changes` would leave the list exactly as it is: nothing to add
+    /// that is not there, nothing to remove that is. This is the common case (a file
+    /// that is already listed was saved) and is answered without copying the list.
+    fn is_unaffected_by(&self, changes: &Changes) -> bool {
+        changes
+            .added
+            .iter()
+            .all(|(path, raw)| self.contains(path) && self.raw.get(path) == raw.as_ref())
+            && changes
+                .removed
+                .iter()
+                .all(|path| changes.added.contains_key(path) || !self.contains(path))
+            && changes
+                .removed_below
+                .iter()
+                .all(|prefix| self.range_below(prefix).is_empty())
+    }
+
     /// This snapshot with `changes` applied. Additions win over removals.
     fn with_changes(&self, changes: Changes) -> IndexSnapshot {
         let mut removed: Vec<Range<usize>> = changes
@@ -334,7 +357,12 @@ impl IndexSnapshot {
             if removed.peek().is_some_and(|range| range.contains(&index)) {
                 continue;
             }
-            snapshot.push(old, self.raw.get(old).cloned());
+            let raw = if self.raw.is_empty() {
+                None
+            } else {
+                self.raw.get(old).cloned()
+            };
+            snapshot.push_with_bag(old, self.bags[index], raw);
         }
         for (path, raw) in added {
             snapshot.push(&path, raw);
@@ -896,6 +924,9 @@ fn apply_changes(
     }
 
     let old = shared.lock().snapshot.clone();
+    if old.is_unaffected_by(&changes) {
+        return Outcome::Unchanged;
+    }
     let new = old.with_changes(changes);
     if *old == new {
         Outcome::Unchanged
@@ -980,6 +1011,34 @@ mod tests {
         assert_eq!(listed(&new), ["f"]);
         let empty = IndexSnapshot::default().with_changes(changes(&["x"], &["y/"], &["z"]));
         assert_eq!(listed(&empty), ["z"]);
+    }
+
+    #[test]
+    fn changes_that_change_nothing_are_recognised() {
+        let old = snapshot(&["a", "dir/x", "dir/y"]);
+        let no_ops = [
+            // A listed file was saved.
+            changes(&[], &["a/"], &["a"]),
+            // Something that was never listed went away.
+            changes(&["ghost"], &["ghost/"], &[]),
+            // Removed and added again.
+            changes(&["a"], &[], &["a"]),
+            changes(&[], &[], &[]),
+        ];
+        for change in no_ops {
+            assert!(old.is_unaffected_by(&change));
+            assert_eq!(old.with_changes(change), old);
+        }
+        let real = [
+            changes(&[], &[], &["new"]),
+            changes(&["a"], &[], &[]),
+            changes(&[], &["dir/"], &[]),
+            changes(&["a"], &["dir/"], &["a", "b"]),
+        ];
+        for change in real {
+            assert!(!old.is_unaffected_by(&change));
+            assert_ne!(old.with_changes(change), old);
+        }
     }
 
     #[test]

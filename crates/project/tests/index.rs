@@ -699,8 +699,16 @@ fn two_hundred_thousand_files_on_disk() {
 
     let created = project.write("apps/project_0/src/module_0/brand_new.rs", "");
     let started = Instant::now();
+    index.update(std::slice::from_ref(&created));
+    assert!(index.wait_idle(TIMEOUT));
+    println!("applied one new file in {:?}", started.elapsed());
+    assert_eq!(index.len(), on_disk + 1);
+
+    // The everyday event: a file that is already listed is saved.
+    let generation = index.generation();
+    let started = Instant::now();
     index.update(&[created]);
     assert!(index.wait_idle(TIMEOUT));
-    println!("applied one change in {:?}", started.elapsed());
-    assert_eq!(index.len(), on_disk + 1);
+    println!("applied one saved file in {:?}", started.elapsed());
+    assert_eq!(index.generation(), generation);
 }
