@@ -168,6 +168,12 @@ impl History {
             return false;
         };
         if !open.recorded {
+            // A mergeable step that changed no text (typing over a closing bracket, say)
+            // still continues the run it would have merged into.
+            if let (true, Some(top)) = (open.merging, self.undo.last_mut()) {
+                top.selections_after = selections.cloned();
+                top.last_edit_ms = now_ms;
+            }
             return false;
         }
         match self.undo.last_mut() {
@@ -329,6 +335,30 @@ mod tests {
             history.end(Some(&cursor(0)), now);
         }
         assert_eq!(history.undo_depth(), 7);
+    }
+
+    #[test]
+    fn a_textless_step_continues_a_typing_run() {
+        let mut history = History::default();
+        type_char(&mut history, 0, 0);
+        // The cursor steps over a character without editing: same kind, same start.
+        history.begin(UndoKind::Typing, Some(&cursor(1)), 100);
+        assert!(!history.end(Some(&cursor(2)), 100));
+        // Typing goes on from the new position and still merges.
+        type_char(&mut history, 2, 150);
+        assert_eq!(history.undo_depth(), 1);
+        assert_eq!(
+            history.undo.first().unwrap().selections_after,
+            Some(cursor(3))
+        );
+
+        // A textless step of another kind changes nothing.
+        history.begin(UndoKind::Other, Some(&cursor(3)), 160);
+        assert!(!history.end(Some(&cursor(9)), 160));
+        assert_eq!(
+            history.undo.first().unwrap().selections_after,
+            Some(cursor(3))
+        );
     }
 
     #[test]

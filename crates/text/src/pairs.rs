@@ -714,24 +714,28 @@ fn find_open(buffer: &Buffer, pos: usize, open: u8, close: u8) -> Option<usize> 
         .map(|token| token.pos)
 }
 
+/// The pair that the bracket character at exactly `at` belongs to, as the offsets of the
+/// opening and the closing bracket. `None` when the character there is not one of
+/// `()[]{}`, is escaped, has no partner, or the partner is further away than
+/// [`SCAN_LIMIT`]. A bracket inside a string pairs only within that string.
+pub fn bracket_pair_at(buffer: &Buffer, at: usize) -> Option<(usize, usize)> {
+    let c = buffer.char_at(at)?;
+    let (open, close) = bracket_partner(c)?;
+    if c as u32 == u32::from(open) {
+        find_close(buffer, at, open, close).map(|partner| (at, partner))
+    } else {
+        find_open(buffer, at, open, close).map(|partner| (partner, at))
+    }
+}
+
 /// The bracket pair to highlight for a cursor at `pos`: the pair of the bracket right after
-/// the cursor, or failing that of the bracket right before it. Returns the offsets of the
-/// opening and the closing bracket.
-///
-/// Only `()`, `[]` and `{}` are considered. A bracket inside a string pairs only within
-/// that string, and escaped brackets are ignored. `None` when there is no bracket next to
-/// the cursor, it has no partner, or the partner is further away than [`SCAN_LIMIT`].
+/// the cursor, or failing that of the bracket right before it (see [`bracket_pair_at`]).
+/// Returns the offsets of the opening and the closing bracket.
 pub fn matching_bracket(buffer: &Buffer, pos: usize) -> Option<(usize, usize)> {
-    let pair_at = |at: usize| -> Option<(usize, usize)> {
-        let c = buffer.char_at(at)?;
-        let (open, close) = bracket_partner(c)?;
-        if c as u32 == u32::from(open) {
-            find_close(buffer, at, open, close).map(|partner| (at, partner))
-        } else {
-            find_open(buffer, at, open, close).map(|partner| (partner, at))
-        }
-    };
-    pair_at(pos).or_else(|| pos.checked_sub(1).and_then(pair_at))
+    bracket_pair_at(buffer, pos).or_else(|| {
+        pos.checked_sub(1)
+            .and_then(|before| bracket_pair_at(buffer, before))
+    })
 }
 
 /// The innermost pair of `open`/`close` brackets whose inside contains `range`.
