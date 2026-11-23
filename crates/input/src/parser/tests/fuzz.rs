@@ -193,6 +193,12 @@ fn random_escape_fragments_do_not_panic() {
     parser.max_paste_len = 512;
     let events = run(&mut rng, &mut parser, &stream);
     assert!(events > 10_000, "got {events} events");
+
+    // And again as a terminal in kitty all-keys mode would be parsed.
+    parser.reset();
+    parser.set_kitty_flags(31);
+    let events = run(&mut rng, &mut parser, &stream);
+    assert!(events > 10_000, "got {events} events");
 }
 
 #[test]
@@ -204,9 +210,15 @@ fn random_input_parses_the_same_however_it_is_cut() {
         } else {
             fragment_stream(&mut rng, 5_000)
         };
-        let whole = Parser::new().feed(&stream);
+        // Half the rounds with the kitty all-keys flag, which changes what text means.
+        let new_parser = || {
+            let mut parser = Parser::new();
+            parser.set_kitty_flags(if round % 2 == 0 { 0 } else { 31 });
+            parser
+        };
+        let whole = new_parser().feed(&stream);
 
-        let mut parser = Parser::new();
+        let mut parser = new_parser();
         let mut pieces = Vec::new();
         let mut at = 0;
         while at < stream.len() {
@@ -216,7 +228,7 @@ fn random_input_parses_the_same_however_it_is_cut() {
         }
         assert_eq!(pieces, whole, "round {round}");
 
-        let mut parser = Parser::new();
+        let mut parser = new_parser();
         let mut single = Vec::new();
         for byte in &stream {
             single.extend(parser.feed(std::slice::from_ref(byte)));

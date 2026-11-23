@@ -5,6 +5,7 @@ mod flush;
 mod fuzz;
 mod paste;
 mod table;
+mod text;
 
 use bakedit_core::{
     InputEvent, Key, KeyEvent, KeyKind, Mods, MouseEvent, MouseKind, TerminalReply,

@@ -13,6 +13,8 @@ mod tests;
 
 use bakedit_core::{InputEvent, Key, KeyEvent, Mods, MouseButton};
 
+use crate::host;
+
 /// The longest OSC, DCS, APC, PM or SOS string the parser keeps while it waits for the
 /// terminator. A longer one is discarded whole (its tail is still swallowed).
 pub const MAX_STRING_LEN: usize = 64 * 1024;
@@ -123,6 +125,16 @@ enum State {
 /// many `feed` calls it takes. A paste in progress is not "pending" and `flush` leaves it
 /// alone; see [`in_paste`](Parser::in_paste) and [`reset`](Parser::reset).
 ///
+/// # Text that is not a key press
+///
+/// Plain text in the input is normally typing: every character becomes the press of the
+/// key that types it. Once the terminal reports every key as an escape code (the kitty
+/// keyboard protocol's all-keys flag), plain text can no longer be a key press: it comes
+/// from an input method, dictation or another program writing into the terminal, and it
+/// has no release. Tell the parser with [`set_kitty_flags`](Parser::set_kitty_flags) and
+/// such text is reported as text that belongs to no key (`Key::Other(0)`), the way kitty
+/// itself reports it, instead of as presses that would never be released.
+///
 /// # Limits
 ///
 /// Nothing the terminal sends makes the parser panic, loop or grow without bound: a CSI
@@ -148,6 +160,8 @@ pub struct Parser {
     paste_truncated: bool,
     /// The button of the last legacy mouse press: that protocol's release does not say.
     x10_button: MouseButton,
+    /// The kitty keyboard flags the app says are active on the terminal.
+    kitty_flags: u8,
     max_string_len: usize,
     max_paste_len: usize,
 }
@@ -171,6 +185,7 @@ impl Parser {
             paste_match: 0,
             paste_truncated: false,
             x10_button: MouseButton::Left,
+            kitty_flags: 0,
             max_string_len: MAX_STRING_LEN,
             max_paste_len: MAX_PASTE_LEN,
         }
@@ -262,13 +277,42 @@ impl Parser {
     }
 
     /// Forget everything buffered, including a paste in progress, and start clean. Nothing
-    /// is emitted. For the app to call when the input stream is known to have restarted.
+    /// is emitted, and the kitty flags set with [`set_kitty_flags`](Parser::set_kitty_flags)
+    /// are kept. For the app to call when the input stream is known to have restarted.
     pub fn reset(&mut self) {
         *self = Parser {
+            kitty_flags: self.kitty_flags,
             max_string_len: self.max_string_len,
             max_paste_len: self.max_paste_len,
             ..Parser::new()
         };
+    }
+
+    /// Tell the parser which kitty keyboard flags are active on the terminal: the flags of
+    /// the terminal's `KittyKeyboardFlags` reply, or 0 for a terminal without the protocol
+    /// (the default).
+    ///
+    /// Only [`KITTY_ALL_KEYS`](host::KITTY_ALL_KEYS) changes anything. With it, a character
+    /// of plain text in the input is reported as a press of `Key::Other(0)` carrying that
+    /// text, not as a press of the key that types it; see the type's documentation.
+    /// Control characters and escape sequences mean what they always mean.
+    pub fn set_kitty_flags(&mut self, flags: u8) {
+        self.kitty_flags = flags;
+    }
+
+    /// The flags last given to [`set_kitty_flags`](Parser::set_kitty_flags).
+    pub fn kitty_flags(&self) -> u8 {
+        self.kitty_flags
+    }
+
+    /// The event for one character of plain text.
+    fn text(&self, c: char) -> InputEvent {
+        if self.kitty_flags & host::KITTY_ALL_KEYS != 0 {
+            // Keys arrive as escape codes in this mode, so nobody pressed a key for this.
+            InputEvent::Key(KeyEvent::new(Key::Other(0), Mods::empty()).with_text(c))
+        } else {
+            InputEvent::Key(KeyEvent::typed(c))
+        }
     }
 
     /// Back to the ground state with nothing collected.
@@ -322,6 +366,7 @@ impl Parser {
     fn ground(&mut self, byte: u8, out: &mut Vec<InputEvent>) -> bool {
         match byte {
             ESC => self.enter_escape(),
+            0x20..=0x7e => out.push(self.text(char::from(byte))),
             0x00..=0x7f => out.push(InputEvent::Key(keys::legacy_byte(byte))),
             _ => self.start_utf8(byte, false),
         }
@@ -357,8 +402,7 @@ impl Parser {
             .and_then(|s| s.chars().next());
         self.enter_ground();
         if let Some(c) = decoded.filter(|c| !c.is_control()) {
-            let ev = KeyEvent::typed(c);
-            out.push(InputEvent::Key(if alt { with_alt(ev) } else { ev }));
+            out.push(if alt { alt_char(c) } else { self.text(c) });
         }
         true
     }
