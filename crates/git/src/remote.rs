@@ -15,12 +15,13 @@ impl Repo {
 
     /// Runs `git pull` and returns what git printed. With `rebase` the local commits are
     /// rebased onto the upstream (`--rebase`); without it git integrates the way the
-    /// user's configuration says (`pull.rebase`, `pull.ff`), which is a merge by default.
+    /// user's configuration says (`pull.rebase`, `pull.ff`). With nothing configured git
+    /// fast-forwards when it can, and when both sides have new commits it refuses and
+    /// asks for a choice.
     ///
-    /// When the pull stops on a conflict, git exits with an error: this returns
-    /// [`GitError::Failed`] with the output, and [`Repo::status`] then shows the
-    /// conflicted files and the merge or rebase in progress. A branch without an upstream
-    /// is an error from git as well.
+    /// That refusal, a pull that stops on a conflict, and a branch without an upstream
+    /// are all errors from git: [`GitError::Failed`] with its output. After a conflict
+    /// [`Repo::status`] shows the conflicted files and the merge or rebase in progress.
     pub fn pull(&self, rebase: bool) -> Result<String> {
         if rebase {
             self.run_network_command(&["pull", "--no-edit", "--rebase"])

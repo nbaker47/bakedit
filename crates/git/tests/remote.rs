@@ -115,6 +115,25 @@ fn pull_merges_when_the_configuration_says_so_and_never_opens_an_editor() {
 }
 
 #[test]
+fn pull_of_diverged_branches_without_a_configured_way_to_join_them_is_refused() {
+    let test = TestRepo::with_commit();
+    let remote = test.add_origin();
+    commit_elsewhere(&test, &remote, "elsewhere", "remote.txt", "remote\n");
+    test.write("local.txt", "local\n");
+    test.commit_all("local commit");
+    let before = test.head();
+
+    let error = test.repo.pull(false).unwrap_err();
+    let output = error.git_output().unwrap();
+    assert!(output.contains("divergent branches"), "{output}");
+    assert_eq!(test.head(), before);
+    assert_eq!(test.repo.status().unwrap().state, None);
+    // Asking for a rebase is one way to settle it.
+    test.repo.pull(true).unwrap();
+    assert!(test.exists("remote.txt") && test.exists("local.txt"));
+}
+
+#[test]
 fn pull_that_conflicts_fails_and_leaves_the_conflict_to_resolve() {
     let test = TestRepo::with_commit();
     let remote = test.add_origin();
