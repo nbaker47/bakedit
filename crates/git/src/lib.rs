@@ -4,6 +4,7 @@ mod error;
 mod exec;
 mod index;
 mod paths;
+mod remote;
 mod repo;
 mod status;
 
