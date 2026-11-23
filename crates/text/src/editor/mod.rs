@@ -8,6 +8,8 @@ mod edit;
 mod lines;
 mod motion;
 mod select;
+#[cfg(test)]
+mod tests;
 
 use std::borrow::Cow;
 use std::ops::Range;
