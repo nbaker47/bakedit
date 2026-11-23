@@ -6,9 +6,12 @@ use std::path::PathBuf;
 /// [`Terminal::spawn`](crate::Terminal::spawn).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
-    /// The screen changed: redraw. Bursts of output are coalesced, so this arrives at most
-    /// once per [`TermConfig::wakeup_interval`](crate::TermConfig::wakeup_interval), and
-    /// always once more after the last change.
+    /// Output from the child changed the screen: redraw. Bursts of output are coalesced, so
+    /// this arrives at most once per
+    /// [`TermConfig::wakeup_interval`](crate::TermConfig::wakeup_interval), and always once
+    /// more after the last change. Changes the application makes itself (scrolling,
+    /// selecting, resizing) are not announced: see
+    /// [`Terminal::generation`](crate::Terminal::generation).
     Wakeup,
     /// The child set the window title (OSC 0 or 2). Control characters are removed, and
     /// setting the title to what it already is reports nothing.
@@ -19,8 +22,9 @@ pub enum TermEvent {
     Bell,
     /// The child process ended. `Some(code)` is its exit status; `None` means a signal
     /// killed it (which is what [`Terminal::kill`](crate::Terminal::kill) does), or that
-    /// the pty failed underneath it. Sent exactly once, after the child's last output has
-    /// been drawn.
+    /// the pty failed underneath it. Sent exactly once, when the child's last output is on
+    /// the screen and its [`TermEvent::Wakeup`] has been sent. The screen stays readable
+    /// afterwards; writes go nowhere.
     Exit(Option<i32>),
     /// The child copied text to the clipboard (OSC 52).
     ClipboardStore(String),
