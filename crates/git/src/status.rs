@@ -164,11 +164,14 @@ impl StatusEntry {
         }
     }
 
-    /// Every path the entry touches: [`StatusEntry::path`], and for a rename or copy the
-    /// path it came from. Pass these to `unstage` to undo a staged rename as a whole.
+    /// Every path the entry changes: [`StatusEntry::path`], and for a rename also the
+    /// path the file was moved away from. Pass these to `unstage` to undo a staged rename
+    /// as a whole. The original of a copy is not included: it is still there, a file of
+    /// its own with an entry of its own if it changed.
     pub fn paths(&self) -> Vec<&Path> {
         let mut paths = vec![self.path.as_path()];
-        if let Some(orig_path) = &self.orig_path {
+        let renamed = self.index == FileState::Renamed || self.worktree == FileState::Renamed;
+        if let (true, Some(orig_path)) = (renamed, &self.orig_path) {
             paths.push(orig_path.as_path());
         }
         paths
@@ -722,6 +725,8 @@ mod tests {
         assert_eq!(copied.orig_path.as_deref(), Some(Path::new("original.txt")));
         assert_eq!(copied.index, FileState::Copied);
         assert_eq!(copied.display_status(), DisplayStatus::Added);
+        // Undoing the copy must not touch the file it was copied from.
+        assert_eq!(copied.paths(), [Path::new("copy.txt")]);
 
         let edited = entry_at(&status, "moved/edited.rs");
         assert_eq!(edited.orig_path.as_deref(), Some(Path::new("edited.rs")));

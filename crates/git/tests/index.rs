@@ -236,6 +236,34 @@ fn stage_all_and_unstage_all() {
 }
 
 #[test]
+fn unstage_all_with_copies_reported_by_status() {
+    let test = TestRepo::new();
+    let original: String = (1..=30).map(|line| format!("line {line}\n")).collect();
+    test.write("original.txt", &original);
+    test.commit_all("base");
+    // The user's configuration makes status report copies.
+    test.git(&["config", "status.renames", "copies"]);
+    test.write("copy.txt", format!("{original}one more line\n"));
+    test.write("original.txt", format!("{original}changed too\n"));
+    test.repo.stage_all().unwrap();
+
+    let status = test.repo.status().unwrap();
+    let copy = status.entry("copy.txt").unwrap();
+    assert_eq!(copy.index, FileState::Copied);
+    assert_eq!(copy.orig_path.as_deref(), Some(Path::new("original.txt")));
+
+    // Unstaging the copy alone leaves the original's own staged change in place.
+    test.repo.unstage(&copy.paths()).unwrap();
+    let status = test.repo.status().unwrap();
+    assert!(status.entry("copy.txt").unwrap().untracked);
+    assert!(status.entry("original.txt").unwrap().is_fully_staged());
+
+    test.repo.stage_all().unwrap();
+    test.repo.unstage_all().unwrap();
+    assert!(test.repo.status().unwrap().staged().is_empty());
+}
+
+#[test]
 fn unstaging_before_the_first_commit() {
     let test = TestRepo::new();
     test.write("a.txt", "a\n");
