@@ -883,6 +883,21 @@ const CPP_EXTRA: &str = r#"
 (user_defined_literal (literal_suffix) @operator)
 "#;
 
+/// tree-sitter-yaml, where Zed draws YAML differently: an anchor and an alias are types (the
+/// bundled query calls them labels, which the theme leaves plain), escapes in a quoted
+/// string are escapes, and a key is a property wherever it stands, including the one-pair
+/// mappings inside a flow sequence.
+const YAML_EXTRA: &str = r#"
+[(anchor_name) (alias_name)] @type
+(escape_sequence) @string.escape
+key: (flow_node
+  [
+    (plain_scalar (string_scalar))
+    (double_quote_scalar)
+    (single_quote_scalar)
+  ] @property)
+"#;
+
 /// tree-sitter-css, where Zed draws a style sheet differently:
 ///
 /// * Class, id and pseudo selectors are selectors (which the built-in theme leaves plain),
@@ -1115,7 +1130,7 @@ pub(crate) static TOML: GrammarSpec = GrammarSpec {
 pub(crate) static YAML: GrammarSpec = GrammarSpec {
     name: "yaml",
     language: || tree_sitter_yaml::LANGUAGE.into(),
-    highlights: &[tree_sitter_yaml::HIGHLIGHTS_QUERY],
+    highlights: &[tree_sitter_yaml::HIGHLIGHTS_QUERY, YAML_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
@@ -1533,7 +1548,7 @@ mod tests {
     ///
     /// * `embedded` and `none` mark code inside a string or a fence that is *not* string:
     ///   they exist to stop the surrounding colour, so they must not have one.
-    /// * `label` (YAML anchors, goto labels), `lifetime` (Rust's), `link_text` (the text of a
+    /// * `label` (goto labels), `lifetime` (Rust's), `link_text` (the text of a
     ///   Markdown link, a branch name in a commit message) and `selector.*` (the class, id
     ///   and pseudo selectors of a style sheet) are in Zed's vocabulary but the theme does
     ///   not colour them.
