@@ -78,18 +78,27 @@ impl TermConfig {
         TermConfig::default()
     }
 
-    /// herdr, the default for a terminal panel: [`DEFAULT_COMMAND`] through
-    /// [`TermConfig::command`].
+    /// herdr: [`DEFAULT_COMMAND`], found on `PATH`, attaching to the user's default session.
     ///
     /// Spawning this fails with an error for which [`TermError::is_program_missing`] is
-    /// true when herdr is not installed; fall back to [`TermConfig::shell`] then.
+    /// true when herdr is not installed. Inside a herdr pane it starts, says that nested
+    /// herdr is disabled and exits with status 1; see [`TermConfig::default_command`].
     pub fn herdr() -> TermConfig {
-        let mut config = TermConfig {
+        TermConfig {
             program: Some(DEFAULT_COMMAND.to_string()),
             ..TermConfig::default()
-        };
-        config.env_remove = inherited_env_names("HERDR_");
-        config
+        }
+    }
+
+    /// What a terminal panel runs when the user has not chosen a command: herdr, or the
+    /// login shell when this process is itself running inside a herdr pane
+    /// ([`inside_herdr`]).
+    ///
+    /// herdr does not run inside itself, and it must not be talked into it by hiding where
+    /// it is: started from one of its own panes with the `HERDR_*` variables removed, it
+    /// would attach to the very session it is being displayed in.
+    pub fn default_command() -> TermConfig {
+        default_command_when(inside_herdr())
     }
 
     /// A command line as the user writes it in their settings: `herdr`,
@@ -98,29 +107,35 @@ impl TermConfig {
     /// The line is split by [`split_command_line`]; no shell is involved, so there are no
     /// variables, globs or pipes (write `sh -c '...'` for those). An empty line is an
     /// error; use [`TermConfig::shell`] for "no command".
-    ///
-    /// When the program is herdr, every `HERDR_*` variable this process inherited is put
-    /// in `env_remove`. herdr refuses to start inside another herdr (`HERDR_ENV=1`), and
-    /// with the outer session's socket in its environment it would attach to that session
-    /// instead of its own.
     pub fn command(line: &str) -> Result<TermConfig> {
         let mut words = split_command_line(line)?.into_iter();
         let program = words
             .next()
             .ok_or_else(|| TermError::CommandLine("the command is empty".to_string()))?;
-        let mut config = TermConfig {
+        Ok(TermConfig {
+            program: Some(program),
             args: words.collect(),
             ..TermConfig::default()
-        };
-        if Path::new(&program)
-            .file_name()
-            .is_some_and(|name| name == DEFAULT_COMMAND)
-        {
-            config.env_remove = inherited_env_names("HERDR_");
-        }
-        config.program = Some(program);
-        Ok(config)
+        })
     }
+}
+
+fn default_command_when(inside_herdr: bool) -> TermConfig {
+    if inside_herdr {
+        TermConfig::shell()
+    } else {
+        TermConfig::herdr()
+    }
+}
+
+/// Whether this process is running inside a herdr pane. herdr sets `HERDR_ENV=1` for
+/// everything it starts, and refuses to start where it finds it.
+pub fn inside_herdr() -> bool {
+    is_herdr_marker(std::env::var("HERDR_ENV").ok().as_deref())
+}
+
+fn is_herdr_marker(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 /// Split a command line into words the way a POSIX shell would, without running one.
@@ -229,8 +244,11 @@ fn finish_word(word: String, tilde: bool, home: Option<&str>) -> String {
 }
 
 /// The names of the variables in this process's environment that start with `prefix`,
-/// sorted. For [`TermConfig::env_remove`]: `inherited_env_names("HERDR_")` is what keeps a
-/// herdr started in the terminal from thinking it is nested in the one the IDE runs in.
+/// sorted, for [`TermConfig::env_remove`].
+///
+/// `inherited_env_names("HERDR_")` makes a program forget that it was started inside
+/// herdr. Only do that for a herdr given a session of its own (`herdr --session name`);
+/// see [`TermConfig::default_command`] for why.
 pub fn inherited_env_names(prefix: &str) -> Vec<String> {
     let mut names: Vec<String> = std::env::vars_os()
         .filter_map(|(name, _)| name.into_string().ok())
@@ -453,37 +471,29 @@ mod tests {
     }
 
     #[test]
-    fn herdr_never_inherits_the_session_it_was_started_from() {
-        let inherited = inherited_env_names("HERDR_");
-        for config in [
-            TermConfig::herdr(),
-            TermConfig::command("herdr").unwrap(),
-            TermConfig::command("/opt/homebrew/bin/herdr --session work").unwrap(),
-        ] {
-            assert_eq!(
-                config.program.as_deref().map(|p| p.ends_with("herdr")),
-                Some(true)
-            );
-            assert_eq!(config.env_remove, inherited);
-        }
-        assert_eq!(
-            TermConfig::herdr().program.as_deref(),
-            Some(DEFAULT_COMMAND)
-        );
-        assert_eq!(
-            TermConfig::command("herdr --session work").unwrap().args,
-            ["--session", "work"]
-        );
-        // Another program is left alone, as is a program that merely mentions herdr.
-        assert!(TermConfig::command("zsh -l").unwrap().env_remove.is_empty());
-        assert!(TermConfig::command("herdr-wrapper")
+    fn herdr_is_the_default_command_unless_already_inside_it() {
+        let herdr = TermConfig::herdr();
+        assert_eq!(herdr.program.as_deref(), Some(DEFAULT_COMMAND));
+        assert_eq!(DEFAULT_COMMAND, "herdr");
+        assert!(herdr.args.is_empty());
+        // Nothing is hidden from it: its own refusal to nest has to keep working.
+        assert!(herdr.env_remove.is_empty());
+        assert!(TermConfig::command("herdr --session work")
             .unwrap()
             .env_remove
             .is_empty());
-        assert!(TermConfig::command("env herdr")
-            .unwrap()
-            .env_remove
-            .is_empty());
+
+        assert_eq!(default_command_when(false), TermConfig::herdr());
+        assert_eq!(default_command_when(true), TermConfig::shell());
+        assert_eq!(
+            TermConfig::default_command(),
+            default_command_when(inside_herdr())
+        );
+
+        assert!(is_herdr_marker(Some("1")));
+        assert!(!is_herdr_marker(None));
+        assert!(!is_herdr_marker(Some("")));
+        assert!(!is_herdr_marker(Some("0")));
     }
 
     #[test]

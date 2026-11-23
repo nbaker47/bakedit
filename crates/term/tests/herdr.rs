@@ -1,10 +1,10 @@
 //! herdr, a full-screen terminal multiplexer, running inside the terminal: the proof that a
 //! nested TUI draws and takes keys.
 //!
-//! This starts a real herdr, so it only runs when asked to: `BAKEDIT_TEST_HERDR=1 cargo
-//! test -p bakedit-term --test herdr -- --nocapture`. It uses a named session of its own
-//! (`bakedit-term-test-<pid>`), never the session of whoever runs the test, and stops and
-//! deletes that session when it is done.
+//! These tests start a real herdr, so they only run when asked to: `BAKEDIT_TEST_HERDR=1
+//! cargo test -p bakedit-term --test herdr -- --nocapture`. They use named sessions of
+//! their own (`bakedit-term-test-...-<pid>`), never the session of whoever runs them, and
+//! stop and delete those sessions when they are done.
 
 mod common;
 
@@ -88,19 +88,19 @@ fn wait_for_quiet(session: &Session) {
     }
 }
 
-#[test]
-fn herdr_draws_and_takes_keys_inside_the_terminal() {
+/// The session to use, or `None` (with the reason printed) when the test is not to run.
+fn throwaway_session(purpose: &str) -> Option<ThrowawaySession> {
     if std::env::var("BAKEDIT_TEST_HERDR").as_deref() != Ok("1") {
         eprintln!("skipped: set BAKEDIT_TEST_HERDR=1 to run herdr inside the terminal");
-        return;
+        return None;
     }
     let Some(program) = find_program("herdr") else {
         eprintln!("skipped: herdr is not installed");
-        return;
+        return None;
     };
-    let mut herdr = ThrowawaySession {
-        program: program.clone(),
-        name: format!("bakedit-term-test-{}", std::process::id()),
+    let herdr = ThrowawaySession {
+        program,
+        name: format!("bakedit-term-test-{purpose}-{}", std::process::id()),
         removed: false,
     };
     assert!(
@@ -108,18 +108,55 @@ fn herdr_draws_and_takes_keys_inside_the_terminal() {
         "a session called {} already exists",
         herdr.name
     );
+    Some(herdr)
+}
 
-    // The command line a user would put in their settings. Because the program is herdr,
-    // the configuration drops every HERDR_* variable: this test is usually run from inside
-    // a herdr pane, and the herdr it starts must not find its way back to that session.
+#[test]
+fn herdr_refuses_to_start_inside_itself() {
+    // What `TermConfig::default_command` relies on: a herdr that finds HERDR_ENV=1 says so
+    // and exits, without touching any session. (Hiding the variable from it is what must
+    // never be done for the default session.)
+    let Some(mut herdr) = throwaway_session("nested") else {
+        return;
+    };
+    let config = TermConfig {
+        env: vec![("HERDR_ENV".to_string(), "1".to_string())],
+        ..TermConfig::command(&format!("herdr --session {}", herdr.name)).unwrap()
+    };
+    let mut session = start(config);
+    assert_eq!(session.wait_for_exit(), Some(1));
+    let screen = session.term.screen_text();
+    eprintln!("--- nested herdr ---\n{}", screen.trim_end());
+    assert!(screen.contains("nested"), "{screen}");
+    assert!(!session.term.modes().alt_screen);
+    assert!(
+        !herdr.is_listed(),
+        "the refused herdr started a session anyway"
+    );
+    drop(session);
+    herdr.remove();
+}
+
+#[test]
+fn herdr_draws_and_takes_keys_inside_the_terminal() {
+    let Some(mut herdr) = throwaway_session("tui") else {
+        return;
+    };
+
+    // The command line a user would put in their settings, plus one thing a user would
+    // not do: every HERDR_* variable is removed. This test is usually run from inside a
+    // herdr pane, where herdr refuses to start; with the variables gone it does. That is
+    // safe here, and only here, because of `--session`: it gets a session of its own
+    // instead of attaching to the one the test is running in.
     let work = tempfile::tempdir().unwrap();
     let config = TermConfig {
         cols: 120,
         rows: 36,
         cwd: Some(work.path().to_path_buf()),
+        env_remove: inherited_env_names("HERDR_"),
         ..TermConfig::command(&format!("herdr --session {}", herdr.name)).unwrap()
     };
-    assert_eq!(config.env_remove, inherited_env_names("HERDR_"));
+    assert_eq!(config.program.as_deref(), Some("herdr"));
     assert_eq!(config.args, ["--session", herdr.name.as_str()]);
 
     let session = start(config);

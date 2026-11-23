@@ -18,8 +18,11 @@
 //!
 //! // herdr by default, the user's shell when herdr is not installed.
 //! let on_event = Box::new(|event: TermEvent| println!("{event:?}"));
-//! let (terminal, problem) =
-//!     Terminal::spawn_with_fallback(TermConfig::herdr(), TermConfig::shell(), on_event)?;
+//! let (terminal, problem) = Terminal::spawn_with_fallback(
+//!     TermConfig::default_command(),
+//!     TermConfig::shell(),
+//!     on_event,
+//! )?;
 //! if let Some(problem) = problem {
 //!     println!("started a shell instead: {problem}");
 //! }
@@ -42,7 +45,8 @@ pub mod screen;
 pub mod terminal;
 
 pub use config::{
-    find_program, inherited_env_names, split_command_line, TermColors, TermConfig, DEFAULT_COMMAND,
+    find_program, inherited_env_names, inside_herdr, split_command_line, TermColors, TermConfig,
+    DEFAULT_COMMAND,
 };
 pub use error::{Result, TermError};
 pub use event::TermEvent;
