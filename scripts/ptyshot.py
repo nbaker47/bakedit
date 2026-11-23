@@ -11,13 +11,19 @@ and as HTML that headless Chrome can turn into a picture.
 Script lines (blank lines and lines starting with # are skipped):
     wait 0.5            pause, in seconds, while still reading output
     text hello world    type plain text
-    key cmd-shift-p     a key with modifiers, sent the way a kitty-protocol terminal sends it
+    key cmd-shift-p     a key with modifiers, pressed and released the way a kitty-protocol
+                        terminal sends them (with --legacy: the bytes a legacy terminal sends,
+                        and nothing at all for a cmd chord)
+    down ;              press a key and keep it held (kitty protocol only)
+    up ;                let a held key go
     send \\x1b[I         raw bytes, with Python escapes
     click 10 5 [cmd]    left click at column 10, row 5 (0-based); "cmd" holds the command key
+    resize 100x30       change the window size (the program gets SIGWINCH)
     snap name           write <out>-name.txt and <out>-name.html
 
-The emulated terminal answers the two questions bakedit asks at startup (keyboard protocol
-flags and device attributes) as Ghostty would, unless --legacy is given.
+The emulated terminal answers the questions bakedit asks at startup as Ghostty would: the
+keyboard protocol flags (31) and the device attributes. With --legacy it is a terminal
+without the kitty protocol: it answers the device attributes only.
 """
 import argparse
 import codecs
@@ -31,6 +37,8 @@ import struct
 import sys
 import termios
 import time
+
+import re
 
 import pyte
 
@@ -75,6 +83,51 @@ def encode_key(spec: str, release: bool = False) -> bytes:
         shifted = key.upper() if key.isalpha() else SHIFTED.get(key, key)
         fields += f":{ord(shifted)}"
     return f"\x1b[{fields};{1 + mods}{event}{text}u".encode()
+
+
+LEGACY_NAMED = {"enter": b"\r", "escape": b"\x1b", "tab": b"\t", "backspace": b"\x7f", "space": b" "}
+
+
+def encode_key_legacy(spec: str) -> bytes:
+    """`ctrl-]`, `a`, `enter`, `up` -> what a terminal without the kitty protocol sends; a cmd
+    chord sends nothing there, and alt is an escape prefix."""
+    parts = spec.split("-") if spec != "-" else ["-"]
+    if spec.endswith("--"):
+        parts = spec[:-2].split("-") + ["-"]
+    key, mods = parts[-1], set(parts[:-1])
+    if "cmd" in mods:
+        return b""
+    prefix = b"\x1b" if "alt" in mods else b""
+    if key in ARROWS:
+        return prefix + f"\x1b[{ARROWS[key]}".encode()
+    if key in TILDE:
+        return prefix + f"\x1b[{TILDE[key]}~".encode()
+    if key in LEGACY_NAMED:
+        return prefix + LEGACY_NAMED[key]
+    if len(key) != 1:
+        raise SystemExit(f"unknown key in script: {spec}")
+    if "ctrl" in mods:
+        code = {"]": 0x1d, "\\": 0x1c, "[": 0x1b, "space": 0x00}.get(key)
+        if code is None and key.isalpha():
+            code = ord(key.lower()) - ord("a") + 1
+        if code is None:
+            raise SystemExit(f"no legacy encoding for {spec}")
+        return prefix + bytes([code])
+    char = key
+    if "shift" in mods:
+        char = key.upper() if key.isalpha() else SHIFTED.get(key, key)
+    return prefix + char.encode()
+
+
+# Sequences bakedit writes that pyte does not understand (and in one case crashes on): the
+# kitty keyboard push/pop/query, private device status reports (colour scheme), XTVERSION,
+# window title push/pop, cursor shape. They change nothing pyte draws.
+UNSUPPORTED = re.compile(rb"\x1b\[[<>=?][0-9;]*u|\x1b\[\?[0-9;]*n|\x1b\[>[0-9;]*q|\x1b\[[0-9;]*t|\x1b\[[0-9]* q")
+
+
+def press_and_release(spec: str) -> bytes:
+    """A key going down and coming up, as a terminal with event reporting (flag 2) sends it."""
+    return encode_key(spec) + encode_key(spec, release=True)
 
 
 def click(col: int, row: int, cmd: bool) -> bytes:
@@ -150,6 +203,8 @@ def main() -> int:
 
     pid, fd = pty.fork()
     if pid == 0:
+        # The size first, so the program never sees another one at start.
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 16))
         env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", BAKEDIT_CLIPBOARD="memory")
         for name in list(env):
             if name.startswith("HERDR_"):
@@ -163,7 +218,7 @@ def main() -> int:
     screen = pyte.Screen(cols, rows)
     stream = pyte.ByteStream(screen)
     pending = b""
-    answered = args.legacy
+    answered = False
 
     def pump(seconds: float) -> bool:
         """Read output for `seconds`. Returns False once the child has gone."""
@@ -184,10 +239,11 @@ def main() -> int:
                 return False
             if not answered:
                 pending = (pending + data)[-64:]
-                if b"\x1b[?u" in pending or b"\x1b[c" in pending:
-                    os.write(fd, b"\x1b[?31u\x1b[?62;4c")
+                if b"\x1b[c" in pending:
+                    # Ghostty answers in order: the flags first, the attributes last.
+                    os.write(fd, b"\x1b[?62;4c" if args.legacy else b"\x1b[?31u\x1b[?62;4c")
                     answered = True
-            stream.feed(data)
+            stream.feed(UNSUPPORTED.sub(b"", data))
 
     def snap(name: str) -> None:
         text = "\n".join(line.rstrip() for line in screen.display)
@@ -212,14 +268,27 @@ def main() -> int:
                 print(f"child exited before: {line}", file=sys.stderr)
                 break
             elif verb == "text":
-                os.write(fd, b"".join(encode_key(c) if c != " " else encode_key("space") for c in rest))
+                if args.legacy:
+                    os.write(fd, rest.encode())
+                else:
+                    os.write(fd, b"".join(press_and_release(c if c != " " else "space") for c in rest))
             elif verb == "key":
+                os.write(fd, encode_key_legacy(rest) if args.legacy else press_and_release(rest))
+            elif verb == "down":
                 os.write(fd, encode_key(rest))
+            elif verb == "up":
+                os.write(fd, encode_key(rest, release=True))
+            elif verb == "resize":
+                cols, rows = (int(n) for n in rest.lower().split("x"))
+                screen.resize(rows, cols)
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 16))
+                os.kill(pid, signal.SIGWINCH)
             elif verb == "send":
                 os.write(fd, codecs.decode(rest, "unicode_escape").encode("latin-1"))
             elif verb == "click":
                 parts = rest.split()
-                os.write(fd, click(int(parts[0]), int(parts[1]), "cmd" in parts[2:]))
+                # A legacy terminal says nothing about the cmd key.
+                os.write(fd, click(int(parts[0]), int(parts[1]), "cmd" in parts[2:] and not args.legacy))
             else:
                 raise SystemExit(f"unknown script line: {line}")
             if verb not in ("wait", "snap"):
@@ -227,14 +296,34 @@ def main() -> int:
     else:
         snap("final")
 
+    # Hang up, and keep reading while the program leaves: closing a terminal waits for its
+    # output to be read, so a program that writes on the way out would never finish.
     try:
         os.kill(pid, signal.SIGHUP)
     except ProcessLookupError:
         pass
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
+    deadline = time.time() + 15
+    status = None
+    while status is None:
+        try:
+            done, status_code = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if done:
+            status = status_code
+            break
+        if time.time() > deadline:
+            print("the program did not exit after SIGHUP; killing it", file=sys.stderr)
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            return 1
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            try:
+                if not os.read(fd, 65536):
+                    pass
+            except OSError:
+                pass
     return 0
 
 

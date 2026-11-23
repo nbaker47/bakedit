@@ -74,6 +74,32 @@ fn now_millis() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// The longest socket path worth trying: the kernel's limit is 104 bytes on macOS and 108 on
+/// Linux, including the terminating zero.
+const MAX_SOCKET_PATH: usize = 100;
+
+/// Where the socket of process `pid` goes: next to its info file when that path is short
+/// enough to bind, else in a private folder under the temporary directory (the info file
+/// says where, so clients find it either way).
+fn socket_path(dir: &Path, pid: u32) -> io::Result<PathBuf> {
+    let beside = dir.join(format!("{pid}.sock"));
+    if beside.as_os_str().len() <= MAX_SOCKET_PATH {
+        return Ok(beside);
+    }
+    // FNV-1a of the instances folder keeps two state folders apart.
+    let hash = dir.as_os_str().as_encoded_bytes().iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    let short = std::env::temp_dir().join(format!("bakedit-{hash:016x}"));
+    fs::create_dir_all(&short)?;
+    fs::set_permissions(&short, fs::Permissions::from_mode(0o700))?;
+    let socket = short.join(format!("{pid}.sock"));
+    if socket.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("no socket path short enough for {}", dir.display())));
+    }
+    Ok(socket)
+}
+
 fn write_info(path: &Path, info: &InstanceInfo) -> io::Result<()> {
     // Write to a temp name and rename so a reader never sees half a file.
     let tmp = path.with_extension("json.tmp");
@@ -96,7 +122,7 @@ impl Server {
         fs::create_dir_all(dir)?;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         let pid = std::process::id();
-        let socket = dir.join(format!("{pid}.sock"));
+        let socket = socket_path(dir, pid)?;
         let info_path = dir.join(format!("{pid}.json"));
         // A stale socket from a previous process that had our pid.
         let _ = fs::remove_file(&socket);
@@ -298,6 +324,25 @@ mod tests {
         drop(server);
         assert!(!socket.exists());
         assert!(!info_path.exists());
+    }
+
+    #[test]
+    fn a_state_folder_too_deep_for_a_socket_still_serves() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a-folder-name-that-is-quite-long").join("and-another-one-below-it").join("instances");
+        let (tx, rx) = mpsc::channel();
+        let server = Server::start(&deep, Path::new("/code/app"), Box::new(move |r| tx.send(r).unwrap())).unwrap();
+        let socket = server.info().socket.clone();
+        assert!(!socket.starts_with(&deep), "the socket moved somewhere shorter: {}", socket.display());
+        assert!(socket.as_os_str().len() <= MAX_SOCKET_PATH);
+        // A client finds it through the info file as usual.
+        let found = server.info().clone();
+        assert_eq!(found.socket, socket);
+        let request = Request::Action { name: "workspace::Save".into(), args: None };
+        assert!(send(&socket, &request).unwrap().ok);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), request);
+        drop(server);
+        assert!(!socket.exists(), "the socket is removed with the server");
     }
 
     #[test]

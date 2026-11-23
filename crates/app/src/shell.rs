@@ -27,7 +27,7 @@ use crate::picker::{Picker, PickerEvent, PickerItem};
 pub use crate::project::GitSummary;
 use crate::project::{Project, ProjectEvent};
 use crate::settings::Settings;
-use crate::ui::{Canvas, Style};
+use crate::ui::{self, Canvas, Style};
 use crate::usage::{self, Vendor};
 use crate::view::{
     Context, Cursor, CursorShape, Cx, Effect, FsChange, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View,
@@ -83,6 +83,9 @@ pub struct Shell {
     pub git: GitSummary,
     pub usage: Vec<Vendor>,
     pub nav_layer: NavLayerIndicator,
+    /// The terminal sends cmd chords (the kitty keyboard protocol). Without them, hints name
+    /// the `ctrl-]` prefix keys instead.
+    pub cmd_keys: bool,
     /// Keys of an unfinished chord, shown in the status bar.
     pub pending_keys: Option<String>,
     /// Completions of the unfinished chord, shown once the user has paused.
@@ -166,6 +169,7 @@ impl Shell {
             git: GitSummary::default(),
             usage: Vec::new(),
             nav_layer: NavLayerIndicator::Off,
+            cmd_keys: true,
             pending_keys: None,
             which_key: Vec::new(),
             binding_hint: Box::new(|_| None),
@@ -195,6 +199,15 @@ impl Shell {
 
     pub fn set_panel(&mut self, id: PanelId, view: Box<dyn View>) {
         self.panels.insert(id, view);
+    }
+
+    /// Make a panel that needs a `Cx` to be made (the project, the settings) and put it in
+    /// its dock. Effects it pushes while being made are applied.
+    pub fn build_panel(&mut self, id: PanelId, make: impl FnOnce(&mut Cx<'_>) -> Box<dyn View>) {
+        let mut cx = cx!(self);
+        let view = make(&mut cx);
+        self.panels.insert(id, view);
+        self.apply_effects();
     }
 
     pub fn panel_mut(&mut self, id: PanelId) -> Option<&mut (dyn View + 'static)> {
@@ -271,10 +284,17 @@ impl Shell {
     }
 
     fn notify_focus(&mut self, target: Focus, focused: bool) {
+        let autosave = !focused && self.settings.autosave == crate::settings::Autosave::OnFocusChange;
         let mut cx = cx!(self);
         match target {
             Focus::Center => {
                 if let Some(item) = self.pane.active_mut() {
+                    // Zed's "on_focus_change": a file is saved as the focus leaves it.
+                    if autosave && item.is_dirty() && item.path().is_some() {
+                        if let Err(message) = item.save(true, &mut cx) {
+                            cx.error(message);
+                        }
+                    }
                     item.focus_changed(focused, &mut cx);
                 }
             }
@@ -1604,7 +1624,7 @@ impl Shell {
                 held_mods: self.held_mods,
             };
             if self.pane.is_empty() {
-                draw_empty_center(&mut canvas, center, &self.theme);
+                draw_empty_center(&mut canvas, center, &self.theme, self.cmd_keys);
             } else {
                 let tabs: Vec<chrome::Tab> = self
                     .pane
@@ -1684,25 +1704,36 @@ impl Shell {
     }
 }
 
-fn draw_empty_center(canvas: &mut Canvas<'_>, area: Rect, theme: &Theme) {
+/// What the centre says with no tab open: that nothing is open, and the keys that open
+/// something. On a narrow centre the list gives way to the one key that matters most.
+fn draw_empty_center(canvas: &mut Canvas<'_>, area: Rect, theme: &Theme, cmd_keys: bool) {
     canvas.fill(area, theme.editor_bg);
-    let lines = [
-        ("No file open", true),
-        ("", false),
-        ("cmd-p         find a file", false),
-        ("cmd-shift-f   search the project", false),
-        ("cmd-shift-e   file tree", false),
-        ("cmd-t         terminal", false),
-        ("cmd-shift-p   all commands", false),
-    ];
-    if area.height < lines.len() as u16 + 2 || area.width < 34 {
-        return;
-    }
-    let top = area.y + (area.height - lines.len() as u16) / 3;
-    let left = area.x + (area.width - 32) / 2;
-    for (i, (text, heading)) in lines.iter().enumerate() {
-        let style = if *heading { Style::colors(theme.text, theme.editor_bg).bold() } else { Style::colors(theme.text_muted, theme.editor_bg) };
-        canvas.text(left, top + i as u16, text, style, 32);
+    let hints: [(&str, &str); 5] = if cmd_keys {
+        [("cmd-p", "find a file"), ("cmd-shift-f", "search the project"), ("cmd-shift-e", "file tree"), ("cmd-t", "terminal"), ("cmd-shift-p", "all commands")]
+    } else {
+        [("ctrl-] p", "find a file"), ("ctrl-] f", "search the project"), ("ctrl-] e", "file tree"), ("ctrl-] t", "terminal"), ("ctrl-] shift-p", "all commands")]
+    };
+    let heading = Style::colors(theme.text, theme.editor_bg).bold();
+    let key = Style::colors(theme.text, theme.editor_bg);
+    let muted = Style::colors(theme.text_muted, theme.editor_bg);
+    let key_width = hints.iter().map(|(keys, _)| ui::width(keys)).max().unwrap_or(0) as u16 + 3;
+    let text_width = hints.iter().map(|(_, what)| ui::width(what)).max().unwrap_or(0) as u16;
+    let block = key_width + text_width;
+    if area.width >= block + 4 && area.height >= hints.len() as u16 + 4 {
+        let top = area.y + (area.height - hints.len() as u16 - 2) / 3;
+        let left = area.x + (area.width - block) / 2;
+        canvas.text(left, top, "No file open", heading, block);
+        for (i, (keys, what)) in hints.iter().enumerate() {
+            let y = top + 2 + i as u16;
+            canvas.text(left, y, keys, key, key_width);
+            canvas.text(left + key_width, y, what, muted, text_width);
+        }
+    } else if area.width >= 8 && area.height >= 3 {
+        // Too narrow for the list: the heading and the first key, cut cleanly.
+        let room = area.width - 2;
+        let top = area.y + area.height / 3;
+        canvas.text_truncated(area.x + 1, top, "No file open", heading, room);
+        canvas.text_truncated(area.x + 1, top + 2, &format!("{} {}", hints[0].0, hints[0].1), muted, room);
     }
 }
 

@@ -791,6 +791,14 @@ fn parse_command_line(line: &str) -> TerminalCommand {
     command_from_words(split_words(line))
 }
 
+impl TerminalCommand {
+    /// A command line as `--terminal` takes it: `herdr`, `shell` (or nothing) for the login
+    /// shell, anything else run as it is written (quotes group words; no shell involved).
+    pub fn parse(line: &str) -> TerminalCommand {
+        parse_command_line(line)
+    }
+}
+
 fn command_from_words(words: Vec<String>) -> TerminalCommand {
     match words.as_slice() {
         [] => TerminalCommand::Shell,

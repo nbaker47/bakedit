@@ -1,12 +1,14 @@
 //! Keys to actions: the keymap, the chord matcher, and the loop that offers each candidate
 //! action to the shell until one is taken.
 
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
-use bakedit_core::{Action, KeyEvent};
+use bakedit_core::{Action, Key, KeyEvent};
 use bakedit_keymap::{KeyContext, Keymap, KeymapSource, Matcher, PendingTimer, PushResult, Step, PENDING_TIMEOUT};
 
-use crate::shell::Shell;
+use crate::shell::{BindingHint, Shell};
 use crate::view::Context;
 
 /// The built-in keymap, compiled in.
@@ -22,6 +24,10 @@ pub struct KeyRouter {
     pub chord_deadline: Option<Instant>,
     /// When the which-key popup should appear for the pending chord.
     pub hint_deadline: Option<Instant>,
+    /// Keys whose last press reached the focused view as input. Their releases go there too;
+    /// the release of a press a binding took does not (a program in the terminal would see
+    /// a key come up that never went down).
+    delivered: HashSet<Key>,
 }
 
 fn key_contexts(contexts: &[Context]) -> Vec<KeyContext> {
@@ -60,7 +66,7 @@ impl KeyRouter {
             Some(text) => keymap.load(text, KeymapSource::User).iter().map(|w| w.to_string()).collect(),
             None => Vec::new(),
         };
-        (KeyRouter { keymap, matcher: Matcher::new(), chord_deadline: None, hint_deadline: None }, warnings)
+        (KeyRouter { keymap, matcher: Matcher::new(), chord_deadline: None, hint_deadline: None, delivered: HashSet::new() }, warnings)
     }
 
     /// Give a key event to the keymap and run what it resolves to. Releases and bare
@@ -71,6 +77,22 @@ impl KeyRouter {
         let taken = event.is_down() && !matches!(event.key, bakedit_core::Key::Modifier(_));
         self.finish(shell, result);
         taken
+    }
+
+    /// A key came up. It goes to the focused view when its press did, and not otherwise.
+    /// Returns whether it was passed on.
+    pub fn release(&mut self, shell: &mut Shell, event: &KeyEvent) -> bool {
+        if self.delivered.remove(&event.key) {
+            shell.handle_key(event);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The window lost the focus: whatever was held will be reported released by nobody.
+    pub fn forget_held_keys(&mut self) {
+        self.delivered.clear();
     }
 
     /// The chord timer fired: give up waiting and act on the keys held so far.
@@ -119,13 +141,13 @@ impl KeyRouter {
         for step in result.steps {
             match step {
                 Step::Dispatch { candidates, event } => {
-                    if !candidates.iter().any(|actions| run_candidate(shell, actions)) {
-                        shell.handle_key(&event);
+                    if candidates.iter().any(|actions| run_candidate(shell, actions)) {
+                        self.delivered.remove(&event.key);
+                    } else {
+                        self.input(shell, &event);
                     }
                 }
-                Step::Input(event) => {
-                    shell.handle_key(&event);
-                }
+                Step::Input(event) => self.input(shell, &event),
             }
         }
         if result.pending {
@@ -138,6 +160,63 @@ impl KeyRouter {
             shell.pending_keys = None;
             shell.which_key.clear();
         }
+    }
+
+    /// A key nothing took: it is typed into the focused view.
+    fn input(&mut self, shell: &mut Shell, event: &KeyEvent) {
+        if event.is_down() {
+            self.delivered.insert(event.key);
+        }
+        shell.handle_key(event);
+    }
+
+    /// A lookup the command palette can keep: the handiest keys bound to an action anywhere
+    /// in this keymap (fewest keys, cmd chords first), in Mac spelling.
+    pub fn binding_hint(&self) -> BindingHint {
+        let keymap = Arc::new(self.keymap.clone());
+        Box::new(move |action: &Action| {
+            keymap
+                .bindings_for_action(&action.name, action.args.as_ref(), None)
+                .into_iter()
+                .min_by_key(|binding| (binding.keystrokes().len(), !binding.keystroke_text().contains("cmd")))
+                .map(|binding| binding.display_mac())
+        })
+    }
+
+    /// Every binding as a page of text, grouped by the context it works in, in the order
+    /// the keymaps were read (later ones win). For `bakedit::ShowKeybindings`.
+    pub fn listing(&self) -> String {
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for binding in self.keymap.bindings() {
+            let context = binding.context().map(|c| c.to_string()).unwrap_or_else(|| "Everywhere".to_string());
+            let action = match binding.action() {
+                Some(action) => match &action.args {
+                    Some(args) => format!("{} {}", action.name, args),
+                    None => action.name.clone(),
+                },
+                None => "(switched off)".to_string(),
+            };
+            let source = match binding.source() {
+                KeymapSource::User => "   · keymap.json",
+                KeymapSource::Default => "",
+            };
+            let line = format!("  {:<24} {action}{source}", binding.keystroke_text());
+            match groups.iter_mut().find(|(name, _)| *name == context) {
+                Some((_, lines)) => lines.push(line),
+                None => groups.push((context, vec![line])),
+            }
+        }
+        let mut out = String::from("Key bindings: the built-in keymap, then ~/.config/bakedit/keymap.json. Later bindings win.\n");
+        for (context, lines) in groups {
+            out.push('\n');
+            out.push_str(&context);
+            out.push('\n');
+            for line in lines {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out
     }
 
     /// The keys to show next to a command, for where the focus is now.

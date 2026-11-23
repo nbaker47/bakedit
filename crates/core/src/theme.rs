@@ -130,11 +130,22 @@ pub struct Theme {
 impl Theme {
     /// The built-in theme. Never fails: the JSON is compiled in and covered by a test.
     pub fn builtin() -> Theme {
-        let overrides: Map<String, Value> = BUILTIN_OVERRIDES
+        Theme::builtin_with(&Map::new())
+    }
+
+    /// The built-in theme with `overrides` (the user's `theme_overrides`, in Zed's key
+    /// format) laid over it after the built-in overrides, so a user's override wins and the
+    /// rest of the built-in ones stay. Never fails; an override that is not a colour is
+    /// skipped like any unreadable key.
+    pub fn builtin_with(overrides: &Map<String, Value>) -> Theme {
+        let mut merged: Map<String, Value> = BUILTIN_OVERRIDES
             .iter()
             .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
             .collect();
-        Theme::from_zed_json(BUILTIN_THEME_JSON, None, Some(&overrides))
+        for (key, value) in overrides {
+            merged.insert(key.clone(), value.clone());
+        }
+        Theme::from_zed_json(BUILTIN_THEME_JSON, None, Some(&merged))
             .expect("the built-in theme is valid")
     }
 
@@ -417,6 +428,20 @@ mod tests {
         // The selection is translucent in the file and must come out opaque but tinted.
         let expected = Rgb::new(0x82, 0xaa, 0xff).over(theme.editor_bg, 0x40);
         assert_eq!(theme.selection_bg, expected);
+    }
+
+    #[test]
+    fn user_overrides_go_over_the_builtin_ones() {
+        let mut overrides = Map::new();
+        overrides.insert("editor.background".into(), Value::String("#000000".into()));
+        overrides.insert("panel.focused_border".into(), Value::String("#ff0000".into()));
+        let theme = Theme::builtin_with(&overrides);
+        assert_eq!(theme.editor_bg.to_hex(), "#000000");
+        assert_eq!(theme.panel_focused_border.to_hex(), "#ff0000", "the user's wins over the built-in override");
+        // The built-in overrides the user did not mention stay.
+        let expected = Rgb::new(0x82, 0xaa, 0xff).over(theme.background, 0x45);
+        assert_eq!(theme.element_selected, expected);
+        assert_eq!(Theme::builtin_with(&Map::new()), Theme::builtin());
     }
 
     #[test]

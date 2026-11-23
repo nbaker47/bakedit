@@ -755,3 +755,24 @@ fn a_status_message_fades_but_an_error_stays() {
     shell.set_status("Could not save", true);
     assert_eq!(shell.message_deadline(), None, "errors stay until the next message");
 }
+
+#[test]
+fn the_empty_centre_says_what_to_press_at_any_width() {
+    let (mut shell, _) = shell();
+    let text = frame(&mut shell, 120, 30);
+    assert!(text.contains("No file open") && text.contains("cmd-shift-p   all commands"), "{text}");
+    // A terminal without cmd keys: the ctrl-] prefix spellings instead.
+    shell.cmd_keys = false;
+    let text = frame(&mut shell, 120, 30);
+    assert!(text.contains("ctrl-] p         find a file"), "{text}");
+    assert!(!text.contains("cmd-p"));
+    // Squeezed between two docks: the heading and the first key, cut cleanly.
+    shell.cmd_keys = true;
+    act(&mut shell, "terminal_panel::Toggle");
+    act(&mut shell, "project_panel::ToggleFocus");
+    let text = frame(&mut shell, 150, 30);
+    let center = shell.layout().center.unwrap();
+    assert!(center.width < 34, "the centre is narrow here: {center:?}");
+    assert!(text.contains("No file open"), "{text}");
+    assert!(text.lines().any(|line| line.contains("cmd-p find")), "{text}");
+}
