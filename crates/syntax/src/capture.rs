@@ -130,6 +130,8 @@ const RENAMES: &[(&str, &str)] = &[
     ("preproc", "keyword.directive"),
     ("namespace", "type.namespace"),
     ("character", "string.character"),
+    // Not a character literal: a wildcard `_`, the flags of a regex.
+    ("character.special", "punctuation.special"),
     ("type.qualifier", "keyword.modifier"),
     // Code, new nvim-treesitter names.
     ("module", "type.namespace"),
@@ -236,7 +238,8 @@ mod tests {
             ("module.builtin", "type.namespace.builtin"),
             ("escape", "string.escape"),
             ("character", "string.character"),
-            ("character.special", "string.character.special"),
+            ("character.special", "punctuation.special"),
+            ("character.printf", "string.character.printf"),
             ("delimiter", "punctuation.delimiter"),
             ("type.qualifier", "keyword.modifier"),
             ("string.special.key", "property.json_key"),
