@@ -608,7 +608,7 @@ fn the_matcher_agrees_with_gpuis_recursive_dispatch() {
             waits += usize::from(result.pending);
         }
         // Whatever is still held comes out, and then nothing is.
-        matcher.timeout(&keymap, &contexts);
+        assert!(!matcher.timeout(&keymap, &contexts).pending);
         assert!(!matcher.has_pending());
         assert!(matcher.timeout(&keymap, &contexts).steps.is_empty());
     }

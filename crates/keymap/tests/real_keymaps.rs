@@ -441,7 +441,11 @@ fn a_chord_from_the_users_keymap_through_the_matcher() {
     );
 
     // cmd-k then a key the chord does not know: both come back as input.
-    matcher.push(&keymap, &key("cmd-k"), &contexts, true);
+    assert!(
+        matcher
+            .push(&keymap, &key("cmd-k"), &contexts, true)
+            .pending
+    );
     let result = matcher.push(&keymap, &key("x"), &contexts, true);
     assert_eq!(
         result.steps,

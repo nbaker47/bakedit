@@ -49,6 +49,7 @@ pub enum PendingTimer {
 
 /// What [`Matcher::push`] and [`Matcher::timeout`] return.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[must_use = "the steps are the key presses: dropping them loses input"]
 pub struct PushResult {
     /// What to do now, in order. Empty when the key was held back or not taken.
     pub steps: Vec<Step>,
@@ -688,7 +689,8 @@ mod tests {
             ["Space@space"]
         );
         // The context may change while keys are held: they are judged by the current one.
-        matcher.push(&keymap, &key("space"), &stack("ContextB"), false);
+        let result = matcher.push(&keymap, &key("space"), &stack("ContextB"), false);
+        assert!(result.pending);
         let result = matcher.push(&keymap, &key("f"), &stack("ContextA"), false);
         assert_eq!(
             result.steps.iter().map(show).collect::<Vec<_>>(),
