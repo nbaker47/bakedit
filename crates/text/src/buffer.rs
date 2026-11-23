@@ -883,7 +883,13 @@ impl Buffer {
         let edits = diff::diff_edits(&self.rope, &decoded.text);
         let mut after = selections.cloned();
         self.begin_transaction(UndoKind::Other, selections);
-        let summary = self.edit(&edits);
+        let mut summary = self.edit(&edits);
+        if !diff::rope_equals(&self.rope, &decoded.text) {
+            // A clean buffer must hold exactly what is on disk. The diff is expected to get
+            // there; should it ever fall short, replace the text outright.
+            let len = self.rope.len_chars();
+            summary.extend(self.edit(&[(0..len, decoded.text.as_str())]));
+        }
         if let Some(after) = &mut after {
             after.map_through(&summary);
         }

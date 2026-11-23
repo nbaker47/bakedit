@@ -34,8 +34,24 @@ pub(crate) fn diff_edits(rope: &Rope, new_text: &str) -> Vec<(Range<usize>, Stri
         return Vec::new();
     }
     let old_text: Cow<'_, str> = rope.slice(..).into();
-    let old_text: &str = &old_text;
+    let byte_edits = line_diff(&old_text, new_text)
+        // The diff should always describe both texts completely; if it ever does not,
+        // replacing everything is still correct.
+        .unwrap_or_else(|| vec![(0..old_text.len(), new_text.to_string())]);
+    byte_edits
+        .into_iter()
+        .map(|(bytes, text)| {
+            (
+                rope.byte_to_char(bytes.start)..rope.byte_to_char(bytes.end),
+                text,
+            )
+        })
+        .collect()
+}
 
+/// The line diff of two texts as `(old byte range, replacement)` edits, or `None` when the
+/// diff does not line up with the texts.
+fn line_diff(old_text: &str, new_text: &str) -> Option<Vec<(Range<usize>, String)>> {
     let diff = TextDiff::configure()
         .timeout(LINE_DIFF_TIMEOUT)
         .diff_lines(old_text, new_text);
@@ -50,33 +66,19 @@ pub(crate) fn diff_edits(rope: &Rope, new_text: &str) -> Vec<(Range<usize>, Stri
         let new_len: usize = new_lines
             .map(|line| diff.new_slice(line).map_or(0, str::len))
             .sum();
-        let old_end = (old_byte + old_len).min(old_text.len());
-        let new_end = (new_byte + new_len).min(new_text.len());
+        let old_part = old_text.get(old_byte..old_byte + old_len)?;
+        let new_part = new_text.get(new_byte..new_byte + new_len)?;
         if tag != DiffTag::Equal {
-            refine(
-                &old_text[old_byte..old_end],
-                &new_text[new_byte..new_end],
-                old_byte,
-                &mut byte_edits,
-            );
+            refine(old_part, new_part, old_byte, &mut byte_edits);
         }
-        old_byte = old_end;
-        new_byte = new_end;
+        old_byte += old_len;
+        new_byte += new_len;
     }
-
-    byte_edits
-        .into_iter()
-        .map(|(bytes, text)| {
-            (
-                rope.byte_to_char(bytes.start)..rope.byte_to_char(bytes.end),
-                text,
-            )
-        })
-        .collect()
+    (old_byte == old_text.len() && new_byte == new_text.len()).then_some(byte_edits)
 }
 
 /// Whether the rope holds exactly `text`, compared chunk by chunk without copying.
-fn rope_equals(rope: &Rope, text: &str) -> bool {
+pub(crate) fn rope_equals(rope: &Rope, text: &str) -> bool {
     if rope.len_bytes() != text.len() {
         return false;
     }
@@ -304,6 +306,64 @@ mod tests {
         check(&new, &old);
         check(&old, "");
         check("", &old);
+    }
+
+    #[test]
+    fn random_rewrites_always_apply() {
+        // A fixed-seed generator: texts built from a few line shapes, then rewritten the
+        // way a tool rewrites a file (lines dropped, added, changed in place).
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound.max(1) as u64) as usize
+        };
+        let shapes = [
+            "",
+            "fn name(arg: Type) -> Out {",
+            "    let value = compute(a, b);",
+            "    // a comment with ünïcödé and 世界",
+            "}",
+            "\tindented\twith\ttabs",
+            "x",
+            "👍🏽 emoji line e\u{301}",
+        ];
+        for _ in 0..300 {
+            let mut lines: Vec<String> = (0..next(25))
+                .map(|_| shapes[next(shapes.len())].to_string())
+                .collect();
+            let mut old = lines.join("\n");
+            if next(2) == 0 {
+                old.push('\n');
+            }
+            for _ in 0..next(6) {
+                let at = next(lines.len() + 1);
+                match next(4) {
+                    0 if at < lines.len() => {
+                        lines.remove(at);
+                    }
+                    1 => lines.insert(at.min(lines.len()), shapes[next(shapes.len())].to_string()),
+                    2 if at < lines.len() => {
+                        let chars: Vec<char> = lines[at].chars().collect();
+                        let cut = next(chars.len() + 1);
+                        let mut changed: String = chars[..cut].iter().collect();
+                        changed.push_str(["X", "", "世", "(new)"][next(4)]);
+                        changed.extend(&chars[(cut + next(3)).min(chars.len())..]);
+                        lines[at] = changed;
+                    }
+                    _ => lines.reverse(),
+                }
+            }
+            let mut new = lines.join("\n");
+            if next(2) == 0 {
+                new.push('\n');
+            }
+            let edits = check(&old, &new);
+            for pair in edits.windows(2) {
+                assert!(pair[0].0.end <= pair[1].0.start, "edits overlap: {edits:?}");
+            }
+        }
     }
 
     #[test]
