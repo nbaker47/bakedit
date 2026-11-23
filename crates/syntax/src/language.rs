@@ -54,7 +54,7 @@ pub struct Language {
     pub brackets: &'static [Pair],
     /// The pairs whose closer is typed for the user when they type the opener: the brackets
     /// plus the quotes that make sense in the language. Rust leaves out the single quote
-    /// because of lifetimes; prose leaves out both quotes because of apostrophes.
+    /// because of lifetimes, HTML because of apostrophes in text; prose leaves out both.
     pub autoclose: &'static [Pair],
     /// Columns per indent level.
     pub tab_size: u8,
@@ -66,8 +66,8 @@ pub struct Language {
     /// Characters that make the next line one level deeper when a line ends with one of
     /// them (ignoring trailing white space): `{[(` in most languages, plus `:` in Python.
     pub indent_after: &'static str,
-    /// Characters that count as part of a word beyond letters, digits and `_`: `$` in
-    /// JavaScript, `-` in CSS.
+    /// Characters that count as part of a word beyond letters, digits and `_`: `$` and `#` in
+    /// JavaScript, `?` and `!` in Ruby.
     pub word_chars: &'static str,
     pub(crate) grammar: Option<&'static GrammarSpec>,
 }
@@ -361,13 +361,21 @@ mod tests {
             ("run.zsh", "shell"),
             ("main.go", "go"),
             ("main.c", "c"),
-            ("main.h", "c"),
+            // As in Zed: a C++ parser reads a C header, a C parser does not read a C++ one.
+            ("main.h", "cpp"),
+            ("module.cppm", "cpp"),
+            ("sketch.ino", "cpp"),
             ("main.cpp", "cpp"),
             ("main.cc", "cpp"),
             ("main.hpp", "cpp"),
             ("index.html", "html"),
             ("index.htm", "html"),
             ("style.css", "css"),
+            ("style.pcss", "css"),
+            ("rules.mdc", "markdown"),
+            ("install.bats", "shell"),
+            ("world.topojson", "json"),
+            ("phpunit.json.dist", "json"),
             ("App.swift", "swift"),
             ("Main.java", "java"),
             ("init.lua", "lua"),
@@ -452,6 +460,9 @@ mod tests {
             (".prettierrc", "json"),
             ("flake.lock", "json"),
             ("bun.lock", "json"),
+            ("pixi.lock", "yaml"),
+            (".clangd", "yaml"),
+            (".stylelintrc", "json"),
             ("Package.resolved", "json"),
             ("CMakeLists.txt", "cmake"),
             (".editorconfig", "ini"),
@@ -490,8 +501,9 @@ mod tests {
             ("#!/usr/bin/env -S python3 -u", "python"),
             ("#!/usr/bin/env -S uv run --script", "python"),
             ("#!/usr/bin/env node", "javascript"),
-            ("#!/usr/bin/env -S deno run --allow-net", "javascript"),
-            ("#!/usr/bin/env bun", "javascript"),
+            // Both run TypeScript as it is, and a TypeScript parser reads JavaScript.
+            ("#!/usr/bin/env -S deno run --allow-net", "typescript"),
+            ("#!/usr/bin/env bun", "typescript"),
             ("#!/usr/bin/env ts-node", "typescript"),
             ("#!/usr/bin/env ruby", "ruby"),
             ("#!/usr/bin/env lua", "lua"),
@@ -671,7 +683,7 @@ mod tests {
     fn editing_conventions_follow_zed() {
         let get = |id: &str| language_by_id(id).unwrap_or_else(|| panic!("no {id}"));
         // Dart, Go and the three wrapped ones are in the `languages` section of Zed's default
-        // settings; the next five are two columns in Zed's own language configurations; the
+        // settings; the next six are two columns in Zed's own language configurations; the
         // last four have no grammar here and follow their formatters.
         let two_columns = [
             "dart",
@@ -680,6 +692,7 @@ mod tests {
             "tsx",
             "json",
             "yaml",
+            "markdown",
             "terraform",
             "hcl",
             "proto",
@@ -713,12 +726,19 @@ mod tests {
         assert!(closes("rust", '"') && closes("rust", '{'));
         assert!(!closes("rust", '\''), "a lifetime is not a string");
         assert!(closes("python", '\'') && closes("javascript", '`'));
+        assert!(
+            closes("html", '"') && !closes("html", '\''),
+            "text has apostrophes"
+        );
+        assert!(closes("shell", '\'') && !closes("shell", '`'));
         assert!(!closes("markdown", '\'') && !closes("plain_text", '"'));
 
         assert!(get("python").indent_after.contains(':'));
         assert!(get("rust").indent_after.contains('{'));
         assert!(get("javascript").is_word_char('$'));
-        assert!(get("css").is_word_char('-'));
+        // As in Zed, where `-` matters to completion only: a colour or an id is one word, a
+        // hyphenated property is not.
+        assert!(get("css").is_word_char('#') && !get("css").is_word_char('-'));
         assert!(!get("rust").is_word_char('-'));
         assert!(get("rust").is_word_char('_') && get("rust").is_word_char('é'));
     }

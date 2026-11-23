@@ -2,11 +2,16 @@
 //!
 //! Indent sizes follow Zed: the `languages` section of its default settings gives Go hard
 //! tabs, Dart two columns and soft wrap to Markdown, plain text and commit messages;
-//! JavaScript, TypeScript, TSX, JSON and YAML are two columns in Zed as well (set in each
-//! language's own configuration rather than in the settings file). Makefiles and `go.mod`
-//! use hard tabs because their tools require or write them. A few languages that have no
-//! grammar here follow their own formatter: two columns for Terraform, HCL, Proto and
-//! GraphQL, hard tabs for GDScript. Everything else is four spaces.
+//! JavaScript, TypeScript, TSX, JSON, YAML and Markdown are two columns in Zed as well (set
+//! in each language's own `config.toml` rather than in the settings file). Makefiles and
+//! `go.mod` use hard tabs because their tools require or write them. A few languages that
+//! have no grammar here follow their own formatter: two columns for Terraform, HCL, Proto
+//! and GraphQL, hard tabs for GDScript. Everything else is four spaces.
+//!
+//! For the languages Zed itself ships, the file names, word characters and autoclosed quotes
+//! follow its `config.toml` too. That is why a `.h` file is C++ (a C++ parser reads a C
+//! header; a C parser does not read a C++ one) and why a script run by `deno` or `bun` is
+//! TypeScript.
 
 use crate::grammar::{self, GrammarSpec};
 use crate::language::{language_by_name, Language, Pair};
@@ -100,7 +105,7 @@ pub(crate) static LANGUAGES: &[Language] = &[
         id: "javascript",
         name: "JavaScript",
         extensions: &["js", "mjs", "cjs", "jsx"],
-        interpreters: &["node", "nodejs", "deno", "bun"],
+        interpreters: &["node", "nodejs"],
         aliases: &["js", "jsx", "node", "ecmascript"],
         line_comment: Some("// "),
         block_comment: C_BLOCK,
@@ -114,7 +119,7 @@ pub(crate) static LANGUAGES: &[Language] = &[
         id: "typescript",
         name: "TypeScript",
         extensions: &["ts", "mts", "cts"],
-        interpreters: &["ts-node", "tsx"],
+        interpreters: &["ts-node", "tsx", "deno", "bun"],
         aliases: &["ts"],
         line_comment: Some("// "),
         block_comment: C_BLOCK,
@@ -146,6 +151,8 @@ pub(crate) static LANGUAGES: &[Language] = &[
             "jsonl",
             "ndjson",
             "geojson",
+            "topojson",
+            "json.dist",
             "webmanifest",
             "code-workspace",
         ],
@@ -155,6 +162,8 @@ pub(crate) static LANGUAGES: &[Language] = &[
             ".prettierrc",
             ".swcrc",
             ".jshintrc",
+            ".stylelintrc",
+            ".luaurc",
             ".hintrc",
             ".watchmanconfig",
             "composer.lock",
@@ -170,6 +179,7 @@ pub(crate) static LANGUAGES: &[Language] = &[
         autoclose: CLOSE_DOUBLE,
         tab_size: 2,
         indent_after: "{[",
+        word_chars: "#",
         grammar: Some(&grammar::JSON),
         ..BASE
     },
@@ -193,8 +203,14 @@ pub(crate) static LANGUAGES: &[Language] = &[
     Language {
         id: "yaml",
         name: "YAML",
-        extensions: &["yaml", "yml", "cff"],
-        file_names: &[".clang-format", ".clang-tidy", ".yamllint"],
+        extensions: &["yaml", "yml", "cff", "bst"],
+        file_names: &[
+            ".clang-format",
+            ".clang-tidy",
+            ".clangd",
+            ".yamllint",
+            "pixi.lock",
+        ],
         aliases: &["yml"],
         line_comment: Some("# "),
         tab_size: 2,
@@ -205,10 +221,11 @@ pub(crate) static LANGUAGES: &[Language] = &[
     Language {
         id: "markdown",
         name: "Markdown",
-        extensions: &["md", "markdown", "mdown", "mkd", "mdx"],
+        extensions: &["md", "markdown", "mdown", "mdwn", "mkd", "mdx", "mdc"],
         aliases: &["md"],
         block_comment: HTML_BLOCK,
         autoclose: CLOSE_BRACKETS,
+        tab_size: 2,
         soft_wrap: true,
         indent_after: "",
         grammar: Some(&grammar::MARKDOWN),
@@ -217,7 +234,9 @@ pub(crate) static LANGUAGES: &[Language] = &[
     Language {
         id: "shell",
         name: "Shell Script",
-        extensions: &["sh", "bash", "zsh", "ksh", "command", "envrc"],
+        extensions: &[
+            "sh", "bash", "zsh", "ksh", "bats", "command", "envrc", "ebuild",
+        ],
         file_names: &[
             ".bashrc",
             ".bash_profile",
@@ -225,12 +244,14 @@ pub(crate) static LANGUAGES: &[Language] = &[
             ".bash_logout",
             ".bash_login",
             ".profile",
+            ".brushrc",
             ".zshrc",
             ".zshenv",
             ".zprofile",
             ".zlogin",
             ".zlogout",
             ".zsh_aliases",
+            ".zsh_profile",
             ".envrc",
             ".env",
             ".env.*",
@@ -239,7 +260,7 @@ pub(crate) static LANGUAGES: &[Language] = &[
             "PKGBUILD",
             "APKBUILD",
         ],
-        interpreters: &["sh", "bash", "zsh", "dash", "ksh", "ash"],
+        interpreters: &["sh", "bash", "zsh", "dash", "ksh", "ash", "bats"],
         aliases: &[
             "sh",
             "bash",
@@ -249,7 +270,6 @@ pub(crate) static LANGUAGES: &[Language] = &[
             "shellscript",
         ],
         line_comment: Some("# "),
-        autoclose: CLOSE_ALL,
         grammar: Some(&grammar::BASH),
         ..BASE
     },
@@ -268,7 +288,7 @@ pub(crate) static LANGUAGES: &[Language] = &[
     Language {
         id: "c",
         name: "C",
-        extensions: &["c", "h"],
+        extensions: &["c"],
         line_comment: Some("// "),
         block_comment: C_BLOCK,
         grammar: Some(&grammar::C),
@@ -278,7 +298,8 @@ pub(crate) static LANGUAGES: &[Language] = &[
         id: "cpp",
         name: "C++",
         extensions: &[
-            "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "inl", "tpp", "cu", "cuh",
+            "cpp", "cc", "cxx", "c++", "h", "hpp", "hh", "hxx", "h++", "ipp", "inl", "tpp", "cu",
+            "cuh", "ccm", "cppm", "cxxm", "c++m", "ixx", "hip", "ino",
         ],
         aliases: &["c++", "cxx"],
         line_comment: Some("// "),
@@ -292,16 +313,16 @@ pub(crate) static LANGUAGES: &[Language] = &[
         extensions: &["html", "htm", "shtml", "xhtml"],
         block_comment: HTML_BLOCK,
         brackets: &[ROUND, SQUARE, CURLY, ANGLE],
-        word_chars: "-",
+        autoclose: CLOSE_DOUBLE,
         grammar: Some(&grammar::HTML),
         ..BASE
     },
     Language {
         id: "css",
         name: "CSS",
-        extensions: &["css"],
+        extensions: &["css", "postcss", "pcss"],
         block_comment: C_BLOCK,
-        word_chars: "-",
+        word_chars: "#",
         grammar: Some(&grammar::CSS),
         ..BASE
     },
