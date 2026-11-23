@@ -293,12 +293,15 @@ fn quote_pairs_in(text: &str, quote: u8) -> (Vec<(usize, usize, usize)>, Option<
     };
 
     let mut open_index: Option<usize> = None;
+    // Everything before this offset has been checked for line ends since the quote opened.
+    let mut checked_until = 0;
     for index in memchr::memchr_iter(quote, bytes) {
         // Quotes pair up within one line; anything left open is dropped at a line end.
-        if let Some(opened) = open_index {
-            if (opened..index).any(|between| ends_python_line(bytes, between)) {
+        if open_index.is_some() {
+            if (checked_until..index).any(|between| ends_python_line(bytes, between)) {
                 open_index = None;
             }
+            checked_until = index;
         }
         if in_triple(index) || is_escaped(bytes, index) {
             continue;
@@ -308,7 +311,10 @@ fn quote_pairs_in(text: &str, quote: u8) -> (Vec<(usize, usize, usize)>, Option<
         }
         first_open.get_or_insert(index);
         match open_index {
-            None => open_index = Some(index),
+            None => {
+                open_index = Some(index);
+                checked_until = index;
+            }
             Some(opened) => {
                 pairs.push((opened, 1, index));
                 open_index = None;
@@ -822,13 +828,15 @@ pub fn enclosing_bracket(buffer: &Buffer, range: Range<usize>) -> Option<(usize,
 fn quote_pairs_on_line(text: &str, line_start: usize, quote: u8) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let ascii = text.is_ascii();
-    let to_pos = |byte: usize| {
-        line_start
-            + if ascii {
-                byte
-            } else {
-                text[..byte].chars().count()
-            }
+    // Byte offsets are asked for in increasing order, so chars are counted only once.
+    let mut counted = (0usize, 0usize);
+    let mut to_pos = |byte: usize| {
+        if ascii {
+            return line_start + byte;
+        }
+        counted.1 += text[counted.0..byte].chars().count();
+        counted.0 = byte;
+        line_start + counted.1
     };
     let mut pairs = Vec::new();
     let mut open_index: Option<usize> = None;
@@ -842,7 +850,8 @@ fn quote_pairs_on_line(text: &str, line_start: usize, quote: u8) -> Vec<(usize, 
         match open_index {
             None => open_index = Some(index),
             Some(opened) => {
-                pairs.push((to_pos(opened), to_pos(index)));
+                let open_pos = to_pos(opened);
+                pairs.push((open_pos, to_pos(index)));
                 open_index = None;
             }
         }
@@ -1404,6 +1413,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hostile_quote_runs_take_linear_time() {
+        let start = std::time::Instant::now();
+        // One opening quote followed by half a million escaped ones.
+        let escaped = format!("\"{}", "\\\"".repeat(500_000));
+        assert_eq!(pairs_of(&escaped, PairKind::DoubleQuote), vec![]);
+        assert_eq!(first_open(&escaped, PairKind::DoubleQuote), Some(0));
+        // A long line of short strings with wide characters between them.
+        let many = "世\"x\" ".repeat(100_000);
+        assert_eq!(pairs_of(&many, PairKind::DoubleQuote).len(), 100_000);
+        let b = buffer(&many);
+        assert_eq!(enclosing_quote(&b, 2..2), Some((1, 3)));
+        assert_eq!(
+            enclosing_quote(&b, 499_997..499_997),
+            Some((499_996, 499_998))
+        );
+        // Brackets nested a hundred thousand deep.
+        let nested = format!("{}{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert_eq!(pairs_of(&nested, PairKind::Paren).len(), 100_000);
+        let b = buffer(&nested);
+        assert_eq!(matching_bracket(&b, 0), Some((0, 199_999)));
+        assert_eq!(
+            enclosing_bracket(&b, 100_000..100_000),
+            Some((99_999, 100_000))
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

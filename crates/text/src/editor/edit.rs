@@ -422,8 +422,15 @@ impl Editor {
         let tab_size = self.tab_size();
         let in_indent = head - line_start <= indent::indent_of_line(buffer, line, tab_size).chars;
         if in_indent && previous == ' ' && !self.settings.hard_tabs {
-            // Soft tabs: delete back to the previous tab stop, spaces only.
-            let col = buffer.display_col(head, tab_size);
+            // Soft tabs: delete back to the previous tab stop, spaces only. Everything
+            // before the cursor on this line is a space or a tab.
+            let col = buffer.slice(line_start..head).chars().fold(0, |col, c| {
+                if c == '\t' {
+                    col + tab_size - col % tab_size
+                } else {
+                    col + 1
+                }
+            });
             let stop = (col.saturating_sub(1) / tab_size) * tab_size;
             let mut start = head;
             let mut at = col;

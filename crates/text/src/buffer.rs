@@ -600,8 +600,11 @@ impl Buffer {
                 next += 1;
             }
             let new_start = shifted(edit.range.start, delta);
+            let (mut counted_bytes, mut counted_chars) = (0, 0);
             for byte in extra_break_bytes(&edit.text) {
-                updated.push(new_start + edit.text[..byte].chars().count());
+                counted_chars += edit.text[counted_bytes..byte].chars().count();
+                counted_bytes = byte;
+                updated.push(new_start + counted_chars);
             }
             delta += *inserted_len as isize - edit.range.len() as isize;
         }
@@ -1474,6 +1477,33 @@ mod tests {
         }
         let model = "\u{c}\n\u{2028}x\u{85}\n\n\u{b}\u{2029}";
         check_lines(&Buffer::from_str(model), model);
+    }
+
+    #[test]
+    fn a_flood_of_odd_line_breaks_stays_fast() {
+        // A megabyte of form feeds: one line as far as the buffer is concerned.
+        let start = std::time::Instant::now();
+        let mut buffer = Buffer::new();
+        buffer.edit(&[(0..0, "\u{c}".repeat(1_000_000))]);
+        assert_eq!(buffer.len_lines(), 1);
+        assert_eq!(buffer.line_len(0), 1_000_000);
+        buffer.edit(&[(500_000..500_000, "a\nb")]);
+        assert_eq!(buffer.len_lines(), 2);
+        assert_eq!(buffer.line_to_char(1), 500_002);
+        assert_eq!(buffer.char_to_line(999_999), 1);
+        for step in 0..200 {
+            buffer.edit(&[(step * 3..step * 3 + 1, "x")]);
+        }
+        assert_eq!(buffer.len_lines(), 2);
+        assert_eq!(buffer.char_to_point(500_010), Point::new(1, 8));
+        let reloaded = Buffer::from_str(&buffer.to_string());
+        assert_eq!(reloaded.len_lines(), 2);
+        assert_eq!(reloaded.line_to_char(1), buffer.line_to_char(1));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     /// A small deterministic random number generator for the model tests.
