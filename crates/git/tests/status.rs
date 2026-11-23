@@ -465,6 +465,13 @@ fn ahead_and_behind_an_upstream() {
     let status = test.repo.status().unwrap();
     assert_eq!((status.ahead, status.behind), (3, 2));
     assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+
+    // The counts are there even when the user's own `git status` skips them: that
+    // setting does not reach the machine-readable format.
+    test.git(&["config", "status.aheadBehind", "false"]);
+    let status = test.repo.status().unwrap();
+    assert_eq!((status.ahead, status.behind), (3, 2));
+    assert!(!status.upstream_gone);
 }
 
 #[test]

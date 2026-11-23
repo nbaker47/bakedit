@@ -733,6 +733,8 @@ fn the_users_diff_configuration_does_not_break_parsing() {
     .map(|target| test.repo.diff_files(target).unwrap())
     .collect();
 
+    // An order file that would list the files back to front.
+    test.write(".git/order", "unstaged.txt\nstaged.txt\nmoved away.txt\n");
     for (key, value) in [
         ("diff.noprefix", "true"),
         ("diff.mnemonicPrefix", "true"),
@@ -746,6 +748,7 @@ fn the_users_diff_configuration_does_not_break_parsing() {
         ("diff.submodule", "log"),
         ("diff.renames", "false"),
         ("diff.algorithm", "histogram"),
+        ("diff.orderFile", ".git/order"),
         ("diff.colorMoved", "zebra"),
         ("color.ui", "always"),
         ("color.diff", "always"),

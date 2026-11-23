@@ -87,6 +87,7 @@ impl Output {
 /// One git invocation in the making: `git -C <dir> <fixed options> <args>`.
 pub(crate) struct Git<'a> {
     dir: &'a Path,
+    settings: Vec<&'static str>,
     args: Vec<OsString>,
     stdin: Option<Vec<u8>>,
     timeout: Option<Duration>,
@@ -98,11 +99,18 @@ impl<'a> Git<'a> {
     pub fn new(dir: &'a Path) -> Git<'a> {
         Git {
             dir,
+            settings: Vec::new(),
             args: Vec::new(),
             stdin: None,
             timeout: None,
             merge_streams: false,
         }
+    }
+
+    /// Overrides one configuration variable for this command: `setting` is `name=value`.
+    pub fn config(mut self, setting: &'static str) -> Self {
+        self.settings.push(setting);
+        self
     }
 
     /// Appends one argument. The first argument is the subcommand.
@@ -225,6 +233,9 @@ impl<'a> Git<'a> {
         let mut command = Command::new("git");
         command.arg("-C").arg(self.dir);
         command.args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
+        for setting in &self.settings {
+            command.arg("-c").arg(setting);
+        }
         command.args(&self.args);
         for name in REPOSITORY_ENV {
             command.env_remove(name);
@@ -451,6 +462,30 @@ mod tests {
             ]
         );
         assert_eq!(git.label(), "status");
+    }
+
+    #[test]
+    fn configuration_overrides_come_before_the_subcommand() {
+        let git = Git::new(Path::new("/some/repo"))
+            .arg("commit")
+            .config("i18n.commitEncoding=UTF-8")
+            .arg("--file=-");
+        let command = git.command();
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(
+            args[2..],
+            [
+                "-c",
+                "core.quotepath=off",
+                "-c",
+                "color.ui=never",
+                "-c",
+                "i18n.commitEncoding=UTF-8",
+                "commit",
+                "--file=-"
+            ]
+        );
+        assert_eq!(git.label(), "commit");
     }
 
     #[test]

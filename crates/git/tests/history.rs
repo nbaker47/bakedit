@@ -374,6 +374,38 @@ fn log_lists_the_newest_commits_first() {
 }
 
 #[test]
+fn log_is_not_disturbed_by_signature_checks_or_another_output_encoding() {
+    let test = TestRepo::new();
+    test.sign_commits_with_a_stand_in();
+    test.write("a.txt", "a\n");
+    test.commit_all("erster Commit mit \u{fc}");
+    test.write("a.txt", "b\n");
+    test.commit_all("zweiter Commit mit \u{df}");
+    // What a user may have set for their own `git log`.
+    test.git(&["config", "log.showSignature", "true"]);
+    test.git(&["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+    test.git(&["config", "log.decorate", "full"]);
+    test.git(&["config", "format.pretty", "fuller"]);
+    test.git(&["config", "log.date", "iso"]);
+
+    let log = test.repo.log(10, None).unwrap();
+    let subjects: Vec<&str> = log.iter().map(|commit| commit.subject.as_str()).collect();
+    assert_eq!(
+        subjects,
+        ["zweiter Commit mit \u{df}", "erster Commit mit \u{fc}"]
+    );
+    assert_eq!(log[0].sha, test.head());
+    assert!(log.iter().all(|commit| commit.sha.len() == 40));
+    assert!(log.iter().all(|commit| commit.author == "Test Author"));
+    assert_eq!(
+        test.repo.head_commit_message().unwrap().as_deref(),
+        Some("zweiter Commit mit \u{df}")
+    );
+    let branches = test.repo.branches().unwrap();
+    assert_eq!(branches[0].subject, "zweiter Commit mit \u{df}");
+}
+
+#[test]
 fn log_of_a_path_follows_renames() {
     let test = TestRepo::new();
     test.write("old.txt", "line 1\nline 2\nline 3\nline 4\n");

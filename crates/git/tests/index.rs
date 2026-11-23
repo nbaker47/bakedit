@@ -659,23 +659,10 @@ fn a_failing_hook_surfaces_its_output() {
     assert_eq!(test.repo.status().unwrap().staged().len(), 1);
 }
 
-/// A stand-in for gpg: reads what it is asked to sign and answers the way git expects.
-const FAKE_GPG: &str = "#!/bin/sh\n\
-cat > /dev/null\n\
-echo '[GNUPG:] SIG_CREATED D 1 8 00 1700000000 0123456789ABCDEF' >&2\n\
-echo '-----BEGIN PGP SIGNATURE-----'\n\
-echo 'signed by the stand-in'\n\
-echo '-----END PGP SIGNATURE-----'\n";
-
 #[test]
 fn the_users_signing_configuration_applies() {
     let test = TestRepo::with_commit();
-    let gpg = test.sandbox().join("fake-gpg");
-    std::fs::write(&gpg, FAKE_GPG).unwrap();
-    std::fs::set_permissions(&gpg, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    test.git(&["config", "gpg.program", gpg.to_str().unwrap()]);
-    test.git(&["config", "commit.gpgsign", "true"]);
-    test.git(&["config", "user.signingkey", "0123456789ABCDEF"]);
+    test.sign_commits_with_a_stand_in();
 
     test.write("a.txt", "a\n");
     test.repo.stage_all().unwrap();
@@ -688,6 +675,48 @@ fn the_users_signing_configuration_applies() {
         "{raw}"
     );
     assert!(raw.contains("signed by the stand-in"), "{raw}");
+    // The signature is not mistaken for part of the message.
+    assert_eq!(
+        test.repo.head_commit_message().unwrap().as_deref(),
+        Some("signed work")
+    );
+}
+
+#[test]
+fn the_message_is_committed_as_typed_whatever_the_cleanup_and_encoding_settings() {
+    let test = TestRepo::with_commit();
+    // Settings meant for messages written in git's editor and in another encoding.
+    test.git(&["config", "commit.cleanup", "strip"]);
+    test.git(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
+    test.git(&["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+    test.git(&["config", "log.showSignature", "true"]);
+    test.sign_commits_with_a_stand_in();
+
+    test.write("a.txt", "a\n");
+    test.repo.stage_all().unwrap();
+    let message = "#42: gr\u{fc}n and \u{65e5}\u{672c}\u{8a9e}\n\n# not a comment\nbody";
+    test.repo.commit(message, CommitOptions::default()).unwrap();
+
+    assert_eq!(
+        test.repo.head_commit_message().unwrap().as_deref(),
+        Some(message)
+    );
+    let log = test.repo.log(1, None).unwrap();
+    assert_eq!(
+        log[0].subject,
+        "#42: gr\u{fc}n and \u{65e5}\u{672c}\u{8a9e}"
+    );
+    assert_eq!(log[0].sha, test.head());
+    // Stored as UTF-8 and declared as nothing else.
+    let raw = std::process::Command::new("git")
+        .current_dir(test.root())
+        .args(["cat-file", "commit", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let raw = String::from_utf8(raw).expect("the commit is UTF-8");
+    assert!(!raw.contains("\nencoding "), "{raw}");
+    assert!(raw.ends_with("# not a comment\nbody\n"), "{raw}");
 }
 
 #[test]

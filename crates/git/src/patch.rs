@@ -81,8 +81,10 @@ impl Repo {
             HunkAction::Unstage => &["--cached", "--reverse"],
             HunkAction::Discard => &["--reverse"],
         };
+        // The patch is applied exactly as it is: no whitespace fixing, and no matching
+        // against lines that differ in whitespace, whatever `apply.*` is configured.
         self.git()
-            .args(["apply", "--whitespace=nowarn"])
+            .args(["apply", "--whitespace=nowarn", "--no-ignore-whitespace"])
             .args(options)
             .arg("-")
             .stdin(patch)

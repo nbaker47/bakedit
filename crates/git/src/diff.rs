@@ -25,10 +25,10 @@ const BINARY_SNIFF_LEN: usize = 8000;
 
 /// The options every diff is made with, so its text can be parsed whatever the user's
 /// configuration says: no colour, no external diff or text conversion programs, renames
-/// detected, three lines of context, the standard `a/` and `b/` prefixes, and submodules
-/// as a one-line change. (Paths are always relative to the top of the work tree because
-/// that is where every command runs.)
-const DIFF_OPTIONS: [&str; 9] = [
+/// detected, three lines of context, the standard `a/` and `b/` prefixes, submodules as
+/// a one-line change, and files in path order (an empty `diff.orderFile`). Paths are
+/// always relative to the top of the work tree because that is where every command runs.
+const DIFF_OPTIONS: [&str; 10] = [
     "diff",
     "--no-color",
     "--no-ext-diff",
@@ -38,6 +38,7 @@ const DIFF_OPTIONS: [&str; 9] = [
     "--src-prefix=a/",
     "--dst-prefix=b/",
     "--submodule=short",
+    "-O/dev/null",
 ];
 
 /// Which two versions of the files to compare.

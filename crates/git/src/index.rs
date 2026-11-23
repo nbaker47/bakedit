@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{GitError, Result};
+use crate::log::LOG_OPTIONS;
 use crate::paths::pathspec_input;
 use crate::repo::Repo;
 use crate::status::{FileState, StatusEntry};
@@ -155,9 +156,10 @@ impl Repo {
 
     /// Commits what is staged with `message` and returns the new commit's full hash.
     ///
-    /// The message is handed to git on standard input, so it can hold anything; lines
-    /// starting with `#` are kept. The user's hooks run and their configuration applies
-    /// (signing included).
+    /// The message is handed to git on standard input and committed as typed: it can
+    /// hold anything, and lines starting with `#` are kept (only blank lines at either
+    /// end and trailing spaces are removed). The user's hooks run and their configuration
+    /// applies, signing included.
     ///
     /// Errors: [`GitError::EmptyCommitMessage`] when the message is blank;
     /// [`GitError::NothingStaged`] when the index holds no change, unless this is an
@@ -172,7 +174,14 @@ impl Repo {
         if !options.amend && !concludes_merge && !self.has_staged_changes()? {
             return Err(GitError::NothingStaged);
         }
-        let mut command = self.git().args(["commit", "--file=-"]);
+        // The message is taken as typed, whatever `commit.cleanup` and
+        // `i18n.commitEncoding` say: it is not an editor template with comment lines,
+        // and it is UTF-8.
+        let mut command = self.git().config("i18n.commitEncoding=UTF-8").args([
+            "commit",
+            "--file=-",
+            "--cleanup=whitespace",
+        ]);
         if options.amend {
             command = command.arg("--amend");
         }
@@ -189,7 +198,11 @@ impl Repo {
         if self.head_sha()?.is_none() {
             return Ok(None);
         }
-        let output = self.git().args(["log", "-1", "--format=%B"]).run()?;
+        let output = self
+            .git()
+            .args(LOG_OPTIONS)
+            .args(["-1", "--format=%B"])
+            .run()?;
         Ok(Some(output.stdout_text().trim_end().to_string()))
     }
 

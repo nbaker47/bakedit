@@ -743,6 +743,30 @@ fn whitespace_settings_do_not_alter_what_is_staged() {
 }
 
 #[test]
+fn a_hunk_is_not_applied_over_lines_whose_whitespace_changed() {
+    let test = TestRepo::new();
+    let base: String = (1..=10).map(|line| format!("line {line}\n")).collect();
+    test.write("ws.txt", &base);
+    test.commit_all("base");
+    // A setting that lets `git apply` match context lines that differ in whitespace.
+    test.git(&["config", "apply.ignoreWhitespace", "change"]);
+    test.write("ws.txt", base.replace("line 5\n", "line five\n"));
+    let diff = unstaged(&test, "ws.txt");
+
+    // After the diff was taken, a line next to the change is re-spaced and staged.
+    let respaced = base.replace("line 4\n", "line    4\n");
+    test.write("ws.txt", &respaced);
+    test.repo.stage(&["ws.txt"]).unwrap();
+
+    // The diff no longer describes the file exactly, so it is refused.
+    assert!(matches!(
+        test.repo.apply_hunk(&diff, 0, HunkAction::Stage),
+        Err(GitError::Failed { .. })
+    ));
+    assert_eq!(index_content(&test, "ws.txt"), respaced);
+}
+
+#[test]
 fn files_checked_out_with_crlf_line_endings() {
     let test = TestRepo::new();
     test.write(".gitattributes", "*.txt text eol=crlf\n");

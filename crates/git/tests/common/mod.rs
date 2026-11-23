@@ -206,6 +206,32 @@ impl TestRepo {
         fs::set_permissions(&path, permissions).expect("chmod the hook");
     }
 
+    /// Makes the repository sign its commits with a stand-in for gpg, which "signs"
+    /// anything and, asked to check a signature, prints a line that is easy to spot.
+    pub fn sign_commits_with_a_stand_in(&self) {
+        let script = "#!/bin/sh\n\
+            cat > /dev/null\n\
+            case \"$*\" in *--verify*)\n\
+              echo 'gpg: Signature made by the stand-in' >&2\n\
+              echo '[GNUPG:] GOODSIG 0123456789ABCDEF Test Author'\n\
+              exit 0;;\n\
+            esac\n\
+            echo '[GNUPG:] SIG_CREATED D 1 8 00 1700000000 0123456789ABCDEF' >&2\n\
+            echo '-----BEGIN PGP SIGNATURE-----'\n\
+            echo 'signed by the stand-in'\n\
+            echo '-----END PGP SIGNATURE-----'\n";
+        let gpg = self.sandbox().join("stand-in-gpg");
+        fs::write(&gpg, script).expect("write the stand-in");
+        fs::set_permissions(&gpg, fs::Permissions::from_mode(0o755)).expect("chmod the stand-in");
+        self.git(&[
+            "config",
+            "gpg.program",
+            gpg.to_str().expect("temp paths are UTF-8"),
+        ]);
+        self.git(&["config", "commit.gpgsign", "true"]);
+        self.git(&["config", "user.signingkey", "0123456789ABCDEF"]);
+    }
+
     /// Creates a bare repository next to the work tree, adds it as remote `origin` and
     /// pushes `main` to it with upstream tracking. Returns the remote's path.
     pub fn add_origin(&self) -> PathBuf {

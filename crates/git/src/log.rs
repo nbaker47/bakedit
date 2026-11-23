@@ -13,6 +13,11 @@ const LOG_FORMAT: &str = "--format=%H%x00%h%x00%aN%x00%at%x00%ar%x00%s";
 /// How many fields [`LOG_FORMAT`] asks for.
 const LOG_FIELDS: usize = 6;
 
+/// `git log` with its output pinned down whatever the user's configuration says: no
+/// signature check results mixed into the text (`log.showSignature`), and UTF-8 even
+/// when `i18n.logOutputEncoding` asks for something else.
+pub(crate) const LOG_OPTIONS: [&str; 3] = ["log", "--no-show-signature", "--encoding=UTF-8"];
+
 /// One commit in a history list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
@@ -62,7 +67,8 @@ impl Repo {
         }
         let mut command =
             self.git()
-                .args(["log", "-z", &format!("--max-count={limit}"), LOG_FORMAT]);
+                .args(LOG_OPTIONS)
+                .args(["-z", &format!("--max-count={limit}"), LOG_FORMAT]);
         if let Some(path) = path {
             let relative = self.relative_path(path)?;
             // The top of the work tree is every path: no filter needed.
