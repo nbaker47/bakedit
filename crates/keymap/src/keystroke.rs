@@ -275,9 +275,9 @@ impl Keystroke {
     }
 
     /// Mac style glyphs: `⌃` ctrl, `⌥` alt, `⌘` cmd, `⇧` shift in that order, which is the
-    /// order Zed shows them in, then the key as its symbol (`↑ ↓ ← → ⏎ ⇥ ⌫ ⌦ ⎋ ␣ ↖ ↘ ⇞ ⇟`) or
-    /// upper-cased (`K`, `F5`). `cmd-shift-p` is `⌘⇧P`. The modifiers without a Mac glyph are
-    /// spelled out in front (`fn-`, `hyper-`, `meta-`).
+    /// order Zed shows them in, then the key as its symbol (`↑ ↓ ← → ⏎ ⇥ ⌫ ⌦ ⎋ ␣ ⇞ ⇟`) or
+    /// upper-cased (`K`, `F5`, `HOME`). `cmd-shift-p` is `⌘⇧P`. The modifiers without a Mac
+    /// glyph are spelled out in front (`fn-`, `hyper-`, `meta-`).
     pub fn display_mac(&self) -> String {
         let mut out = String::new();
         if self.function {
@@ -427,8 +427,6 @@ fn mac_key_label(key: Key) -> String {
         Key::Backspace => '⌫',
         Key::Delete => '⌦',
         Key::Escape => '⎋',
-        Key::Home => '↖',
-        Key::End => '↘',
         Key::PageUp => '⇞',
         Key::PageDown => '⇟',
         Key::Char(' ') => '␣',
@@ -729,8 +727,8 @@ mod tests {
             ("alt-delete", "⌥⌦"),
             ("escape", "⎋"),
             ("space", "␣"),
-            ("cmd-home", "⌘↖"),
-            ("cmd-end", "⌘↘"),
+            ("cmd-home", "⌘HOME"),
+            ("shift-end", "⇧END"),
             ("pageup", "⇞"),
             ("pagedown", "⇟"),
             ("f5", "F5"),
