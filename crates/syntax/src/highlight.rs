@@ -20,9 +20,11 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::{ControlFlow, Range as ByteRange};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tree_sitter::{
-    Node, ParseOptions, ParseState, Parser, QueryCursor, QueryMatch, Range, StreamingIterator, Tree,
+    Node, ParseOptions, ParseState, Parser, QueryCursor, QueryCursorOptions, QueryCursorState,
+    QueryMatch, Range, StreamingIterator, Tree,
 };
 
 use crate::capture::CaptureId;
@@ -41,8 +43,46 @@ const MAX_INJECTION_DEPTH: u16 = 10;
 /// The most layers one document may have. A long Markdown file has one per paragraph.
 const MAX_LAYERS: usize = 200_000;
 
-/// How many captures to process between looks at the cancel flag.
-const CANCEL_CHECK_INTERVAL: usize = 1024;
+// Guards against a query that takes far longer than the parse it follows.
+//
+// tree-sitter matches a pattern in time linear in the tree unless the pattern has to keep a
+// match open across a long subtree. `(call function: (field object: (_) name: (_) @method))`
+// starts a match at every call in `a.b().c().d()` and each stays open until the walk comes
+// back up to its name, so a chain of n calls costs n squared. Real chains are tens long. A
+// degenerate one (generated or minified code, or a file read as the wrong language) is
+// thousands: tree-sitter-nix's injections take two minutes on 20,000 chained applications
+// that parse in a third of a second.
+
+/// How far below the node a query is run from a match may start;
+/// `QueryCursor::set_max_start_depth`. Deeper code is not skipped: the query is run again
+/// from each node at that depth (see [`band_roots`]), so a tree is covered in bands this
+/// tall. Within a band at most this many matches are open at once, which makes the cost of
+/// a chain this number times its length instead of its length squared. Ordinary code is a
+/// few dozen levels deep and is one band.
+pub(crate) const BAND_DEPTH: u32 = 256;
+
+/// How many matches that have captured something may be open at once; past this the oldest
+/// are dropped. Neovim and Helix use the same number.
+pub(crate) const MATCH_LIMIT: u32 = 256;
+
+/// The last resort, for a slow query the two limits above do not catch: a query may run for
+/// this many times as long as its layer took to parse, and at least [`MIN_QUERY_TIME`],
+/// before it is cut short. A layer cut short keeps the injections and spans found so far.
+/// A healthy query finishes in about the time of the parse.
+const QUERY_TIME_FACTOR: u32 = 20;
+
+/// See [`QUERY_TIME_FACTOR`]. Long enough that a busy machine does not trip it.
+const MIN_QUERY_TIME: Duration = Duration::from_secs(2);
+
+/// How long a layer's parse may take: this, plus [`PARSE_TIME_PER_BYTE`] for each byte of
+/// the layer. Parsers handle megabytes a second; a few grammars have inputs they are
+/// thousands of times slower on (tree-sitter-bash takes seconds over 40 kB of chained method
+/// calls). A layer that runs out of time is skipped, so one bad fence in a Markdown file
+/// costs the fence its colours and nothing else.
+const MIN_PARSE_TIME: Duration = Duration::from_secs(2);
+
+/// See [`MIN_PARSE_TIME`]: two seconds a megabyte.
+const PARSE_TIME_PER_BYTE: Duration = Duration::from_nanos(2_000);
 
 /// A run of text drawn with one capture.
 ///
@@ -108,9 +148,10 @@ struct Collected {
     capture: CaptureId,
 }
 
-/// A capture waiting for the others that start at the same byte.
+/// One capture of a highlights or locals pattern, as the query reports it.
 #[derive(Debug, Clone, Copy)]
 struct RunCapture {
+    start: usize,
     end: usize,
     pattern: usize,
     capture: u32,
@@ -131,9 +172,12 @@ struct Layer {
 impl Highlighter {
     /// A highlighter with nothing loaded. Grammars load the first time a text needs them.
     pub fn new() -> Highlighter {
+        let mut cursor = QueryCursor::new();
+        cursor.set_match_limit(MATCH_LIMIT);
+        cursor.set_max_start_depth(Some(BAND_DEPTH));
         Highlighter {
             parser: Parser::new(),
-            cursor: QueryCursor::new(),
+            cursor,
             collected: Vec::new(),
             run: Vec::new(),
         }
@@ -152,6 +196,11 @@ impl Highlighter {
     ///
     /// The only other errors are a text longer than 4 GiB and a bundled grammar that fails
     /// to load, which would be a bug in this crate.
+    ///
+    /// The time taken is proportional to the length of the text. To keep that true of
+    /// degenerate input, a query that runs for many times as long as the parse did is cut
+    /// short where it is, and a parse that takes seconds longer than its size explains is
+    /// abandoned; either leaves part of the text plain instead of holding up the caller.
     pub fn highlight(
         &mut self,
         language: &Language,
@@ -166,12 +215,7 @@ impl Highlighter {
         }
         let grammar = grammar::load(spec)?;
         self.collected.clear();
-        let result = self.collect_layers(grammar, text, cancel);
-        if result.is_err() {
-            // A parse that was cut short would otherwise resume on the next call.
-            self.parser.reset();
-        }
-        result?;
+        self.collect_layers(grammar, text, cancel)?;
         Ok(flatten(&mut self.collected, text))
     }
 
@@ -191,24 +235,38 @@ impl Highlighter {
         let mut layer_count = 1;
         while let Some(layer) = pending.pop() {
             check_cancelled(cancel)?;
-            let Some(tree) = parse_layer(&mut self.parser, &layer, text, cancel)? else {
+            let started = Instant::now();
+            let parse_time = parse_time_allowed(layer_len(&layer, text));
+            let tree = parse_layer(
+                &mut self.parser,
+                &layer,
+                text,
+                &Watchdog::new(cancel, parse_time),
+            )?;
+            check_cancelled(cancel)?;
+            let Some(tree) = tree else {
                 continue;
             };
+            let query_time = MIN_QUERY_TIME.max(started.elapsed() * QUERY_TIME_FACTOR);
             if layer.depth < MAX_INJECTION_DEPTH {
                 let before = pending.len();
-                collect_injections(&mut self.cursor, &layer, &tree, text, &mut pending);
+                let watchdog = Watchdog::new(cancel, query_time);
+                collect_injections(
+                    &mut self.cursor,
+                    &layer,
+                    &tree,
+                    text,
+                    &watchdog,
+                    &mut pending,
+                );
+                check_cancelled(cancel)?;
                 pending.truncate(before + MAX_LAYERS.saturating_sub(layer_count));
                 layer_count += pending.len() - before;
             }
-            collect_highlights(
-                &mut self.cursor,
-                &mut self.run,
-                &layer,
-                &tree,
-                text,
-                cancel,
-                &mut self.collected,
-            )?;
+            let watchdog = Watchdog::new(cancel, query_time);
+            let (cursor, run, collected) = (&mut self.cursor, &mut self.run, &mut self.collected);
+            collect_highlights(cursor, run, &layer, &tree, text, &watchdog, collected);
+            check_cancelled(cancel)?;
         }
         Ok(())
     }
@@ -221,12 +279,38 @@ fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<(), SyntaxError> {
     }
 }
 
-/// Parse one layer. `Ok(None)` means the layer's ranges were unusable and it is skipped.
+/// Tells a running parse or query when to stop: the caller cancelled, or its time is up.
+pub(crate) struct Watchdog<'a> {
+    cancel: Option<&'a AtomicBool>,
+    deadline: Instant,
+}
+
+impl<'a> Watchdog<'a> {
+    pub(crate) fn new(cancel: Option<&'a AtomicBool>, allowed: Duration) -> Watchdog<'a> {
+        Watchdog {
+            cancel,
+            deadline: Instant::now() + allowed,
+        }
+    }
+
+    /// The answer for tree-sitter's progress callbacks, which it calls every hundred steps.
+    pub(crate) fn check(&self) -> ControlFlow<()> {
+        let cancelled = self.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed));
+        if cancelled || Instant::now() >= self.deadline {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+/// Parse one layer. `Ok(None)` means there is no tree: the layer's ranges were unusable, or
+/// the watchdog stopped the parse.
 fn parse_layer(
     parser: &mut Parser,
     layer: &Layer,
     text: &str,
-    cancel: Option<&AtomicBool>,
+    watchdog: &Watchdog,
 ) -> Result<Option<Tree>, SyntaxError> {
     if parser.set_included_ranges(&layer.ranges).is_err() {
         return Ok(None);
@@ -238,23 +322,78 @@ fn parse_layer(
             message: error.to_string(),
         })?;
     let bytes = text.as_bytes();
-    let mut stop_if_cancelled = |_: &ParseState| match cancel {
-        Some(flag) if flag.load(Ordering::Relaxed) => ControlFlow::Break(()),
-        _ => ControlFlow::Continue(()),
-    };
-    let options = ParseOptions::new().progress_callback(&mut stop_if_cancelled);
+    let mut on_progress = |_: &ParseState| watchdog.check();
+    let options = ParseOptions::new().progress_callback(&mut on_progress);
     let tree = parser.parse_with_options(
         &mut |offset, _| &bytes[offset.min(bytes.len())..],
         None,
         Some(options),
     );
-    match tree {
-        Some(tree) => Ok(Some(tree)),
-        None => {
-            check_cancelled(cancel)?;
-            Err(SyntaxError::ParseFailed)
+    if tree.is_none() {
+        // A parse that was cut short would otherwise resume on the next call.
+        parser.reset();
+    }
+    Ok(tree)
+}
+
+/// How many bytes of the text a layer covers.
+fn layer_len(layer: &Layer, text: &str) -> usize {
+    if layer.ranges.is_empty() {
+        return text.len();
+    }
+    layer
+        .ranges
+        .iter()
+        .map(|range| range.end_byte.saturating_sub(range.start_byte))
+        .sum()
+}
+
+/// How long the parse of `bytes` of text may take before it is given up on.
+pub(crate) fn parse_time_allowed(bytes: usize) -> Duration {
+    MIN_PARSE_TIME + PARSE_TIME_PER_BYTE.saturating_mul(u32::try_from(bytes).unwrap_or(u32::MAX))
+}
+
+/// The nodes to run a query from so that it covers the whole tree under `root` although no
+/// match starts more than [`BAND_DEPTH`] levels below the node it was run from: `root`
+/// itself, then every node one level past that limit, and so on down.
+///
+/// Finding them does not walk the tree: a subtree too small to reach the limit is skipped
+/// by its node count, so for ordinary code this looks at a handful of nodes and returns
+/// `root` alone.
+pub(crate) fn band_roots(root: Node) -> Vec<Node> {
+    let limit = BAND_DEPTH as usize;
+    let mut roots = vec![root];
+    let mut next = 0;
+    while next < roots.len() {
+        let band_root = roots[next];
+        next += 1;
+        // The deepest a subtree of n nodes can go is n - 1 levels.
+        let reaches_past = |node: Node, depth: usize| depth + node.descendant_count() > limit + 1;
+        if !reaches_past(band_root, 0) {
+            continue;
+        }
+        let mut walker = band_root.walk();
+        let mut depth = 0;
+        'walk: loop {
+            let node = walker.node();
+            if depth == limit + 1 {
+                roots.push(node);
+            } else if reaches_past(node, depth) && walker.goto_first_child() {
+                depth += 1;
+                continue;
+            }
+            while !walker.goto_next_sibling() {
+                if depth == 0 || !walker.goto_parent() {
+                    break 'walk;
+                }
+                depth -= 1;
+            }
+            if depth == 0 {
+                break;
+            }
         }
     }
+    roots
 }
 
 /// Whether the predicates tree-sitter leaves to us hold for a match.
@@ -293,6 +432,7 @@ fn collect_injections(
     layer: &Layer,
     tree: &Tree,
     text: &str,
+    watchdog: &Watchdog,
     pending: &mut Vec<Layer>,
 ) {
     let Some(injections) = &layer.grammar.injections else {
@@ -300,46 +440,50 @@ fn collect_injections(
     };
     let own = layer.grammar.spec;
     let mut found: Vec<Injection> = Vec::new();
-    let mut matches = cursor.matches(&injections.query, tree.root_node(), text.as_bytes());
-    while let Some(matched) = matches.next() {
-        let pattern = &injections.patterns[matched.pattern_index];
-        if !predicates_hold(&pattern.predicates, matched, text) {
-            continue;
-        }
-        // A language named by the text (the word after a code fence) beats one set on the
-        // pattern.
-        let captured = injections
-            .language_capture
-            .and_then(|index| matched.nodes_for_capture_index(index).next());
-        let spec = match (captured, pattern.language) {
-            (Some(node), _) => text
-                .get(node.byte_range())
-                .and_then(registry::grammar_by_name),
-            (None, Some(FixedLanguage::Named(spec))) => spec,
-            (None, Some(FixedLanguage::Own)) => Some(own),
-            (None, Some(FixedLanguage::Parent)) => layer.parent,
-            (None, None) => None,
-        };
-        let Some(spec) = spec else { continue };
+    for band_root in band_roots(tree.root_node()) {
+        let mut on_progress = |_: &QueryCursorState| watchdog.check();
+        let options = QueryCursorOptions::new().progress_callback(&mut on_progress);
+        let query = &injections.query;
+        let mut matches = cursor.matches_with_options(query, band_root, text.as_bytes(), options);
+        while let Some(matched) = matches.next() {
+            let pattern = &injections.patterns[matched.pattern_index];
+            if !predicates_hold(&pattern.predicates, matched, text) {
+                continue;
+            }
+            // A language named by the text (the word after a code fence) beats one set on
+            // the pattern.
+            let captured = injections
+                .language_capture
+                .and_then(|index| matched.nodes_for_capture_index(index).next());
+            let spec = match (captured, pattern.language) {
+                (Some(node), _) => text
+                    .get(node.byte_range())
+                    .and_then(registry::grammar_by_name),
+                (None, Some(FixedLanguage::Named(spec))) => spec,
+                (None, Some(FixedLanguage::Own)) => Some(own),
+                (None, Some(FixedLanguage::Parent)) => layer.parent,
+                (None, None) => None,
+            };
+            let Some(spec) = spec else { continue };
 
-        let mut pieces = Vec::new();
-        let mut key = None;
-        for node in matched.nodes_for_capture_index(injections.content_capture) {
-            key.get_or_insert((node.start_byte(), node.end_byte()));
-            content_pieces(node, pattern.include_children, own.children, &mut pieces);
-        }
-        if let Some(key) = key {
-            let (pattern, combined) = (matched.pattern_index, pattern.combined);
-            found.push(Injection {
-                key,
-                pattern,
-                spec,
-                pieces,
-                combined,
-            });
+            let mut pieces = Vec::new();
+            let mut key = None;
+            for node in matched.nodes_for_capture_index(injections.content_capture) {
+                key.get_or_insert((node.start_byte(), node.end_byte()));
+                content_pieces(node, pattern.include_children, own.children, &mut pieces);
+            }
+            if let Some(key) = key {
+                let (pattern, combined) = (matched.pattern_index, pattern.combined);
+                found.push(Injection {
+                    key,
+                    pattern,
+                    spec,
+                    pieces,
+                    combined,
+                });
+            }
         }
     }
-    drop(matches);
 
     // When two patterns inject the same node, the grammar's precedence picks one, as it
     // does for highlights. The sort is stable, so equal keys stay in pattern order.
@@ -599,40 +743,65 @@ impl<'t> Locals<'t> {
 }
 
 /// Run the layer's highlights (and locals) query and add its spans to `collected`.
-#[allow(clippy::too_many_arguments)]
 fn collect_highlights(
     cursor: &mut QueryCursor,
     run: &mut Vec<RunCapture>,
     layer: &Layer,
     tree: &Tree,
     text: &str,
-    cancel: Option<&AtomicBool>,
+    watchdog: &Watchdog,
     collected: &mut Vec<Collected>,
-) -> Result<(), SyntaxError> {
-    let grammar = layer.grammar;
-    let mut locals = (grammar.locals_patterns > 0).then(Locals::new);
-    let mut run_start = 0;
-    let mut seen = 0usize;
+) {
     run.clear();
-    let mut captures = cursor.captures(&grammar.query, tree.root_node(), text.as_bytes());
-    while let Some((matched, index)) = captures.next() {
-        seen += 1;
-        if seen.is_multiple_of(CANCEL_CHECK_INTERVAL) {
-            check_cancelled(cancel)?;
+    let mut builder = SpanBuilder {
+        layer,
+        text,
+        locals: (layer.grammar.locals_patterns > 0).then(Locals::new),
+        run,
+        collected,
+    };
+    let roots = band_roots(tree.root_node());
+    if let [root] = roots[..] {
+        // The usual case: the captures arrive in order and are decided as they come.
+        query_captures(cursor, layer.grammar, root, text, watchdog, |capture| {
+            builder.push(capture)
+        });
+    } else {
+        // A tree deep enough to need several runs of the query: each run is in order, but
+        // the runs interleave, so gather them all and put them in order first.
+        let mut gathered: Vec<RunCapture> = Vec::new();
+        for root in roots {
+            query_captures(cursor, layer.grammar, root, text, watchdog, |capture| {
+                gathered.push(capture)
+            });
         }
+        gathered.sort_by_key(|capture| capture.start);
+        for capture in gathered {
+            builder.push(capture);
+        }
+    }
+    builder.finish_run();
+}
+
+/// Run the highlights (and locals) query from `root` and hand each capture to `sink`.
+fn query_captures(
+    cursor: &mut QueryCursor,
+    grammar: &Grammar,
+    root: Node,
+    text: &str,
+    watchdog: &Watchdog,
+    mut sink: impl FnMut(RunCapture),
+) {
+    let mut on_progress = |_: &QueryCursorState| watchdog.check();
+    let options = QueryCursorOptions::new().progress_callback(&mut on_progress);
+    let mut captures = cursor.captures_with_options(&grammar.query, root, text.as_bytes(), options);
+    while let Some((matched, index)) = captures.next() {
         let pattern = matched.pattern_index;
         let predicates = &grammar.patterns[pattern].predicates;
         if !predicates.is_empty() && !predicates_hold(predicates, matched, text) {
             continue;
         }
         let capture = matched.captures()[*index];
-        let start = capture.node.start_byte();
-        // Captures arrive in order of their start. Everything that starts at one byte is
-        // decided together, because which capture wins depends on the others.
-        if start != run_start {
-            finish_run(run, run_start, layer, text, &mut locals, collected);
-            run_start = start;
-        }
         let mut value_end = 0;
         let is_definition = pattern < grammar.locals_patterns
             && grammar.local_roles[capture.index as usize] == LocalRole::Definition;
@@ -642,99 +811,119 @@ fn collect_highlights(
             });
             value_end = value.map_or(0, |value| value.node.end_byte());
         }
-        run.push(RunCapture {
+        sink(RunCapture {
+            start: capture.node.start_byte(),
             end: capture.node.end_byte(),
             pattern,
             capture: capture.index,
             value_end,
         });
     }
-    finish_run(run, run_start, layer, text, &mut locals, collected);
-    Ok(())
 }
 
-/// Decide the captures that start at `start`: one highlight per distinct range.
-fn finish_run<'t>(
-    run: &mut Vec<RunCapture>,
-    start: usize,
-    layer: &Layer,
+/// Turns a layer's captures, fed in order of where they start, into spans.
+///
+/// Everything that starts at one byte is decided together, because which capture wins a
+/// node depends on the others that captured it.
+struct SpanBuilder<'a, 't> {
+    layer: &'a Layer,
     text: &'t str,
-    locals: &mut Option<Locals<'t>>,
-    collected: &mut Vec<Collected>,
-) {
-    if run.is_empty() {
-        return;
-    }
-    let grammar = layer.grammar;
-    // Wider nodes first, so a scope is entered before the names inside it are looked at;
-    // within one node, pattern order. The sort is stable, so two captures of one pattern
-    // stay in the order the pattern wrote them.
-    run.sort_by(|a, b| b.end.cmp(&a.end).then(a.pattern.cmp(&b.pattern)));
-    if let Some(locals) = locals {
-        locals.leave_scopes_before(start);
-    }
-    let mut group_start = 0;
-    while group_start < run.len() {
-        let end = run[group_start].end;
-        let group_len = run[group_start..]
-            .iter()
-            .take_while(|capture| capture.end == end)
-            .count();
-        let group = &run[group_start..group_start + group_len];
-        group_start += group_len;
+    locals: Option<Locals<'t>>,
+    /// The captures that start at the byte being decided.
+    run: &'a mut Vec<RunCapture>,
+    collected: &'a mut Vec<Collected>,
+}
 
-        let name = text.get(start..end).unwrap_or("");
-        let mut defined = false;
-        let mut referenced: Option<Option<CaptureId>> = None;
-        if let Some(locals) = locals {
-            for capture in group
+impl SpanBuilder<'_, '_> {
+    fn push(&mut self, capture: RunCapture) {
+        if self
+            .run
+            .first()
+            .is_some_and(|first| first.start != capture.start)
+        {
+            self.finish_run();
+        }
+        self.run.push(capture);
+    }
+
+    /// Decide the captures waiting in `run`: one highlight per distinct range.
+    fn finish_run(&mut self) {
+        let Some(start) = self.run.first().map(|capture| capture.start) else {
+            return;
+        };
+        let (grammar, text) = (self.layer.grammar, self.text);
+        // Wider nodes first, so a scope is entered before the names inside it are looked
+        // at; within one node, pattern order. The sort is stable, so two captures of one
+        // pattern stay in the order the pattern wrote them.
+        self.run
+            .sort_by(|a, b| b.end.cmp(&a.end).then(a.pattern.cmp(&b.pattern)));
+        if let Some(locals) = &mut self.locals {
+            locals.leave_scopes_before(start);
+        }
+        let mut group_start = 0;
+        while group_start < self.run.len() {
+            let end = self.run[group_start].end;
+            let group_len = self.run[group_start..]
                 .iter()
-                .filter(|capture| capture.pattern < grammar.locals_patterns)
-            {
-                match grammar.local_roles[capture.capture as usize] {
-                    LocalRole::Scope => {
-                        locals.enter_scope(end, grammar.patterns[capture.pattern].scope_inherits)
+                .take_while(|capture| capture.end == end)
+                .count();
+            let group = &self.run[group_start..group_start + group_len];
+            group_start += group_len;
+
+            let name = text.get(start..end).unwrap_or("");
+            let mut defined = false;
+            let mut referenced: Option<Option<CaptureId>> = None;
+            if let Some(locals) = &mut self.locals {
+                for capture in group
+                    .iter()
+                    .filter(|capture| capture.pattern < grammar.locals_patterns)
+                {
+                    match grammar.local_roles[capture.capture as usize] {
+                        LocalRole::Scope => {
+                            let inherits = grammar.patterns[capture.pattern].scope_inherits;
+                            locals.enter_scope(end, inherits);
+                        }
+                        LocalRole::Definition => {
+                            locals.define(name, capture.value_end);
+                            defined = true;
+                            referenced = None;
+                        }
+                        LocalRole::Reference if !defined => referenced = locals.lookup(name, start),
+                        _ => {}
                     }
-                    LocalRole::Definition => {
-                        locals.define(name, capture.value_end);
-                        defined = true;
-                        referenced = None;
-                    }
-                    LocalRole::Reference if !defined => referenced = locals.lookup(name, start),
-                    _ => {}
+                }
+            }
+            let inherited = referenced.flatten();
+            let is_local = defined || inherited.is_some();
+
+            let mut candidates = group.iter().filter(|capture| {
+                capture.pattern >= grammar.locals_patterns
+                    && grammar.capture_ids[capture.capture as usize].is_some()
+                    && !(is_local && grammar.patterns[capture.pattern].non_local)
+            });
+            let winner = match grammar.spec.precedence {
+                Precedence::LastWins => candidates.next_back(),
+                Precedence::FirstWins => candidates.next(),
+            };
+            let own = winner.and_then(|capture| grammar.capture_ids[capture.capture as usize]);
+            if defined {
+                if let Some(locals) = &mut self.locals {
+                    locals.set_highlight(name, own);
+                }
+            }
+            if let Some(capture) = inherited.or(own) {
+                if start < end {
+                    self.collected.push(Collected {
+                        start: start as u32,
+                        end: end as u32,
+                        depth: self.layer.depth,
+                        capture,
+                    });
                 }
             }
         }
-        let inherited = referenced.flatten();
-        let is_local = defined || inherited.is_some();
-
-        let mut candidates = group.iter().filter(|capture| {
-            capture.pattern >= grammar.locals_patterns
-                && grammar.capture_ids[capture.capture as usize].is_some()
-                && !(is_local && grammar.patterns[capture.pattern].non_local)
-        });
-        let winner = match grammar.spec.precedence {
-            Precedence::LastWins => candidates.next_back(),
-            Precedence::FirstWins => candidates.next(),
-        };
-        let own = winner.and_then(|capture| grammar.capture_ids[capture.capture as usize]);
-        if defined {
-            if let Some(locals) = locals {
-                locals.set_highlight(name, own);
-            }
-        }
-        if let Some(capture) = inherited.or(own) {
-            if start < end {
-                collected.push(Collected {
-                    start: start as u32,
-                    end: end as u32,
-                    depth: layer.depth,
-                    capture,
-                });
-            }
-        }
+        self.run.clear();
     }
-    run.clear();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1087,5 +1276,149 @@ mod tests {
         assert_eq!(clipped[3].end_point.column, 30);
         // No parent ranges means the parent covers everything.
         assert_eq!(bytes(&clip_to_parent(vec![range(1, 2)], &[])), [(1, 2)]);
+    }
+    fn parse_javascript(text: &str) -> Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_javascript::LANGUAGE.into())
+            .unwrap();
+        parser.parse(text, None).unwrap()
+    }
+
+    #[test]
+    fn a_shallow_tree_is_one_band() {
+        for text in ["", "const x = [1, [2, [3]]];\nfunction f() { return x; }\n"] {
+            let tree = parse_javascript(text);
+            assert_eq!(band_roots(tree.root_node()), [tree.root_node()]);
+        }
+        // Wide is not deep: ten thousand siblings are still one band.
+        let wide = parse_javascript(&"f(1);\n".repeat(10_000));
+        assert_eq!(band_roots(wide.root_node()).len(), 1);
+    }
+
+    #[test]
+    fn a_deep_tree_is_cut_exactly_where_a_query_stops_starting_matches() {
+        // A thousand nested arrays with a number at the bottom: one node starts at each byte
+        // up to the number.
+        let depth = 1000;
+        let text = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let tree = parse_javascript(&text);
+        let roots = band_roots(tree.root_node());
+        assert!(
+            roots.len() >= depth / (BAND_DEPTH as usize + 1),
+            "{} bands",
+            roots.len()
+        );
+
+        // Every later root is one level past the limit below another root.
+        for band_root in &roots[1..] {
+            let mut levels = 1;
+            let mut above = band_root.parent();
+            while let Some(node) = above.filter(|node| !roots.contains(node)) {
+                above = node.parent();
+                levels += 1;
+            }
+            assert!(above.is_some(), "a band root with no band root above it");
+            assert_eq!(levels, BAND_DEPTH as usize + 1);
+        }
+
+        // A query limited to that depth, run from every root, sees each node exactly once.
+        let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
+        let query = tree_sitter::Query::new(&language, "(array) @array (number) @number").unwrap();
+        let mut cursor = QueryCursor::new();
+        cursor.set_max_start_depth(Some(BAND_DEPTH));
+        let mut starts = Vec::new();
+        for band_root in &roots {
+            let mut captures = cursor.captures(&query, *band_root, text.as_bytes());
+            while let Some((matched, index)) = captures.next() {
+                starts.push(matched.captures()[*index].node.start_byte());
+            }
+        }
+        starts.sort_unstable();
+        assert_eq!(starts, (0..=depth).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_watchdog_stops_on_cancel_and_when_its_time_is_up() {
+        let flag = AtomicBool::new(false);
+        let patient = Watchdog::new(Some(&flag), Duration::from_secs(3600));
+        assert!(patient.check().is_continue());
+        flag.store(true, Ordering::Relaxed);
+        assert!(patient.check().is_break());
+        assert!(Watchdog::new(None, Duration::from_secs(3600))
+            .check()
+            .is_continue());
+        assert!(Watchdog::new(None, Duration::ZERO).check().is_break());
+    }
+
+    #[test]
+    fn the_time_a_parse_may_take_grows_with_the_text() {
+        assert_eq!(parse_time_allowed(0), MIN_PARSE_TIME);
+        assert_eq!(
+            parse_time_allowed(1_000_000),
+            MIN_PARSE_TIME + Duration::from_secs(2)
+        );
+        assert!(parse_time_allowed(usize::MAX) > Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_layer_that_runs_out_of_time_is_skipped_and_the_parser_stays_usable() {
+        let grammar = grammar::load(&grammar::JAVASCRIPT).unwrap();
+        let layer = Layer {
+            grammar,
+            ranges: Vec::new(),
+            depth: 0,
+            parent: None,
+        };
+        let text = "const answer = compute(1, [2, 3], { four: 5 });\n".repeat(4_000);
+        let mut parser = Parser::new();
+        let out_of_time = Watchdog::new(None, Duration::ZERO);
+        assert!(parse_layer(&mut parser, &layer, &text, &out_of_time)
+            .unwrap()
+            .is_none());
+        let patient = Watchdog::new(None, Duration::from_secs(3600));
+        let tree = parse_layer(&mut parser, &layer, &text, &patient)
+            .unwrap()
+            .unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().end_byte(), text.len());
+
+        // A query that is out of time before it starts leaves what it has, which is nothing,
+        // and does not disturb the next one.
+        let mut cursor = QueryCursor::new();
+        let (mut run, mut collected, mut pending) = (Vec::new(), Vec::new(), Vec::new());
+        collect_highlights(
+            &mut cursor,
+            &mut run,
+            &layer,
+            &tree,
+            &text,
+            &out_of_time,
+            &mut collected,
+        );
+        collect_injections(
+            &mut cursor,
+            &layer,
+            &tree,
+            &text,
+            &out_of_time,
+            &mut pending,
+        );
+        assert!(
+            collected.len() < 1_000,
+            "{} spans from a query with no time",
+            collected.len()
+        );
+        collected.clear();
+        collect_highlights(
+            &mut cursor,
+            &mut run,
+            &layer,
+            &tree,
+            &text,
+            &patient,
+            &mut collected,
+        );
+        assert!(collected.len() > 40_000, "{} spans", collected.len());
     }
 }

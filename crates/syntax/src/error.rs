@@ -24,7 +24,4 @@ pub enum SyntaxError {
         /// The length of the text.
         bytes: usize,
     },
-    /// The parser gave up without being cancelled.
-    #[error("the parser stopped before it finished")]
-    ParseFailed,
 }

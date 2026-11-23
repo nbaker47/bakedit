@@ -10,8 +10,12 @@
 //! `@item` encloses its own. Markdown headings are the exception, because a heading does not
 //! contain the text under it; they nest by level instead.
 
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{
+    ParseOptions, ParseState, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
+    StreamingIterator,
+};
 
+use crate::highlight::{band_roots, parse_time_allowed, Watchdog, BAND_DEPTH, MATCH_LIMIT};
 use crate::language::Language;
 use crate::lines::{lines_of_offsets, LineBreaks};
 
@@ -154,7 +158,9 @@ struct Found {
 /// otherwise.
 ///
 /// This parses the text, so it costs about as much as highlighting it: a few milliseconds
-/// for an ordinary file, tens for a very large one.
+/// for an ordinary file, tens for a very large one. On the rare input a grammar chokes on it
+/// gives up after two seconds (longer for a text of megabytes) and returns what it has,
+/// which may be nothing; call it off the UI thread if that matters.
 pub fn outline(language: &Language, text: &str) -> Vec<Symbol> {
     let Some(spec) = language.grammar else {
         return Vec::new();
@@ -168,37 +174,54 @@ pub fn outline(language: &Language, text: &str) -> Vec<Symbol> {
     if text.len() > u32::MAX as usize {
         return Vec::new();
     }
+    // The same time limit as a highlighting parse, shared by the parse and the query.
+    let watchdog = Watchdog::new(None, parse_time_allowed(text.len()));
     let mut parser = Parser::new();
     if parser.set_language(&grammar.language).is_err() {
         return Vec::new();
     }
-    let Some(tree) = parser.parse(text, None) else {
+    let bytes = text.as_bytes();
+    let mut on_parse_progress = |_: &ParseState| watchdog.check();
+    let parse_options = ParseOptions::new().progress_callback(&mut on_parse_progress);
+    let tree = parser.parse_with_options(
+        &mut |offset, _| &bytes[offset.min(bytes.len())..],
+        None,
+        Some(parse_options),
+    );
+    let Some(tree) = tree else {
         return Vec::new();
     };
 
     let mut found: Vec<Found> = Vec::new();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&rules.query, tree.root_node(), text.as_bytes());
-    while let Some(matched) = matches.next() {
-        let node_of = |capture: u32| matched.nodes_for_capture_index(capture).next();
-        let (Some(item), Some(name)) = (node_of(rules.item), node_of(rules.name)) else {
-            continue;
-        };
-        let mut label = collapse_whitespace(text.get(name.byte_range()).unwrap_or(""));
-        if let Some(qualifier) = rules.qualifier.and_then(node_of) {
-            let qualifier = collapse_whitespace(text.get(qualifier.byte_range()).unwrap_or(""));
-            label = format!("{qualifier} for {label}");
+    cursor.set_match_limit(MATCH_LIMIT);
+    cursor.set_max_start_depth(Some(BAND_DEPTH));
+    for band_root in band_roots(tree.root_node()) {
+        let mut on_query_progress = |_: &QueryCursorState| watchdog.check();
+        let query_options = QueryCursorOptions::new().progress_callback(&mut on_query_progress);
+        let mut matches =
+            cursor.matches_with_options(&rules.query, band_root, bytes, query_options);
+        while let Some(matched) = matches.next() {
+            let node_of = |capture: u32| matched.nodes_for_capture_index(capture).next();
+            let (Some(item), Some(name)) = (node_of(rules.item), node_of(rules.name)) else {
+                continue;
+            };
+            let mut label = collapse_whitespace(text.get(name.byte_range()).unwrap_or(""));
+            if let Some(qualifier) = rules.qualifier.and_then(node_of) {
+                let qualifier = collapse_whitespace(text.get(qualifier.byte_range()).unwrap_or(""));
+                label = format!("{qualifier} for {label}");
+            }
+            if label.is_empty() {
+                continue;
+            }
+            found.push(Found {
+                item_start: item.start_byte(),
+                item_end: item.end_byte(),
+                pattern: matched.pattern_index,
+                name: label,
+                name_start: name.start_byte(),
+            });
         }
-        if label.is_empty() {
-            continue;
-        }
-        found.push(Found {
-            item_start: item.start_byte(),
-            item_end: item.end_byte(),
-            pattern: matched.pattern_index,
-            name: label,
-            name_start: name.start_byte(),
-        });
     }
 
     // Document order, an enclosing item before what it contains. When several rules name
