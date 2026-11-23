@@ -553,7 +553,7 @@ impl Editor {
     /// `SelectBetween`: the native port of the `zed-select-between` script (see
     /// [`pairs::select_between`]), applied to the primary selection. The result is always a
     /// single selection.
-    pub(crate) fn select_between(&mut self, kind: PairKind) {
+    pub(crate) fn select_between_primary(&mut self, kind: PairKind) {
         let primary = self.selections.primary();
         match pairs::select_between(self.buffer.rope(), kind, primary.head, primary.range()) {
             BetweenTarget::Select(range) => {

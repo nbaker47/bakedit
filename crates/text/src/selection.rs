@@ -318,26 +318,6 @@ impl Selections {
         true
     }
 
-    /// Remove the first selection equal to `range`. Returns false when there is none or it
-    /// is the only selection.
-    pub fn remove_range(&mut self, range: &Range<usize>) -> bool {
-        if self.items.len() < 2 {
-            return false;
-        }
-        match self
-            .items
-            .iter()
-            .position(|selection| selection.range() == *range)
-        {
-            Some(index) => {
-                self.items.remove(index);
-                self.ages.remove(index);
-                true
-            }
-            None => false,
-        }
-    }
-
     /// Drop every selection except the oldest.
     pub fn retain_oldest(&mut self) {
         let keep = self.oldest();
@@ -566,16 +546,16 @@ mod tests {
     }
 
     #[test]
-    fn replace_and_remove_by_range() {
+    fn replacing_the_primary_keeps_the_others() {
         let mut set = Selections::single(sel(1, 2));
         set.push(sel(5, 6));
         set.replace_primary(sel(7, 9));
         assert_eq!(set.ranges(), vec![1..2, 7..9]);
         assert_eq!(set.primary(), sel(7, 9));
-        assert!(!set.remove_range(&(3..4)));
-        assert!(set.remove_range(&(7..9)));
-        assert_eq!(set.ranges(), vec![1..2]);
-        assert!(!set.remove_range(&(1..2)));
+        assert_eq!(set.oldest(), sel(1, 2));
+        // Replacing it with something that overlaps another selection merges the two.
+        set.replace_primary(sel(0, 3));
+        assert_eq!(set.ranges(), vec![0..3]);
     }
 
     #[test]

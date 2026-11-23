@@ -26,7 +26,7 @@ use crate::file::{BufferError, LineEnding, SaveOptions};
 use crate::graphemes;
 use crate::history::UndoKind;
 use crate::indent::{self, IndentStyle};
-use crate::pairs;
+use crate::pairs::{self, PairKind};
 use crate::search::Search;
 use crate::selection::{Selection, Selections};
 
@@ -462,7 +462,7 @@ impl Editor {
             Command::SelectLargerSyntaxNode => self.without_edit(Editor::select_larger),
             Command::SelectSmallerSyntaxNode => self.without_edit(Editor::select_smaller),
             Command::SelectBetween(kind) => {
-                self.select_between(kind);
+                self.select_between_primary(kind);
                 EditSummary::new()
             }
             Command::Insert(text) => self.transact(UndoKind::Typing, |editor| editor.insert(&text)),
@@ -614,6 +614,14 @@ impl Editor {
             selections_changed: changed,
             ..Outcome::default()
         }
+    }
+
+    /// Select the text between the nearest pair of delimiters of `kind` around the primary
+    /// cursor; when exactly that is already selected, grow to the next enclosing pair; when
+    /// the cursor is in no such pair, jump just inside the first pair of the text. The same
+    /// as applying [`Command::SelectBetween`].
+    pub fn select_between(&mut self, kind: PairKind) -> Outcome {
+        self.apply(Command::SelectBetween(kind))
     }
 
     // ----- selections set from outside (mouse, pickers) ------------------------------
