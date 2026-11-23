@@ -214,6 +214,17 @@
     }
   },
   {
+    // Fold a file's results, like the file tree (only while the results have the keys:
+    // in the query these keys move the cursor).
+    "context": "ProjectSearchView && !Editor",
+    "bindings": {
+      "left": "project_search::CollapseEntry",
+      "right": "project_search::ExpandEntry",
+      "cmd-left": "project_search::CollapseAllEntries",
+      "cmd-right": "project_search::ExpandAllEntries"
+    }
+  },
+  {
     "context": "Pane",
     "bindings": {
       "alt-cmd-left": "pane::ActivatePreviousItem",

@@ -563,10 +563,17 @@ impl Shell {
                     None
                 };
                 self.show_singleton("project_search", |factory, cx| factory.project_search(replace, cx));
-                let focus = match seed {
-                    Some(query) => Action::with_args("search::FocusSearch", json!({ "query": query })),
-                    None => Action::new("search::FocusSearch"),
-                };
+                let mut args = serde_json::Map::new();
+                if let Some(query) = seed {
+                    args.insert("query".into(), json!(query));
+                }
+                if let Some(include) = action.arg_str("include") {
+                    args.insert("include".into(), json!(include));
+                }
+                if replace {
+                    args.insert("replace".into(), json!(true));
+                }
+                let focus = if args.is_empty() { Action::new("search::FocusSearch") } else { Action::with_args("search::FocusSearch", args.into()) };
                 let mut cx = cx!(self);
                 if let Some(item) = self.pane.active_mut() {
                     item.handle_action(&focus, &mut cx);
