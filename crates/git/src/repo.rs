@@ -190,8 +190,19 @@ fn rev_parse_path(dir: &Path, question: &str) -> Option<PathBuf> {
     match Git::new(dir).args(["rev-parse", question]).run() {
         Ok(output) if !output.line().is_empty() => Some(path_from_bytes(output.line())),
         Ok(_) => None,
+        // The everyday answer: this directory is not in a repository or a work tree.
+        Err(GitError::Failed {
+            code: Some(128),
+            stderr,
+            ..
+        }) if stderr.contains("not a git repository") || stderr.contains("work tree") => {
+            log::debug!("no work tree at {}", dir.display());
+            None
+        }
+        // Anything else (git missing, a repository git refuses to trust) is worth a
+        // line in the log, because the git features silently stay off.
         Err(error) => {
-            log::debug!("no repository at {}: {error}", dir.display());
+            log::warn!("cannot use git in {}: {error}", dir.display());
             None
         }
     }
