@@ -37,6 +37,21 @@
 //! are relative to the root. File names are taken literally (`*` and `[` are not
 //! patterns) and are bytes as far as this crate is concerned: they need not be UTF-8.
 //!
+//! On macOS git spells file names with accents in composed form whatever form the file
+//! system holds them in. Paths passed in are converted for you; to compare a path of
+//! your own with one in a result, run it through [`Repo::relative_path`] first.
+//!
+//! # How git is run
+//!
+//! Every command is `git -C <root>` with a fixed environment: messages untranslated and
+//! uncoloured, no credential prompt, no editor, no optional locks (so a status never
+//! waits for, or gets in the way of, a git command running in a terminal), standard
+//! input closed and no controlling terminal. A hook, ssh or gpg that wants to ask
+//! something on the terminal fails with a message instead of drawing over the IDE;
+//! passwords and passphrases have to come from an agent, a credential helper or a
+//! graphical prompt. [`Repo::fetch`], [`Repo::pull`] and [`Repo::push`] are stopped,
+//! with everything they started, when they run longer than [`Repo::network_timeout`].
+//!
 //! # Requirements
 //!
 //! A Unix system with git 2.26 or newer on `PATH`.
