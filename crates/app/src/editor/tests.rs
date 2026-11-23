@@ -1089,3 +1089,40 @@ fn the_keymap_drives_nav_mode_edit_mode_and_the_find_bar() {
     send(&mut shell, KeyEvent::new(Key::Char('s'), Mods::SUPER));
     assert!(std::fs::read_to_string(&path).unwrap().contains("seXYcond"));
 }
+
+/// Writes frames as HTML for looking at, when `BAKEDIT_SNAPSHOT_DIR` names a folder.
+#[test]
+fn write_snapshots_for_looking_at() {
+    let Ok(out) = std::env::var("BAKEDIT_SNAPSHOT_DIR") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut sample = String::new();
+    for n in 0..60 {
+        sample.push_str(&format!("fn function_{n}(value: i32) -> i32 {{\n    // a comment about {n}\n    let result = value * {n} + 42;\n    println!(\"{{result}}\");\n    result\n}}\n\n"));
+    }
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let path = file(&dir, "src/main.rs", &sample);
+    let mut harness = Harness::new(dir.path());
+    harness.settings.minimap = crate::settings::MinimapShow::Always;
+    harness.settings.vim_mode = true;
+    let mut item = EditorItem::open(&path, &mut harness.cx()).unwrap();
+    harness.draw(&mut item, 130, 34);
+    settle_highlights(&mut item, &mut harness);
+    let write = |name: &str, harness: &Harness, item: &mut EditorItem, w: u16, h: u16| {
+        let (_, cursor, buf) = harness.draw(item, w, h);
+        let html = crate::dump::to_html(&buf, "#dce0e5", "#282c33", 14, cursor.map(|c| (c.col, c.row)));
+        std::fs::write(std::path::Path::new(&out).join(name), html).unwrap();
+    };
+    item.go_to(10, Some(5));
+    act(&mut item, &mut harness, "vim::ToggleVisual");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    write("editor-wide.html", &harness, &mut item, 130, 34);
+    act(&mut item, &mut harness, "editor::Cancel");
+    act_with(&mut item, &mut harness, "buffer_search::Deploy", json!({ "replace_enabled": true }));
+    type_text(&mut item, &mut harness, "result");
+    write("editor-find.html", &harness, &mut item, 130, 34);
+    write("editor-narrow.html", &harness, &mut item, 50, 20);
+    write("editor-tiny.html", &harness, &mut item, 28, 10);
+    act(&mut item, &mut harness, "buffer_search::Dismiss");
+    let mut md = EditorItem::page("notes.md", &"A long paragraph of text that has to wrap onto several rows when the window is narrow. ".repeat(6), Some("Markdown"), &mut harness.cx());
+    write("editor-wrap.html", &harness, &mut md, 60, 12);
+}

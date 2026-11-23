@@ -545,7 +545,7 @@ impl EditorItem {
         let bg = theme.toolbar_bg;
         canvas.fill(area, bg);
         let muted = Style::colors(theme.text_muted, bg);
-        let field_bg = theme.editor_bg;
+        let field_bg = theme.element_hover.lerp(theme.toolbar_bg, 0.4);
         let label_w: u16 = if bar.show_replace { 7 } else { 4 };
         let field_x = area.x + 1 + label_w + 1;
         let right = area.right().saturating_sub(1);
