@@ -1,0 +1,1320 @@
+//! What each language's tokens are highlighted as.
+//!
+//! One table per language: a piece of the shared sample and the capture it must be drawn
+//! with. A piece is named by text that occurs in the sample, with `«»` around the part in
+//! question when its surroundings are needed to find it. `""` means no highlight at all.
+
+mod common;
+
+use common::{capture_marked, highlight, render, SAMPLES};
+
+/// Highlight the language's sample and check every expectation, reporting all the misses at
+/// once.
+fn check(language: &str, expectations: &[(&str, &str)]) {
+    let sample = SAMPLES
+        .iter()
+        .find(|sample| sample.language == language)
+        .unwrap_or_else(|| panic!("no sample for {language}"));
+    let spans = highlight(language, sample.text);
+    let misses: Vec<String> = expectations
+        .iter()
+        .filter_map(|(piece, expected)| {
+            let actual = capture_marked(sample.text, &spans, piece);
+            (actual != *expected)
+                .then(|| format!("  {piece:?}: expected {expected:?}, got {actual:?}"))
+        })
+        .collect();
+    assert!(
+        misses.is_empty(),
+        "{language} is highlighted wrongly:\n{}\n\nall spans:\n{}",
+        misses.join("\n"),
+        render(sample.text, &spans)
+    );
+}
+
+#[test]
+fn rust() {
+    check(
+        "rust",
+        &[
+            ("//! Module docs.", "comment.documentation"),
+            ("/// A point.", "comment.documentation"),
+            ("// Build one.", "comment"),
+            ("/* block */", "comment"),
+            ("use", "keyword"),
+            ("pub", "keyword"),
+            ("struct", "keyword"),
+            ("impl", "keyword"),
+            ("«fn» new", "keyword"),
+            ("«let» greeting", "keyword"),
+            ("«if» by", "keyword"),
+            ("2 «as» f64", "keyword"),
+            ("struct «Point»", "type"),
+            ("x: «T»,", "type"),
+            ("«usize» = 10", "type.builtin"),
+            ("«label»: &", "property"),
+            ("'«static»", "label"),
+            ("const «LIMIT»", "constant"),
+            ("by > «LIMIT»", "constant"),
+            ("= «10»;", "number"),
+            ("1.5", "number"),
+            ("true", "boolean"),
+            ("fn «new»", "function"),
+            ("fn «shifted»", "function"),
+            ("fn «helper»", "function"),
+            ("«helper»(self)", "function"),
+            (".«shifted»(", "function.method"),
+            ("items.«len»()", "function.method"),
+            ("println!", "function.macro"),
+            ("vec!", "function.macro"),
+            ("(«x»: T)", "variable.parameter"),
+            ("«self», by", "variable.builtin"),
+            ("\"hi", "string"),
+            ("\"hi«\\n»\"", "string.escape"),
+            ("\"{} {}\"", "string"),
+            ("\"p\"", "string"),
+            ("«#»[derive", "attribute"),
+            ("#[«derive»", "attribute"),
+            ("total «=» 1.5", "operator"),
+            ("1.5 «+» 2", "operator"),
+            ("«->» Self", "operator"),
+            ("by «>» LIMIT", "operator"),
+            ("Point«<»T> {", "punctuation.bracket"),
+            ("Point<T«>» {", "punctuation.bracket"),
+            ("new«(»x", "punctuation.bracket"),
+            ("collections«::»HashMap", "punctuation.delimiter"),
+            ("«greeting» =", ""),
+        ],
+    );
+}
+
+#[test]
+fn rust_macro_arguments_are_highlighted_as_rust() {
+    // The arguments of a macro are an opaque token tree to the grammar; the bundled
+    // injection re-parses them as Rust.
+    check(
+        "rust",
+        &[
+            ("vec![«Some»(1)", "function"),
+            ("Some(«1»)", "number"),
+            ("«None»]", "constructor"),
+        ],
+    );
+}
+
+#[test]
+fn python() {
+    check(
+        "python",
+        &[
+            ("#!/usr/bin/env python3", "comment"),
+            ("# trailing comment", "comment"),
+            ("\"\"\"Module docstring.\"\"\"", "string"),
+            ("\"square\"", "string"),
+            ("f\"area ", "string"),
+            ("height}«\\n»\"", "string.escape"),
+            ("«import» os", "keyword"),
+            ("from", "keyword"),
+            ("class", "keyword"),
+            ("def", "keyword"),
+            ("«return» len", "keyword"),
+            ("«for» index", "keyword"),
+            ("if width «else»", "keyword"),
+            ("«LIMIT» = 10", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number"),
+            ("True", "boolean"),
+            ("-> «None»", "constant.builtin"),
+            ("class «Shape»", "constructor"),
+            ("def «__init__»", "function"),
+            ("def «area»", "function"),
+            ("def «main»", "function"),
+            ("@staticmethod", "function"),
+            ("«Shape»(\"square\")", "function"),
+            ("«print»(label)", "function.builtin"),
+            ("«len»(label)", "function.builtin"),
+            ("«range»(LIMIT)", "function.builtin"),
+            ("os.path.«join»(", "function.method"),
+            ("os.«path».join", "property"),
+            ("self.«name» =", "property"),
+            ("name: «str»", "type"),
+            ("-> «bool»", "type"),
+            ("{«width» * height}", "variable"),
+            ("«{»width", "punctuation.special"),
+            ("width« »* height}", "embedded"),
+            ("width «*» height}", "operator"),
+            ("LIMIT «=» 10", "operator"),
+            ("label) «if» width", "keyword"),
+        ],
+    );
+}
+
+#[test]
+fn javascript() {
+    check(
+        "javascript",
+        &[
+            ("// A comment.", "comment"),
+            ("\"node:fs\"", "string"),
+            ("\"square\"", "string"),
+            ("`area ", "string"),
+            ("«import» {", "keyword"),
+            ("«const» LIMIT", "keyword"),
+            ("class", "keyword"),
+            ("extends", "keyword"),
+            ("export", "keyword"),
+            ("«function» main", "keyword"),
+            ("«return» width", "keyword"),
+            ("new", "keyword"),
+            ("const «LIMIT»", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("undefined", "constant.builtin"),
+            ("class «Shape»", "constructor"),
+            ("extends «Base»", "constructor"),
+            ("new «Shape»", "constructor"),
+            ("constructor", "function.method"),
+            ("«area»(width, height = 2.5)", "function.method"),
+            ("shape.«area»(", "function.method"),
+            ("console.«log»", "function.method"),
+            ("function «main»", "function"),
+            ("const «double»", "function"),
+            ("«double»(LIMIT)", "function"),
+            ("{«main»()}", "function"),
+            ("super", "variable.builtin"),
+            ("«this».name", "variable.builtin"),
+            ("«console».log", "variable.builtin"),
+            ("this.«name»", "property"),
+            ("label.«length»", "property"),
+            ("const «label»", "variable"),
+            ("«${»width", "punctuation.special"),
+            ("${«width» * height}", "variable"),
+            ("LIMIT «=» 10", "operator"),
+            ("«!==» undefined", "operator"),
+            ("<«div» className", "tag"),
+            ("</«div»>", "tag"),
+            ("className", "attribute"),
+            ("\"app\"", "string"),
+        ],
+    );
+}
+
+#[test]
+fn javascript_regex_literals_are_highlighted_as_regex() {
+    check(
+        "javascript",
+        &[
+            ("/«ab»+c/", "string"),
+            ("/ab«+»c/", "operator"),
+            ("/ab+c/«gi»", "string.special"),
+        ],
+    );
+}
+
+#[test]
+fn typescript() {
+    check(
+        "typescript",
+        &[
+            ("// A comment.", "comment"),
+            ("\"./reader\"", "string"),
+            ("\"two\"", "string"),
+            ("`area ", "string"),
+            ("«import» type", "keyword"),
+            ("import «type»", "keyword"),
+            ("«export» interface", "keyword"),
+            ("interface", "keyword"),
+            ("readonly", "keyword"),
+            ("enum", "keyword"),
+            ("abstract", "keyword"),
+            ("«class» Base", "keyword"),
+            ("implements", "keyword"),
+            ("private", "keyword"),
+            ("«function» main", "keyword"),
+            ("«return» width", "keyword"),
+            ("interface «Shape»", "type"),
+            ("type «Id»", "type"),
+            ("enum «Color»", "type"),
+            ("class «Base»", "type"),
+            ("{ «Reader» }", "type"),
+            ("ids: «Id»[]", "type"),
+            ("name: «string»;", "type.builtin"),
+            ("width: «number»)", "type.builtin"),
+            ("): «boolean»", "type.builtin"),
+            ("readonly «name»: string;", "property"),
+            ("ids.«length»", "property"),
+            ("Red = «1»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("constructor", "function.method"),
+            ("«area»(width: number, scale", "function.method"),
+            ("console.«log»", "function.method"),
+            ("function «main»", "function"),
+            ("(«width»: number, scale", "variable.parameter"),
+            ("«scale»?: number", "variable.parameter"),
+            ("(«argv»: string[]", "variable.parameter"),
+            ("const «label»", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn typescript_references_to_a_parameter_keep_its_capture() {
+    // The locals queries make a reference take the highlight of its definition.
+    check(
+        "typescript",
+        &[
+            ("area ${«width»}", "variable.parameter"),
+            ("label, «scale»)", "variable.parameter"),
+            ("return «width» *", "variable.parameter"),
+            ("console.log(«label»", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn tsx() {
+    check(
+        "tsx",
+        &[
+            ("// A comment.", "comment"),
+            ("\"react\"", "string"),
+            ("\"card\"", "string"),
+            ("«import» React", "keyword"),
+            ("interface", "keyword"),
+            ("export", "keyword"),
+            ("«function» Card", "keyword"),
+            ("«return» (", "keyword"),
+            ("const", "keyword"),
+            ("interface «Props»", "type"),
+            ("}: «Props»)", "type"),
+            ("title: «string»", "type.builtin"),
+            ("count?: «number»", "type.builtin"),
+            ("«title»: string", "property"),
+            ("count = «0»", "number"),
+            // A component is a function, whatever its capital letter says.
+            ("function «Card»", "function"),
+            ("console.«log»", "function.method"),
+            ("<«section» className", "tag"),
+            ("</«section»>", "tag"),
+            ("<«h1»>", "tag"),
+            ("<«Badge» value", "type"),
+            ("className", "attribute"),
+            ("onClick", "attribute"),
+            ("«value»={count}", "attribute"),
+            ("<h1>{«label»}", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn json() {
+    check(
+        "json",
+        &[
+            ("// A comment, as in a settings file.", "comment"),
+            ("\"name\"", "property.json_key"),
+            ("\"version\"", "property.json_key"),
+            ("\"depth\"", "property.json_key"),
+            ("\"bakedit\"", "string"),
+            ("\"editor\"", "string"),
+            ("\"terminal", "string"),
+            ("terminal«\\n»\"", "string.escape"),
+            ("1.5", "number"),
+            ("\"depth\": «2»", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+        ],
+    );
+}
+
+#[test]
+fn toml() {
+    check(
+        "toml",
+        &[
+            ("# A comment.", "comment"),
+            ("«name» =", "property"),
+            ("«edition» =", "property"),
+            ("«target».dir", "property"),
+            ("target.«dir»", "property"),
+            ("{ «version» =", "property"),
+            ("[«package»]", "type"),
+            ("[[«bin»]]", "type"),
+            ("[«dependencies»]", "type"),
+            ("\"bakedit\"", "string"),
+            ("'b'", "string"),
+            ("\"src/main.rs\"", "string"),
+            ("version = «1»\n", "number"),
+            ("1.5", "number"),
+            ("true", "boolean"),
+            ("2026-11-22", "string.special"),
+            ("name «=» \"bakedit\"", "operator"),
+            ("«[»package", "punctuation.bracket"),
+        ],
+    );
+}
+
+#[test]
+fn yaml() {
+    check(
+        "yaml",
+        &[
+            ("# A comment.", "comment"),
+            ("apiVersion", "property"),
+            ("«name»: \"bakedit\"", "property"),
+            ("«replicas»:", "property"),
+            ("v1", "string"),
+            ("ConfigMap", "string"),
+            ("\"bakedit\"", "string"),
+            ("'second'", "string"),
+            ("- «first»", "string"),
+            ("echo hi", "string"),
+            ("replicas: «3»", "number"),
+            ("1.5", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("&«labels»", "label"),
+            ("*«labels»", "label"),
+            ("«&»labels", "punctuation.special"),
+            ("apiVersion«:»", "punctuation.delimiter"),
+        ],
+    );
+}
+
+#[test]
+fn markdown() {
+    check(
+        "markdown",
+        &[
+            ("«#» Bakedit", "punctuation.special"),
+            ("Bakedit ", "title"),
+            ("Setext", "title"),
+            ("«======»", "punctuation.special"),
+            ("*«notes»*", "emphasis"),
+            ("*«italic»*", "emphasis"),
+            ("**«bold»**", "emphasis.strong"),
+            ("«**»bold", "punctuation.delimiter"),
+            ("inline code", "string"),
+            ("«`»inline code", "punctuation.delimiter"),
+            ("[«link»]", "link_text"),
+            ("https://example.com", "link_uri"),
+            ("\"tip\"", "string"),
+            ("<https://auto.link>", "link_uri"),
+            ("«- »item one", "punctuation.special"),
+            ("\\*", "string.escape"),
+            ("«> »A quote.", "punctuation.special"),
+            ("«```»rust", "punctuation.delimiter"),
+            ("    indented code", "string"),
+            ("Some ", ""),
+            ("item one", ""),
+        ],
+    );
+}
+
+#[test]
+fn markdown_inline_markup_inside_a_heading_wins_over_the_heading() {
+    check(
+        "markdown",
+        &[
+            ("# Bakedit *«notes»*", "emphasis"),
+            ("## `«Code»` first", "string"),
+            ("## «`»Code", "punctuation.delimiter"),
+            ("## `Code`« first»", "title"),
+        ],
+    );
+}
+
+#[test]
+fn shell() {
+    check(
+        "shell",
+        &[
+            ("#!/usr/bin/env bash", "comment"),
+            ("# A comment.", "comment"),
+            ("\"world\"", "string"),
+            ("'literal'", "string"),
+            ("\"hello ", "string"),
+            ("heredoc ", "string"),
+            ("«for» i", "keyword"),
+            ("i «in» $(", "keyword"),
+            ("; «do»\n", "keyword"),
+            ("«if» [[", "keyword"),
+            ("then", "keyword"),
+            ("«fi»\n", "keyword"),
+            ("done", "keyword"),
+            ("«case» \"", "keyword"),
+            ("esac", "keyword"),
+            ("«set» -euo", "function"),
+            ("«greet»() {", "function"),
+            ("«greet» \"$NAME\"", "function"),
+            ("«echo» \"hello", "function"),
+            ("$(«seq» 1", "function"),
+            ("«tr» a-z", "function"),
+            ("«NAME»=\"world\"", "property"),
+            ("-n \"$«NAME»\"", "property"),
+            ("${«who»}", "property"),
+            ("-euo", "constant"),
+            ("\"«$»1\"", "operator"),
+            ("\"$NAME\" «|» tr", "operator"),
+            ("«${»who", "embedded"),
+            ("world«)»", "punctuation.delimiter"),
+        ],
+    );
+}
+
+#[test]
+fn go() {
+    check(
+        "go",
+        &[
+            ("// Package main is a sample.", "comment"),
+            ("/* block */", "comment"),
+            ("\"fmt\"", "string"),
+            ("\"p", "string"),
+            ("\"p«\\n»\"", "string.escape"),
+            ("package", "keyword"),
+            ("import", "keyword"),
+            ("const", "keyword"),
+            ("«type» Point", "keyword"),
+            ("struct", "keyword"),
+            ("«func» (p", "keyword"),
+            ("«return» float64", "keyword"),
+            ("«if» len", "keyword"),
+            ("type «Point»", "type"),
+            ("X, Y «int»", "type"),
+            ("Area() «float64»", "type"),
+            ("«Name» string", "property"),
+            ("p.«X»*", "property"),
+            ("point.«Name»)", "property"),
+            ("Limit = «10»", "number"),
+            ("1.5", "number"),
+            ("true", "boolean"),
+            ("nil", "constant.builtin"),
+            ("func «main»", "function"),
+            ("«make»(", "function"),
+            ("«len»(items)", "function"),
+            ("«float64»(p.X", "function"),
+            (") «Area»() float64", "function.method"),
+            ("fmt.«Println»", "function.method"),
+            ("strings.«ToUpper»", "function.method"),
+            ("point.«Area»()", "function.method"),
+            ("«point» :=", "variable"),
+            ("point «:=»", "operator"),
+            ("== 0 «&&» true", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn c() {
+    check(
+        "c",
+        &[
+            ("// A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("<stdio.h>", "string"),
+            ("\"local.h\"", "string"),
+            ("\"%d %s\\n\"", "string"),
+            ("«#include» <stdio.h>", "keyword"),
+            ("«#define» LIMIT", "keyword"),
+            ("typedef", "keyword"),
+            ("«struct» point", "keyword"),
+            ("static", "keyword"),
+            ("«return» a + b", "keyword"),
+            ("«if» (argc", "keyword"),
+            ("const", "keyword"),
+            ("#define «LIMIT»", "constant"),
+            ("argc > «LIMIT»", "constant"),
+            ("#define «SQUARE»", "function.special"),
+            ("struct «point»", "type"),
+            ("«int» x;", "type"),
+            ("} «point_t»;", "type"),
+            ("int «x»;", "property"),
+            ("p.«name»)", "property"),
+            ("static int «add»", "function"),
+            ("int «main»", "function"),
+            ("«printf»(", "function"),
+            ("«add»(p.x", "function"),
+            (".x = «1»", "number"),
+            ("0x1F", "number"),
+            ("'('", "number"),
+            ("true", "boolean"),
+            ("int «a», int b", "variable"),
+            ("a «+» b", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn cpp() {
+    check(
+        "cpp",
+        &[
+            ("// A comment.", "comment"),
+            ("// namespace geo", "comment"),
+            ("<string>", "string"),
+            ("R\"(raw text)\"", "string"),
+            ("«#include» <string>", "keyword"),
+            ("«namespace» geo {", "keyword"),
+            ("template", "keyword"),
+            ("typename", "keyword"),
+            ("«class» Shape", "keyword"),
+            ("public", "keyword"),
+            ("explicit", "keyword"),
+            ("«virtual» ~", "keyword"),
+            ("private", "keyword"),
+            ("constexpr", "keyword"),
+            ("«return» value", "keyword"),
+            ("class «Shape»", "type"),
+            ("typename «T»", "type"),
+            ("virtual «double»", "type"),
+            ("«auto» twice", "type"),
+            ("std::«string» name)", "type"),
+            ("explicit «Shape»(", "function"),
+            ("double «area»()", "function"),
+            ("auto «twice»", "function"),
+            ("int «main»", "function"),
+            ("items.«size»()", "function"),
+            ("geo::«twice»(", "function"),
+            ("std::«move»(", "function"),
+            ("std::string «name_»;", "property"),
+            ("kLimit = «10»", "number"),
+            ("true", "boolean"),
+            ("«nullptr» ==", "constant"),
+            ("int «value») ->", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn html() {
+    check(
+        "html",
+        &[
+            ("<!-- A comment. -->", "comment"),
+            ("<!DOCTYPE html", "constant"),
+            ("<«html» lang", "tag"),
+            ("<«h1» id", "tag"),
+            ("</«h1»>", "tag"),
+            ("<«script»>", "tag"),
+            ("lang", "attribute"),
+            ("charset", "attribute"),
+            ("«class»=\"page\"", "attribute"),
+            ("\"«en»\"", "string"),
+            ("\"«page»\"", "string"),
+            ("«<»html", "punctuation.bracket"),
+            ("Hello", ""),
+        ],
+    );
+}
+
+#[test]
+fn css() {
+    check(
+        "css",
+        &[
+            ("/* A comment. */", "comment"),
+            ("\"base.css\"", "string"),
+            ("\"Fira Code\"", "string"),
+            ("\"http\"", "string"),
+            ("@import", "keyword"),
+            ("@media", "keyword"),
+            ("!important", "keyword"),
+            ("«body»,", "tag"),
+            ("> «h1»", "tag"),
+            (".«card»", "property"),
+            ("#«main»", "property"),
+            ("«color»:", "property"),
+            ("«margin»:", "property"),
+            ("min-width", "property"),
+            ("«var»(", "function"),
+            ("«calc»(", "function"),
+            ("var(«--accent»)", "variable"),
+            (":«hover»", "attribute"),
+            ("::«before»", "attribute"),
+            ("[«href»", "attribute"),
+            ("margin: «0»", "number"),
+            ("«100»%", "number"),
+            ("0.5", "number"),
+            ("100«%»", "type"),
+            ("2«em»", "type"),
+            ("#«82aaff»", "string.special"),
+            (".card «>» h1", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn swift() {
+    check(
+        "swift",
+        &[
+            ("// A comment.", "comment"),
+            ("/// Doc comment.", "comment.documentation"),
+            ("\"p", "string"),
+            ("\"p«\\n»\"", "string.escape"),
+            ("\"square\"", "string"),
+            ("\"area ", "string"),
+            ("import", "keyword.import"),
+            ("protocol", "keyword"),
+            ("«var» sides", "keyword"),
+            ("«let» sides", "keyword"),
+            ("«func» area", "keyword.function"),
+            ("struct", "keyword.type"),
+            ("enum", "keyword.type"),
+            ("«return» Double", "keyword.return"),
+            ("guard", "keyword.conditional"),
+            ("«for» index", "keyword.repeat"),
+            ("«case» red", "keyword"),
+            ("protocol «Shape»", "type"),
+            ("struct «Point»", "type"),
+            ("sides: «Int»", "type"),
+            ("-> «Double»\n}", "type"),
+            ("func «area»() -> Double\n}", "function.method"),
+            ("func «main»", "function.method"),
+            ("«print»(", "function.call"),
+            ("point.«area»()", "function.call"),
+            ("«Point»(name: \"square\")", "function.call"),
+            ("init", "constructor"),
+            ("«self».name", "variable.builtin"),
+            ("self.«name»", "property"),
+            ("«name»: String) {", "variable.parameter"),
+            ("sides = «0»", "number"),
+            ("2.5", "number.float"),
+            ("false", "boolean"),
+            ("true", "boolean"),
+            ("«\\(»scale", "punctuation.special"),
+            ("\\(«scale»)", "variable"),
+            ("0«..<»count", "operator"),
+            ("«->» Bool", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn java() {
+    check(
+        "java",
+        &[
+            ("// A comment.", "comment"),
+            ("/** Doc comment. */", "comment"),
+            ("\"square", "string"),
+            ("\"square«\\n»\"", "string.escape"),
+            ("'c'", "string"),
+            ("package", "keyword"),
+            ("import", "keyword"),
+            ("«public» class", "keyword"),
+            ("«class» Shape", "keyword"),
+            ("implements", "keyword"),
+            ("«private» static", "keyword"),
+            ("final", "keyword"),
+            ("«return» name", "keyword"),
+            ("«new» Shape", "keyword"),
+            ("«if» (shapes", "keyword"),
+            ("class «Shape»", "type"),
+            ("«Comparable»<", "type"),
+            ("final «String» name", "type"),
+            ("«System».out", "type"),
+            ("final «int»", "type.builtin"),
+            ("«void» main", "type.builtin"),
+            ("int «LIMIT»", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("1.5", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("«compareTo»(Shape other)", "function.method"),
+            ("void «main»", "function.method"),
+            ("name.«compareTo»(", "function.method"),
+            ("out.«println»", "function.method"),
+            ("«this».name", "variable.builtin"),
+            ("@«Override»", "attribute"),
+            ("Shape «other»)", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn lua() {
+    check(
+        "lua",
+        &[
+            ("-- A comment.", "comment"),
+            ("--[[ block\ncomment ]]", "comment"),
+            ("\"area", "string"),
+            ("\"area«\\n»\"", "string.escape"),
+            ("«local» M", "keyword"),
+            ("«function» M.area", "keyword.function"),
+            ("«return» #label", "keyword.return"),
+            ("«for» i", "keyword.repeat"),
+            ("«if» i %", "keyword.conditional"),
+            ("«then»\n", "keyword.conditional"),
+            ("0 «and» true", "keyword.operator"),
+            ("local «LIMIT»", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("nil", "constant.builtin"),
+            ("function M.«area»", "function"),
+            ("local function «helper»", "function"),
+            ("function M:«method»", "function.method"),
+            ("M.«area»(i", "function.call"),
+            ("«helper»(self, LIMIT)", "function.call"),
+            ("«tostring»(", "function.builtin"),
+            ("«print»(", "function.builtin"),
+            ("(«width», height)", "variable.parameter"),
+            ("local «label»", "variable"),
+            ("label «=» \"area", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn lua_references_to_a_parameter_keep_its_capture() {
+    check(
+        "lua",
+        &[
+            ("tostring(«width» * height)", "variable.parameter"),
+            ("i = 1, «n» do", "variable.parameter"),
+            ("print(«label»)", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn dockerfile() {
+    check(
+        "dockerfile",
+        &[
+            ("# A comment.", "comment"),
+            ("\"-C target-cpu=native\"", "string"),
+            ("\"/app/bakedit\"", "string"),
+            ("\"--serve\"", "string"),
+            ("ARG", "keyword"),
+            ("FROM", "keyword"),
+            ("«AS» build", "keyword"),
+            ("WORKDIR", "keyword"),
+            ("COPY", "keyword"),
+            ("ENV", "keyword"),
+            ("RUN", "keyword"),
+            ("EXPOSE", "keyword"),
+            ("ENTRYPOINT", "keyword"),
+            ("${«VERSION»}", "constant"),
+            ("«${»VERSION", "punctuation.special"),
+        ],
+    );
+}
+
+#[test]
+fn sql() {
+    check(
+        "sql",
+        &[
+            ("-- A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("'a%'", "string"),
+            ("CREATE", "keyword"),
+            ("TABLE", "keyword"),
+            ("SELECT", "keyword"),
+            ("«FROM» users", "keyword"),
+            ("WHERE", "keyword"),
+            ("«AND» o.amount", "keyword.operator"),
+            ("«NOT» NULL", "keyword.operator"),
+            ("TABLE «users»", "type"),
+            ("INTEGER", "type.builtin"),
+            ("VARCHAR", "type.builtin"),
+            ("u.«name»,", "property"),
+            ("o.«user_id»", "property"),
+            ("COUNT", "function.call"),
+            ("VARCHAR(«40»)", "number"),
+            ("10.5", "number.float"),
+            ("LIMIT «5»", "number"),
+            ("DEFAULT «TRUE»", "boolean"),
+            ("AS «total»", "variable"),
+            ("o.amount «>» 10.5", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn ruby() {
+    check(
+        "ruby",
+        &[
+            ("# A comment.", "comment"),
+            ("\"json\"", "string"),
+            ("\"area ", "string"),
+            ("height}«\\n»\"", "string.escape"),
+            (":name", "string.special.symbol"),
+            ("module", "keyword"),
+            ("«class» Shape", "keyword"),
+            ("«def» initialize", "keyword"),
+            ("«end»\n\n    def area", "keyword"),
+            ("n) «if» n", "keyword"),
+            ("module «Geometry»", "constructor"),
+            ("class «Shape»", "constructor"),
+            ("«LIMIT» = 10", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("nil", "constant.builtin"),
+            ("def «initialize»", "function.method"),
+            ("def «area»", "function.method"),
+            ("self.«build»", "function.method"),
+            ("require", "function.method.builtin"),
+            ("attr_reader", "function.method"),
+            ("«puts» label", "function.method"),
+            ("«new»(\"square\")", "function.method"),
+            ("width.«zero?»", "function.method"),
+            ("shape.«area»(n)", "function.method"),
+            ("@name", "property"),
+            ("def «self».build", "variable.builtin"),
+            ("initialize(«name»)", "variable.parameter"),
+            ("«#{»width", "punctuation.special"),
+        ],
+    );
+}
+
+#[test]
+fn ruby_tells_a_local_variable_from_a_method_call() {
+    // A bare identifier is a method call unless the locals query saw it defined.
+    check(
+        "ruby",
+        &[
+            ("«label» = \"area", "variable"),
+            ("puts «label»", "variable"),
+            ("«puts» label", "function.method"),
+            ("@name = «name»", "variable.parameter"),
+            ("#{«width» * height}", "variable.parameter"),
+            ("«shape».area(n)", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn kotlin() {
+    check(
+        "kotlin",
+        &[
+            ("// A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("\"p\\n\"", "string"),
+            ("\"area ", "string"),
+            ("import", "keyword.import"),
+            ("const", "keyword"),
+            ("«val» LIMIT", "keyword"),
+            ("data", "keyword"),
+            ("«class» Point", "keyword"),
+            ("interface", "keyword"),
+            ("override", "keyword"),
+            ("«fun» area(): Double\n}", "keyword.function"),
+            ("«if» (args", "keyword.conditional"),
+            ("return", "keyword.return"),
+            ("class «Point»", "type"),
+            ("interface «Shape»", "type"),
+            ("x: «Int»", "type.builtin"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number.float"),
+            ("true", "boolean"),
+            ("fun «area»(): Double\n}", "function"),
+            // The bundled query misses a function with a modifier in front of it.
+            ("override fun «area»", "function"),
+            ("fun «main»", "function"),
+            ("«max»(radius", "function"),
+            ("«Circle»(1.0)", "function"),
+            ("shape.«area»()", "function"),
+            ("println", "function.builtin"),
+            ("val «x»: Int", "property"),
+            ("args.«size»", "property"),
+            ("(«args»: Array", "variable.parameter"),
+            ("«${»radius", "punctuation.special"),
+            ("${«radius» * scale}", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn diff() {
+    check(
+        "diff",
+        &[
+            ("diff --git a/src/main.rs b/src/main.rs", "variable.builtin"),
+            ("83db48f", "constant"),
+            ("bf2a1c3", "constant"),
+            ("--- a/src/main.rs", "keyword"),
+            ("+++ b/src/main.rs", "string"),
+            ("@@ -1,4 +1,4 @@", "attribute"),
+            ("-    println!(\"old\");", "keyword"),
+            ("+    println!(\"new\");", "string"),
+            (" fn main() {", ""),
+        ],
+    );
+}
+
+#[test]
+fn make() {
+    check(
+        "make",
+        &[
+            ("# A comment.", "comment"),
+            ("clang", "string"),
+            ("-O2 -Wall", "string"),
+            ("«CC» :=", "constant.builtin"),
+            ("«CFLAGS» +=", "constant.builtin"),
+            ("«OBJECTS» =", "constant"),
+            ("$(«DEBUG»)", "constant"),
+            ("CC «:=»", "operator"),
+            ("patsubst", "keyword.function"),
+            ("wildcard", "keyword.function"),
+            ("ifeq", "keyword.conditional"),
+            ("endif", "keyword.conditional"),
+            ("include", "keyword.import"),
+            (".PHONY", "constant.macro"),
+            ("«all»: bakedit", "constant.macro"),
+            ("«clean»:\n", "constant.macro"),
+            ("«%.o»: %.c", "string.regex"),
+            ("«$»(OBJECTS)\n\t", "punctuation.special"),
+        ],
+    );
+}
+
+#[test]
+fn nix() {
+    check(
+        "nix",
+        &[
+            ("# A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("\"1.0\"", "string"),
+            ("\"bakedit\"", "string"),
+            ("\"An editor", "string"),
+            ("An editor«\\n»\"", "string.escape"),
+            ("<nixpkgs>", "string.special.path"),
+            ("./.", "string.special.path"),
+            ("«let»\n", "keyword"),
+            ("«in»\npkgs", "keyword"),
+            ("rec", "keyword"),
+            ("inherit", "keyword"),
+            ("«with» pkgs", "keyword"),
+            ("«version» = \"1.0\"", "property"),
+            ("pname", "property"),
+            ("pkgs.«stdenv»", "property"),
+            ("limit = «10»", "number"),
+            ("1.5", "number"),
+            ("{ «pkgs» ?", "variable.parameter"),
+            ("«x»: x * 2", "variable.parameter"),
+            ("x: «x» * 2", "variable"),
+            ("«import» <nixpkgs>", "function.builtin"),
+            ("mkDerivation", "function"),
+            ("x «*» 2", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn nix_build_phases_are_highlighted_as_shell() {
+    check(
+        "nix",
+        &[
+            ("«cargo» build", "function"),
+            ("--release", "constant"),
+            ("«echo» ${", "function"),
+            ("«${»toString", "punctuation.special"),
+            ("toString", "function.builtin"),
+            ("(«double» limit)", "function"),
+        ],
+    );
+}
+
+#[test]
+fn zig() {
+    check(
+        "zig",
+        &[
+            ("//! Module docs.", "comment.documentation"),
+            ("// A comment.", "comment"),
+            ("\"std\"", "string"),
+            ("\"p", "string"),
+            ("\"p«\\n»\"", "string.escape"),
+            ("«const» std", "keyword"),
+            ("«var» point", "keyword"),
+            ("struct", "keyword.type"),
+            ("pub", "keyword.modifier"),
+            ("«fn» area", "keyword.function"),
+            ("«return» @as", "keyword.return"),
+            ("«if» (point", "keyword.conditional"),
+            ("«for» (0", "keyword.repeat"),
+            ("0 «and» true", "keyword.operator"),
+            ("@import", "keyword.import"),
+            ("const «std»", "type.namespace"),
+            ("const «Point»", "type"),
+            ("«usize» = 10", "type.builtin"),
+            ("x: «i32»", "type.builtin"),
+            // `#lua-match?` in the bundled query.
+            ("const «LIMIT»", "constant"),
+            ("0..«LIMIT»", "constant"),
+            ("LIMIT: usize = «10»", "number"),
+            ("2.5", "number.float"),
+            ("true", "boolean"),
+            ("fn «area»", "function"),
+            ("fn «main»", "function"),
+            ("debug.«print»", "function.call"),
+            ("point.«area»(ratio)", "function.call"),
+            ("@as", "function.builtin"),
+            ("@floatFromInt", "function.builtin"),
+            ("«x»: i32", "property"),
+            ("self.«x»", "property"),
+            ("(«self»: Point", "variable.parameter"),
+            ("«scale»: f64", "variable.parameter"),
+            ("var «point»", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn php() {
+    check(
+        "php",
+        &[
+            ("// A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("'literal'", "string"),
+            ("\"round\"", "string"),
+            ("<?php", "tag"),
+            ("?>", "tag"),
+            ("«namespace» App", "keyword"),
+            ("«use» App", "keyword"),
+            ("«const» LIMIT", "keyword"),
+            ("final", "keyword"),
+            ("«class» Circle", "keyword"),
+            ("extends", "keyword"),
+            ("private", "keyword"),
+            ("«public» function", "keyword"),
+            ("«function» __construct", "keyword"),
+            ("echo", "keyword"),
+            ("«return» $width", "keyword"),
+            ("«new» Circle", "keyword"),
+            ("namespace «App»", "type.namespace"),
+            ("Base\\«Shape»;", "type"),
+            ("private «float»", "type.builtin"),
+            ("(«string» $name)", "type.builtin"),
+            ("const «LIMIT»", "constant"),
+            ("LIMIT = «10»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("__construct", "function.method"),
+            ("function «area»", "function.method"),
+            ("$shape->«area»(", "function.method"),
+            ("function «main»", "function"),
+            ("strlen", "function"),
+            ("«count»($argv)", "function"),
+            ("new «Circle»", "constructor"),
+            ("$«radius» = 2.5", "property"),
+            ("$this->«name»", "property"),
+            ("$«this»->name", "variable.builtin"),
+            ("string $«name»)", "variable"),
+            ("«$»radius", "operator"),
+        ],
+    );
+}
+
+#[test]
+fn php_text_outside_the_tags_is_highlighted_as_html() {
+    check(
+        "php",
+        &[
+            ("<«h1»>Title", "tag"),
+            ("</«h1»>", "tag"),
+            ("<«p» class", "tag"),
+            ("<p «class»", "attribute"),
+            ("\"«footer»\"", "string"),
+        ],
+    );
+}
+
+#[test]
+fn csharp() {
+    check(
+        "csharp",
+        &[
+            ("// A comment.", "comment"),
+            ("/* block */", "comment"),
+            ("\"c", "string"),
+            ("\"c«\\n»\"", "string.escape"),
+            ("\"round\"", "string"),
+            ("«using» System;", "keyword"),
+            ("«namespace» Sample", "keyword"),
+            ("«public» interface", "keyword"),
+            ("interface", "keyword"),
+            ("«class» Circle", "keyword"),
+            ("private", "keyword"),
+            ("const", "keyword"),
+            ("«return» scale", "keyword"),
+            ("«new» Circle", "keyword"),
+            ("«var» scale", "keyword"),
+            ("static", "keyword"),
+            ("namespace «Sample»", "type.namespace"),
+            ("interface «IShape»", "type"),
+            ("class «Circle»", "type"),
+            ("new «Circle»", "type"),
+            ("«double» Area();", "type.builtin"),
+            ("const «int»", "type.builtin"),
+            ("Limit = «10»", "number"),
+            ("2.5", "number"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("double «Area»();", "function"),
+            ("void «Main»", "function"),
+            ("Console.«WriteLine»", "function"),
+            ("shape.«Area»()", "function"),
+            ("public «Circle»(", "constructor"),
+            ("string «name»)", "variable.parameter"),
+            ("string[] «args»", "variable.parameter"),
+            ("var «scale»", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn dart() {
+    check(
+        "dart",
+        &[
+            ("// A comment.", "comment"),
+            ("/// Doc comment.", "comment.documentation"),
+            ("'dart:math'", "string"),
+            ("\"c", "string"),
+            ("\"c«\\n»\"", "string.escape"),
+            ("'area ", "string"),
+            ("import", "keyword"),
+            ("«const» limit", "keyword"),
+            ("abstract", "keyword"),
+            ("«class» Shape", "keyword"),
+            ("implements", "keyword"),
+            ("«final» double", "keyword"),
+            ("«return» max", "keyword"),
+            ("«if» (args", "keyword"),
+            ("«var» nothing", "keyword"),
+            ("class «Shape»", "type"),
+            ("class «Circle»", "type"),
+            ("final «Shape» shape", "type"),
+            ("«double» area();", "type.builtin"),
+            ("«void» main", "type.builtin"),
+            ("limit = «10»", "number"),
+            ("2.5", "number.float"),
+            ("true", "boolean"),
+            ("null", "constant.builtin"),
+            ("double «area»();", "function"),
+            ("void «main»", "function"),
+            ("double «area»() {", "function.method"),
+            ("«print»(", "function.call"),
+            ("«max»(radius", "function.call"),
+            ("shape.«area»()", "function.method.call"),
+            ("@override", "attribute"),
+            ("«Circle»(this.radius)", "constructor"),
+            ("args.«length»", "property"),
+            ("List<String> «args»", "variable.parameter"),
+            ("«${»radius", "punctuation.special"),
+        ],
+    );
+}
+
+#[test]
+fn dart_references_take_the_capture_of_their_definition() {
+    check(
+        "dart",
+        &[
+            ("if («args».length", "variable.parameter"),
+            ("${«radius» * scale}", "variable"),
+            ("«shape».area()", "variable"),
+            ("> «limit» &&", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn go_mod() {
+    check(
+        "gomod",
+        &[
+            ("// A comment.", "comment"),
+            ("// indirect", "comment"),
+            ("module", "keyword"),
+            ("«go» 1.23", "keyword"),
+            ("require", "keyword"),
+            ("replace", "keyword"),
+            ("1.23", "string"),
+            ("v1.2.3", "string"),
+            ("v0.20.0", "string"),
+            ("=>", "operator"),
+            ("example.com/bakedit", ""),
+        ],
+    );
+}
+
+#[test]
+fn git_commit() {
+    check(
+        "git_commit",
+        &[
+            ("feat", "keyword"),
+            ("(«syntax»)", "variable.parameter"),
+            (" add the highlighter", "title"),
+            ("BREAKING CHANGE: ", "comment.error"),
+            ("spans are byte offsets", "none"),
+            ("Signed-off-by: ", "label"),
+            (
+                "# Please enter the commit message for your changes. Lines starting",
+                "comment",
+            ),
+            ("# On branch ", "comment"),
+            ("feat/syntax", "link_text"),
+            ("Changes to be committed:", "title"),
+            ("modified:", "keyword"),
+            ("new file:", "keyword"),
+            ("crates/syntax/src/lib.rs", "string.special.url"),
+            ("A longer body", ""),
+        ],
+    );
+}
+
+#[test]
+fn every_language_with_a_grammar_has_a_sample_and_every_sample_is_checked() {
+    let checked = include_str!("languages.rs");
+    for language in bakedit_syntax::languages()
+        .iter()
+        .filter(|language| language.has_grammar())
+    {
+        assert!(
+            SAMPLES.iter().any(|sample| sample.language == language.id),
+            "{} has a grammar but no sample",
+            language.id
+        );
+        assert!(
+            checked.contains(&format!("check(\n        \"{}\",", language.id)),
+            "{} has a sample but no expectations",
+            language.id
+        );
+    }
+    for sample in SAMPLES {
+        assert!(
+            common::language(sample.language).has_grammar(),
+            "{}",
+            sample.language
+        );
+    }
+}
+
+#[test]
+fn every_sample_produces_spans_and_no_sample_is_all_one_capture() {
+    for sample in SAMPLES {
+        let spans = highlight(sample.language, sample.text);
+        let mut names: Vec<&str> = spans.iter().map(|span| span.capture.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert!(names.len() >= 4, "{}: only {names:?}", sample.language);
+    }
+}

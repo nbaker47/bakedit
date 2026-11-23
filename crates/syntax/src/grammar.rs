@@ -353,36 +353,89 @@ fn custom_predicates(query: &Query, pattern: usize) -> Option<Vec<Predicate>> {
 }
 
 // ---------------------------------------------------------------------------------------
-// Extra patterns, appended after a grammar's bundled highlights.
+// Extra patterns, added to a grammar's bundled highlights.
+//
+// Each one is here for one of two reasons: the bundled query has a bug, or it files
+// something under a capture that Zed's own queries, and so the user's theme, draw
+// differently. They go after the bundled query where the last pattern wins and before it
+// where the first one does.
 // ---------------------------------------------------------------------------------------
 
-/// tree-sitter-rust files numbers and booleans under `constant.builtin`; Zed colours them as
-/// numbers and booleans. Its all-caps pattern also never matches, because of a stray quote
-/// in the regex (`"^[A-Z][A-Z\\d_]+$'"`), so constants come out as constructors.
+/// tree-sitter-rust:
+///
+/// * Numbers and booleans are filed under `constant.builtin`; Zed has `number` and `boolean`.
+/// * The all-caps pattern never matches because of a stray quote in its regex
+///   (`"^[A-Z][A-Z\\d_]+$'"`), so constants come out as constructors.
+/// * Only `*`, `&` and `'` are captured as operators. The list here is the one Zed uses. It
+///   includes `<` and `>`, so the patterns that make them brackets around generics are
+///   repeated after it.
 const RUST_EXTRA: &str = r#"
 [(integer_literal) (float_literal)] @number
 (boolean_literal) @boolean
 ((identifier) @constant
  (#match? @constant "^[A-Z][A-Z\\d_]+$"))
+
+[
+  "!=" "%" "%=" "&" "&=" "&&" "*" "*=" "+" "+=" "-" "-=" "->" ".." "..=" "..." "/="
+  ":" "<<" "<<=" "<" "<=" "=" "==" "=>" ">" ">=" ">>" ">>=" "@" "^" "^=" "|" "|=" "||" "?"
+] @operator
+(unary_expression "!" @operator)
+(binary_expression operator: "/" @operator)
+
+(type_arguments "<" @punctuation.bracket ">" @punctuation.bracket)
+(type_parameters "<" @punctuation.bracket ">" @punctuation.bracket)
+(bracketed_type "<" @punctuation.bracket ">" @punctuation.bracket)
+(for_lifetimes "<" @punctuation.bracket ">" @punctuation.bracket)
 "#;
 
-/// The bundled queries below file `true` and `false` under `constant.builtin`; Zed colours
-/// them as booleans.
+/// `true` and `false` are filed under `constant.builtin` by the bundled queries of the
+/// languages that use this; Zed colours them as booleans.
 const TRUE_FALSE_EXTRA: &str = "[(true) (false)] @boolean\n";
 
-/// As [`TRUE_FALSE_EXTRA`], for grammars with one node for both literals.
+/// As [`TRUE_FALSE_EXTRA`], for C#, whose grammar has one node for both literals.
 const BOOLEAN_LITERAL_EXTRA: &str = "(boolean_literal) @boolean\n";
 
-/// As [`TRUE_FALSE_EXTRA`], for tree-sitter-php.
+/// As [`TRUE_FALSE_EXTRA`], for PHP.
 const PHP_EXTRA: &str = "(boolean) @boolean\n";
+
+/// tree-sitter-python lists its method-call pattern before the pattern that makes every
+/// attribute a property, so `obj.method()` comes out as a property. Said again here, after
+/// both.
+const PYTHON_EXTRA: &str = r#"
+[(true) (false)] @boolean
+(call
+  function: (attribute attribute: (identifier) @function.method))
+"#;
+
+/// tree-sitter-javascript treats every capitalised identifier as a constructor (and
+/// tree-sitter-typescript as a type), including the name in a function's own definition. A
+/// React component is a function with a capitalised name, so its definition is said to be a
+/// function again here. References and JSX tags keep the bundled colour, as in Zed.
+const JAVASCRIPT_EXTRA: &str = r#"
+[(true) (false)] @boolean
+(function_declaration name: (identifier) @function)
+(function_expression name: (identifier) @function)
+(generator_function_declaration name: (identifier) @function)
+(variable_declarator
+  name: (identifier) @function
+  value: [(function_expression) (arrow_function)])
+(assignment_expression
+  left: (identifier) @function
+  right: [(function_expression) (arrow_function)])
+"#;
 
 /// tree-sitter-toml captures the whole `key = value` pair as a property instead of the key,
 /// which leaves a bare key coloured as a type while a dotted one is a property.
 const TOML_EXTRA: &str = "(pair (bare_key) @property)\n";
 
-/// The `)` that ends a `case` pattern is not a bracket. Naming it a delimiter keeps bracket
+/// The `)` that ends a `case` pattern is not a bracket. Calling it a delimiter keeps bracket
 /// matching from pairing it with an unrelated `(`.
 const BASH_EXTRA: &str = "(case_item \")\" @punctuation.delimiter)\n";
+
+/// tree-sitter-kotlin's pattern for a function's name requires the name to be the
+/// declaration's first child, so a function with a modifier (`override fun`, `private fun`,
+/// `suspend fun`) is not recognised. A declaration has only one identifier of its own.
+const KOTLIN_EXTRA: &str = "(function_declaration (simple_identifier) @function)\n";
 
 /// PHP's injection of HTML into the text outside `<?php ... ?>` ships in the grammar's
 /// repository as `queries/injections-text.scm` but is not exported by its Rust binding.
@@ -412,7 +465,7 @@ pub(crate) static RUST: GrammarSpec = GrammarSpec {
 pub(crate) static PYTHON: GrammarSpec = GrammarSpec {
     name: "python",
     language: || tree_sitter_python::LANGUAGE.into(),
-    highlights: &[tree_sitter_python::HIGHLIGHTS_QUERY, TRUE_FALSE_EXTRA],
+    highlights: &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
@@ -428,7 +481,7 @@ pub(crate) static JAVASCRIPT: GrammarSpec = GrammarSpec {
     highlights: &[
         tree_sitter_javascript::HIGHLIGHT_QUERY,
         tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-        TRUE_FALSE_EXTRA,
+        JAVASCRIPT_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[tree_sitter_javascript::LOCALS_QUERY],
@@ -447,7 +500,7 @@ pub(crate) static TYPESCRIPT: GrammarSpec = GrammarSpec {
     highlights: &[
         tree_sitter_javascript::HIGHLIGHT_QUERY,
         tree_sitter_typescript::HIGHLIGHTS_QUERY,
-        TRUE_FALSE_EXTRA,
+        JAVASCRIPT_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[
@@ -468,7 +521,7 @@ pub(crate) static TSX: GrammarSpec = GrammarSpec {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
         tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
         tree_sitter_typescript::HIGHLIGHTS_QUERY,
-        TRUE_FALSE_EXTRA,
+        JAVASCRIPT_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[
@@ -713,7 +766,7 @@ pub(crate) static RUBY: GrammarSpec = GrammarSpec {
 pub(crate) static KOTLIN: GrammarSpec = GrammarSpec {
     name: "kotlin",
     language: || tree_sitter_kotlin_sg::LANGUAGE.into(),
-    highlights: &[tree_sitter_kotlin_sg::HIGHLIGHTS_QUERY],
+    highlights: &[tree_sitter_kotlin_sg::HIGHLIGHTS_QUERY, KOTLIN_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
