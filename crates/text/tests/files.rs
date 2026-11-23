@@ -340,6 +340,43 @@ fn save_keeps_hard_links_pointing_at_the_same_file() {
     assert_eq!(file_names(dir.path()), vec!["a.txt", "b.txt"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn save_overwrites_in_place_when_the_directory_is_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    let path = locked.join("file.txt");
+    fs::write(&path, b"old\n").unwrap();
+    let mut buffer = Buffer::from_file(&path).unwrap();
+    buffer.edit(&[(0..3, "new")]);
+
+    // No temporary file can be created next to the target, but the file is writable.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = buffer.save(KEEP);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    result.unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"new\n");
+    assert!(!buffer.is_dirty());
+    assert_eq!(file_names(&locked), vec!["file.txt"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn save_through_a_symlink_loop_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    std::os::unix::fs::symlink(&b, &a).unwrap();
+    std::os::unix::fs::symlink(&a, &b).unwrap();
+    let mut buffer = Buffer::from_str("text");
+    buffer.set_path(Some(a.clone()));
+    assert!(matches!(buffer.save(KEEP), Err(BufferError::Io { .. })));
+    assert!(matches!(Buffer::from_file(&a), Err(BufferError::Io { .. })));
+    assert_eq!(file_names(dir.path()), vec!["a", "b"]);
+}
+
 #[test]
 fn ensure_final_newline_adds_trims_and_is_undoable() {
     let dir = TempDir::new().unwrap();
