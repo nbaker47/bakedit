@@ -34,6 +34,23 @@
 //! where the executable is, whether the IDE is itself inside a herdr pane, and which session
 //! a command line attaches to.
 //!
+//! # In the application
+//!
+//! ```no_run
+//! use bakedit_herdr::{navigate, Client, Direction, NavOutcome};
+//!
+//! // Once, at start-up. Only the running application lifts the guard; tests never do.
+//! let herdr = Client::from_env_or_default().allow_live_mutations(true);
+//!
+//! // On the key for "focus the pane to the left", away from the thread that draws.
+//! match navigate(&herdr, Direction::Left) {
+//!     Ok(NavOutcome::AtEdge) => {}
+//!     Ok(moved) => log::debug!("herdr: {moved:?}"),
+//!     Err(err) if err.is_not_running() => {}
+//!     Err(err) => log::warn!("{err}"),
+//! }
+//! ```
+//!
 //! # Testing code that uses this crate
 //!
 //! The `mock` feature adds a `mock` module with `MockServer`, a scripted stand-in for herdr on
