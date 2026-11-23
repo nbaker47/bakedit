@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod chars;
 pub mod clock;
+pub mod command;
 mod diff;
 pub mod display;
 pub mod edit;
@@ -17,6 +18,7 @@ pub mod selection;
 pub use ropey;
 
 pub use buffer::{Buffer, HistoryStep, Point};
+pub use command::{Clipboard, ClipboardPiece, Command, Motion};
 pub use edit::{Bias, BytePoint, Change, EditSummary, InputEdit};
 pub use file::{BufferError, DiskState, LineEnding, SaveOptions};
 pub use history::UndoKind;
