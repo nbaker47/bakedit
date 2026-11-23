@@ -90,14 +90,20 @@ fn user_keymap() -> bakedit_keymap::Keymap {
 fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
     let ghostty = window::find_ghostty();
     let running = if window::may_hand_over(&args) { app::window_for_files(&args.paths) } else { None };
+    let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let in_window = window::running_in_window();
+    let test_pty = window::running_in_test_pty();
+    // Only an editor that could leave a terminal needs to know who started it.
+    let started_by_program = args.mode == Mode::Edit && args.wait.is_none() && !in_window && !test_pty && window::started_by_program(tty);
     let mut facts = Facts {
         window_setting: bakedit::settings::load().settings.window,
-        in_window: window::running_in_window(),
-        test_pty: window::running_in_test_pty(),
+        in_window,
+        test_pty,
         ssh: window::running_over_ssh(),
         ghostty: ghostty.is_some(),
         running_window: running.is_some(),
-        tty: io::stdin().is_terminal() && io::stdout().is_terminal(),
+        tty,
+        started_by_program,
     };
     let mut place = window::decide(&args, &facts);
     if let (Place::RunningWindow, Some(target)) = (&place, &running) {
@@ -111,8 +117,8 @@ fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
         }
     }
     if let (Place::NewWindow, Some(ghostty)) = (&place, &ghostty) {
-        let keep_open = args.mode != Mode::Edit;
-        match window::open_window(ghostty, &user_keymap(), cwd, &args.forward, keep_open) {
+        let hold = window::Hold { keep_open: args.mode != Mode::Edit, wait: window::waits(&args, &facts) };
+        match window::open_window(ghostty, &user_keymap(), cwd, &args.forward, hold) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 log::warn!("no Ghostty window: {error}");

@@ -16,16 +16,26 @@ the command returns at once; it works without a terminal too (a script, an agent
 It runs in the current terminal instead with --here, over SSH, or for good with
   \"window\": false
 in ~/.config/bakedit/settings.json (true, the default on macOS, opens the window).
-Without Ghostty in /Applications, bakedit runs in the current terminal and says why.
+Without Ghostty in /Applications or ~/Applications, bakedit runs in the current terminal
+and says why.
+
+As $EDITOR (git, crontab, an agent's ctrl-g), bakedit waits until you close the file's
+window: started by a program rather than a shell, from a terminal, it opens a window of its
+own and returns when that window closes. Use --wait to force this (EDITOR=\"bakedit --wait\"),
+or --here to edit in the terminal git runs in.
 
 Paths may carry a position the way tools and agents print them:
   src/main.rs:42   src/main.rs:42:7   src/main.rs:42-60   src/main.rs#L42   file:///abs/main.rs#L42
 
 Options:
   -n, --new                 start a new window even if one is running
-      --here, --no-window   run in the current terminal, not in a Ghostty window
+      --here, --no-window   run in the current terminal, not in a Ghostty window (files still
+                            go to a running window, unless --new or --wait is given too)
       --window              open a new Ghostty window, even with \"window\": false or a window
                             running (the last of --here and --window wins)
+      --wait, --no-wait     return only when the file is closed: never hand files to a running
+                            window, and wait for a new window to close (the default when
+                            started by a program other than a shell, from a terminal)
       --cwd <dir>           run as if started in <dir>: paths are relative to it, and with no
                             path it is the project (the Ghostty window is started this way)
       --terminal <command>  run this in the terminal panel instead of the configured command
@@ -72,6 +82,9 @@ pub struct Args {
     /// Where to run: `Some(true)` for `--window`, `Some(false)` for `--here` (or
     /// `--no-window`), `None` to leave it to the `"window"` setting. The last flag wins.
     pub window: Option<bool>,
+    /// `Some(true)` for `--wait`, `Some(false)` for `--no-wait`, `None` to wait only when a
+    /// program rather than a shell started bakedit ([`crate::window::waits`]).
+    pub wait: Option<bool>,
     /// `--cwd <dir>`, made absolute: the directory to run in. Paths and `--log` are
     /// relative to it wherever it appears on the line.
     pub cwd: Option<PathBuf>,
@@ -79,8 +92,9 @@ pub struct Args {
     pub no_restore: bool,
     pub log_file: Option<PathBuf>,
     /// The arguments as given, minus the ones only the launching process acts on
-    /// (`--window`, `--here`, `--no-window`, `-n`, `--new`, `--cwd`): what a Ghostty window
-    /// passes on to the bakedit it runs. Values and everything after `--` are kept as they are.
+    /// (`--window`, `--here`, `--no-window`, `--wait`, `--no-wait`, `-n`, `--new`, `--cwd`):
+    /// what a Ghostty window passes on to the bakedit it runs. Values and everything after
+    /// `--` are kept as they are.
     pub forward: Vec<String>,
 }
 
@@ -91,6 +105,7 @@ impl Default for Args {
             paths: Vec::new(),
             new_instance: false,
             window: None,
+            wait: None,
             cwd: None,
             terminal_command: None,
             no_restore: false,
@@ -137,6 +152,10 @@ where
             }
             "--here" | "--no-window" => {
                 out.window = Some(false);
+                forwarded.clear();
+            }
+            "--wait" | "--no-wait" => {
+                out.wait = Some(arg == "--wait");
                 forwarded.clear();
             }
             "--cwd" => {
@@ -407,6 +426,18 @@ mod tests {
     }
 
     #[test]
+    fn wait_and_no_wait_and_the_last_one_wins() {
+        let cwd = Path::new("/work");
+        let parsed = |line: &[&str]| parse(line.iter().copied(), cwd).unwrap();
+        assert_eq!(parsed(&[]).wait, None, "no flag: who started bakedit decides");
+        assert_eq!(parsed(&["--wait", "a.rs"]).wait, Some(true));
+        assert_eq!(parsed(&["--wait", "--no-wait"]).wait, Some(false));
+        assert_eq!(parsed(&["--no-wait", "--wait"]).wait, Some(true));
+        assert_eq!(parsed(&["--wait", "a.rs"]).forward, ["a.rs"], "the window's bakedit is not told to wait");
+        assert_eq!(parsed(&["--", "--wait"]).wait, None, "after -- it is a file");
+    }
+
+    #[test]
     fn cwd_moves_every_relative_path_wherever_it_is_given() {
         let args = parse(["a.rs:3", "--log", "debug.log", "--cwd", "/elsewhere/app", "../b.rs"], Path::new("/work")).unwrap();
         assert_eq!(args.cwd, Some(PathBuf::from("/elsewhere/app")));
@@ -441,7 +472,7 @@ mod tests {
 
     #[test]
     fn help_documents_where_bakedit_runs() {
-        for wanted in ["--here, --no-window", "--window", "--cwd <dir>", "\"window\": false", "settings.json", "Ghostty"] {
+        for wanted in ["--here, --no-window", "--window", "--cwd <dir>", "\"window\": false", "settings.json", "Ghostty", "/Applications or ~/Applications", "$EDITOR", "--wait, --no-wait", "--here to edit in the terminal git runs in"] {
             assert!(USAGE.contains(wanted), "--help does not mention {wanted:?}");
         }
     }

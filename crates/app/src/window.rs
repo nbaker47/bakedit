@@ -238,6 +238,41 @@ pub fn running_over_ssh() -> bool {
     ["SSH_CONNECTION", "SSH_TTY"].iter().any(|name| is_set(std::env::var_os(name).as_deref()))
 }
 
+/// Whether a program rather than a shell started this process, from a terminal: git,
+/// crontab or an agent running its `$EDITOR`, which reads the file back once bakedit
+/// returns. `tty` says whether there is a terminal; without one nothing is waiting to edit.
+pub fn started_by_program(tty: bool) -> bool {
+    tty && parent_name().is_some_and(|name| !is_shell(&name))
+}
+
+/// The command name of the parent process, asked of the kernel (no `ps` to run, which a
+/// sandbox may forbid); `None` when it cannot be told.
+#[cfg(target_os = "macos")]
+fn parent_name() -> Option<String> {
+    let parent = libc::pid_t::try_from(std::os::unix::process::parent_id()).ok()?;
+    let mut buffer = [0u8; 256];
+    // SAFETY: proc_name writes at most `buffer.len()` bytes into `buffer`, which lives for
+    // the call, and returns how many it wrote (0 or less on failure).
+    let written = unsafe { libc::proc_name(parent, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let written = usize::try_from(written).ok().filter(|&n| n > 0 && n <= buffer.len())?;
+    Some(String::from_utf8_lossy(&buffer[..written]).into_owned())
+}
+
+/// The command name of the parent process, from `/proc`; `None` when it cannot be told.
+#[cfg(not(target_os = "macos"))]
+fn parent_name() -> Option<String> {
+    let name = std::fs::read_to_string(format!("/proc/{}/comm", std::os::unix::process::parent_id())).ok()?;
+    Some(name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+/// Whether `comm`, a process's command name (a path, or `-zsh` for a login shell, are
+/// taken too), is an interactive shell's.
+fn is_shell(comm: &str) -> bool {
+    let name = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-');
+    const SHELLS: &[&str] = &["sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "mksh", "oksh", "tcsh", "csh", "yash", "nu", "xonsh", "elvish", "pwsh", "ion", "osh"];
+    SHELLS.contains(&name)
+}
+
 /// A variable counts when it is set to anything but the empty string.
 fn is_set(value: Option<&OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty())
@@ -261,6 +296,9 @@ pub struct Facts {
     pub running_window: bool,
     /// Standard input and output are a terminal.
     pub tty: bool,
+    /// A program rather than a shell started bakedit from a terminal ([`started_by_program`]):
+    /// it is waiting for its editor.
+    pub started_by_program: bool,
 }
 
 /// Where a `bakedit` command runs: [`decide`]'s answer.
@@ -268,7 +306,8 @@ pub struct Facts {
 pub enum Place {
     /// Hand the files to the bakedit window that is running, and exit.
     RunningWindow,
-    /// Open a new dedicated Ghostty window running bakedit, and exit at once.
+    /// Open a new dedicated Ghostty window running bakedit, and exit at once, or when the
+    /// window closes if bakedit [`waits`].
     NewWindow,
     /// Run in the current terminal. `why` says why there is no window when one was
     /// wanted, to be said once: in the status bar, or on stderr before a diagnostic.
@@ -286,7 +325,8 @@ const NO_TERMINAL: &str = "bakedit needs a terminal to run in (for a running win
 ///    running; but the bakedit a window runs, and one under test, never open a window,
 ///    whatever they are given.
 /// 2. `--dump-input` and `--probe` run here (each checks for a terminal itself).
-/// 3. Files, without `--new`, go to the running window that takes them.
+/// 3. Files, without `--new`, go to the running window that takes them, unless bakedit
+///    [`waits`]: a running window cannot say when the file is closed.
 /// 4. `--here`, `"window": false`, an SSH session, the bakedit a window runs and one
 ///    under test run here.
 /// 5. Anything else opens a new window.
@@ -303,13 +343,21 @@ pub fn decide(args: &Args, facts: &Facts) -> Place {
     if diagnostic {
         return Place::Here { why: None };
     }
-    if facts.running_window && !args.new_instance && !args.paths.is_empty() {
+    if facts.running_window && !args.new_instance && !args.paths.is_empty() && !waits(args, facts) {
         return Place::RunningWindow;
     }
     if never_a_window || facts.ssh || args.window == Some(false) || !facts.window_setting {
         return if facts.tty { Place::Here { why: None } } else { Place::Nowhere(NO_TERMINAL.to_string()) };
     }
     window_unless_missing(facts, false)
+}
+
+/// Whether bakedit must not return before its files are closed: `--wait`, or, unless
+/// `--no-wait`, when a program started it ([`Facts::started_by_program`]), such as git
+/// running `$EDITOR`. Such a bakedit runs here or in a new window it waits for
+/// (`open -W`), never in a running window. Only editing waits.
+pub fn waits(args: &Args, facts: &Facts) -> bool {
+    args.mode == Mode::Edit && args.wait.unwrap_or(facts.started_by_program)
 }
 
 /// Where to run after [`decide`] said [`Place::NewWindow`] and opening it failed with
@@ -344,6 +392,17 @@ fn instead_of_window(reason: String, hint: &str, can_run_here: bool) -> Place {
     } else {
         Place::Nowhere(format!("{reason}, and no terminal to run in"))
     }
+}
+
+/// How long a new window and the `open` that starts it last.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Hold {
+    /// Keep the window up after bakedit exits, until a key is pressed, so a diagnostic's
+    /// output can be read.
+    pub keep_open: bool,
+    /// `open` returns only when that Ghostty instance quits (`-W`), which it does when its
+    /// one window closes (`quit-after-last-window-closed`): for a bakedit that [`waits`].
+    pub wait: bool,
 }
 
 /// The command that opens the window.
@@ -397,9 +456,8 @@ fn flag_with_path(flag: &str, path: &Path) -> OsString {
 /// in `cwd`, running `bakedit --here --new --cwd=<cwd>` followed by `forward`, the user's
 /// arguments without the launcher's own flags ([`Args::forward`]). `--here` (with the
 /// `BAKEDIT_HOST` the config sets) stops that bakedit from opening another window, and
-/// `--new` from handing its files to another window. `keep_open` keeps the window up after
-/// bakedit exits, until a key is pressed, so a diagnostic's output can be read. `env_names`
-/// are the variables of this process.
+/// `--new` from handing its files to another window. `hold` says how long the window and
+/// `open` last ([`Hold`]). `env_names` are the variables of this process.
 ///
 /// The arguments arrive whole, spaces and all: `open --args` hands them to Ghostty, `-e`
 /// makes the rest the command, run without a shell (Ghostty 1.4.0
@@ -410,11 +468,11 @@ fn flag_with_path(flag: &str, path: &Path) -> OsString {
 /// so a `working-directory` line in it would win, and it trims the value
 /// (`src/config/Config.zig:5572`); `--cwd` tells bakedit itself, so relative paths still
 /// mean what they meant here.
-pub fn window_command(ghostty: &Path, entry: &Path, cwd: &Path, bakedit: &Path, forward: &[String], env_names: impl IntoIterator<Item = String>, keep_open: bool) -> WindowCommand {
-    let mut args: Vec<OsString> = vec!["-na".into(), ghostty.into(), "--args".into(), "--config-default-files=false".into()];
+pub fn window_command(ghostty: &Path, entry: &Path, cwd: &Path, bakedit: &Path, forward: &[String], env_names: impl IntoIterator<Item = String>, hold: Hold) -> WindowCommand {
+    let mut args: Vec<OsString> = vec![if hold.wait { "-Wna" } else { "-na" }.into(), ghostty.into(), "--args".into(), "--config-default-files=false".into()];
     args.push(flag_with_path("--config-file=", entry));
     args.push(flag_with_path("--working-directory=", cwd));
-    if keep_open {
+    if hold.keep_open {
         args.push("--wait-after-command=true".into());
     }
     // `-e` takes the rest of the line as the command, so it goes last.
@@ -429,13 +487,13 @@ pub fn window_command(ghostty: &Path, entry: &Path, cwd: &Path, bakedit: &Path, 
 
 /// Write the config and open a window running bakedit in `cwd` with `forward`, Ghostty
 /// being at `ghostty` (see [`window_command`]). Returns once `open` has handed the window
-/// to Ghostty; the window runs on its own. The error is short, for the status bar; the log
+/// to Ghostty, and the window runs on its own; with [`Hold::wait`], once it has closed. The error is short, for the status bar; the log
 /// has the command line.
-pub fn open_window(ghostty: &Path, keymap: &Keymap, cwd: &Path, forward: &[String], keep_open: bool) -> Result<(), String> {
+pub fn open_window(ghostty: &Path, keymap: &Keymap, cwd: &Path, forward: &[String], hold: Hold) -> Result<(), String> {
     let entry = write_config(&config_dir(), &ghostty_config(keymap)).map_err(|error| format!("could not write the Ghostty config: {error}"))?;
     let bakedit = std::env::current_exe().map_err(|error| format!("cannot tell where bakedit is: {error}"))?;
     let names = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
-    let command = window_command(ghostty, &entry, cwd, &bakedit, forward, names, keep_open);
+    let command = window_command(ghostty, &entry, cwd, &bakedit, forward, names, hold);
     log::info!("opening a Ghostty window: {}", command.display());
     let mut process = Command::new(&command.program);
     process.args(&command.args);
@@ -459,7 +517,7 @@ pub fn describe(keymap: &Keymap) -> String {
     let bakedit = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bakedit"));
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let names = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
-    let command = window_command(&ghostty, &dir.join("bakedit.ghostty"), &cwd, &bakedit, &[], names, false);
+    let command = window_command(&ghostty, &dir.join("bakedit.ghostty"), &cwd, &bakedit, &[], names, Hold::default());
     format!(
         "# {entry_path}\n{entry}\n# {window_path}\n{window}\n# bakedit (or with \"window\": false, bakedit --window) writes these files and runs:\n#   {command}\n",
         entry_path = dir.join("bakedit.ghostty").display(),
@@ -552,7 +610,7 @@ mod tests {
             Path::new("/usr/local/bin/bakedit"),
             &forward,
             names,
-            false,
+            Hold::default(),
         );
         let args: Vec<String> = command.args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(command.program, PathBuf::from("/usr/bin/open"), "found without PATH, as a hook may have none");
@@ -585,7 +643,7 @@ mod tests {
         let cwd = Path::new("/Users/me/My Projects/app");
         let line = ["notes/to do.md:3", "--terminal", "herdr --session work", "--log", "debug log.txt", "--", "-odd name"];
         let forward = crate::cli::parse(line, cwd).unwrap().forward;
-        let command = window_command(Path::new("/Applications/Ghostty.app"), Path::new("/c/bakedit.ghostty"), cwd, Path::new("/bin/bakedit"), &forward, Vec::new(), false);
+        let command = window_command(Path::new("/Applications/Ghostty.app"), Path::new("/c/bakedit.ghostty"), cwd, Path::new("/bin/bakedit"), &forward, Vec::new(), Hold::default());
         let e = command.args.iter().position(|a| a == "-e").unwrap();
         // One argument each, exactly as typed: no shell splits them on the way.
         let after: Vec<&OsStr> = command.args[e + 1..].iter().map(OsString::as_os_str).collect();
@@ -607,7 +665,7 @@ mod tests {
 
     #[test]
     fn a_diagnostic_window_stays_open_to_be_read() {
-        let command = |keep_open| window_command(Path::new("/G.app"), Path::new("/c/b.ghostty"), Path::new("/w"), Path::new("/b"), &["--probe".to_string()], Vec::new(), keep_open).args;
+        let command = |keep_open| window_command(Path::new("/G.app"), Path::new("/c/b.ghostty"), Path::new("/w"), Path::new("/b"), &["--probe".to_string()], Vec::new(), Hold { keep_open, wait: false }).args;
         let kept = command(true);
         let e = kept.iter().position(|a| a == "-e").unwrap();
         assert_eq!(kept[e - 1], "--wait-after-command=true", "a Ghostty option, before -e");
@@ -615,8 +673,30 @@ mod tests {
         assert!(!command(false).contains(&OsString::from("--wait-after-command=true")));
     }
 
+    #[test]
+    fn a_waiting_launch_returns_when_the_window_closes() {
+        let command = |wait| window_command(Path::new("/G.app"), Path::new("/c/b.ghostty"), Path::new("/w"), Path::new("/b"), &["COMMIT_EDITMSG".to_string()], Vec::new(), Hold { keep_open: false, wait }).args;
+        assert_eq!(command(true)[0], "-Wna", "open -W waits for the new instance, which quits with its window");
+        assert_eq!(command(false)[0], "-na");
+        let waiting = command(true);
+        let e = waiting.iter().position(|a| a == "-e").unwrap();
+        assert_eq!(waiting[e + 1..].iter().filter(|a| a.to_string_lossy().contains("wait")).count(), 0, "the window's bakedit is not told to wait");
+        assert!(ghostty_config(&keymap(None)).window.contains("\nquit-after-last-window-closed = true\n"), "or open -W would never return");
+    }
+
+    #[test]
+    fn a_shell_is_told_from_a_program() {
+        for shell in ["zsh", "-zsh", "/bin/zsh", "bash", "-bash", "/bin/sh", "fish", "/opt/homebrew/bin/nu", "dash"] {
+            assert!(is_shell(shell), "{shell}");
+        }
+        for program in ["git", "/usr/bin/crontab", "kubectl", "node", "claude", "login", "sudo", "zshell"] {
+            assert!(!is_shell(program), "{program}");
+        }
+        assert!(!started_by_program(false), "without a terminal nothing is waiting to edit");
+    }
+
     fn facts() -> Facts {
-        Facts { window_setting: true, in_window: false, test_pty: false, ssh: false, ghostty: true, running_window: false, tty: true }
+        Facts { window_setting: true, in_window: false, test_pty: false, ssh: false, ghostty: true, running_window: false, tty: true, started_by_program: false }
     }
 
     fn decided(line: &[&str], facts: Facts) -> Place {
@@ -635,6 +715,31 @@ mod tests {
         assert_eq!(decided(&["--terminal", "shell", "--no-restore"], facts()), Place::NewWindow);
         // From a script or an agent's hook: a window needs no terminal.
         assert_eq!(decided(&["src/main.rs:3"], Facts { tty: false, ..facts() }), Place::NewWindow);
+    }
+
+    #[test]
+    fn bakedit_as_editor_returns_only_when_the_file_is_closed() {
+        // `GIT_EDITOR=bakedit git commit`: git runs `bakedit .git/COMMIT_EDITMSG` and reads the
+        // file back as soon as bakedit returns.
+        let git = Facts { started_by_program: true, ..facts() };
+        let line = ["/repo/.git/COMMIT_EDITMSG"];
+        let args = crate::cli::parse(line, Path::new("/repo")).unwrap();
+        assert_eq!(decided(&line, git), Place::NewWindow, "no window running: a new one");
+        assert!(waits(&args, &git), "and open -W waits for it to close");
+        let running = Facts { running_window: true, ..git };
+        assert_eq!(decided(&line, running), Place::NewWindow, "a running window cannot say when the file is closed");
+        assert_eq!(decided(&["--here", "/repo/.git/COMMIT_EDITMSG"], running), here(None), "EDITOR=\"bakedit --here\" edits in git's terminal");
+        assert_eq!(decided(&line, Facts { window_setting: false, ..running }), here(None));
+        assert_eq!(decided(&line, Facts { ghostty: false, ..running }), here(Some("No Ghostty.app in /Applications or ~/Applications: running in this terminal (\"window\": false stops looking)")));
+        // From a shell nothing waits, as before; --wait and --no-wait say otherwise.
+        let shell = facts();
+        assert!(!waits(&args, &shell));
+        assert_eq!(decided(&line, Facts { running_window: true, ..shell }), Place::RunningWindow);
+        assert_eq!(decided(&["--wait", "/repo/.git/COMMIT_EDITMSG"], Facts { running_window: true, ..shell }), Place::NewWindow);
+        assert!(waits(&crate::cli::parse(["--wait", "a.rs"], Path::new("/repo")).unwrap(), &shell));
+        assert!(!waits(&crate::cli::parse(["--no-wait", "a.rs"], Path::new("/repo")).unwrap(), &git));
+        assert_eq!(decided(&["--no-wait", "/repo/.git/COMMIT_EDITMSG"], running), Place::RunningWindow);
+        assert!(!waits(&crate::cli::parse(["--probe"], Path::new("/repo")).unwrap(), &git), "only editing waits");
     }
 
     #[test]

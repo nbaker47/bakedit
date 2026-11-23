@@ -117,10 +117,17 @@ and the command returns at once. `--here`, an SSH session, or `"window": false` 
 `~/.config/bakedit/settings.json` keep it in the terminal you ran it from; without Ghostty
 it stays there and says why.
 
-When bakedit is already running, files are sent to that window, so it works as `$EDITOR`
-and as the target of `path:line` links printed by tools and agents. Terminal output links
-are cmd-clickable too. For a program that waits for its editor to close, such as git, use
-`bakedit --here --new`.
+Ghostty saves its `window-save-state` setting in the preferences your own Ghostty reads
+too, and bakedit's window sets it to `never`. Until your Ghostty next loads its config,
+quitting it does not keep its windows if you use `window-save-state = always` or have
+turned off macOS's "Close windows when quitting an application". `"window": false` avoids
+this.
+
+When bakedit is already running, files are sent to that window, so it is the target of
+`path:line` links printed by tools and agents. Terminal output links are cmd-clickable
+too. It works as `$EDITOR`: started by a program rather than a shell (git, crontab, an
+agent's ctrl-g), it opens a window of its own and returns only when that window closes.
+`--wait` forces this; `EDITOR="bakedit --here"` edits in the terminal git runs in instead.
 
 ## Keys
 

@@ -59,7 +59,8 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   `cli.rs` mode), `window.rs` (the dedicated Ghostty window a plain `bakedit` opens on
   macOS, and `decide`: that window, the running one for files, or this terminal with
   `--here` or `"window": false`; the bakedit in the window gets `--here` and
-  `BAKEDIT_HOST`, so it never opens another), `themes.rs`,
+  `BAKEDIT_HOST`, so it never opens another; `waits` keeps a bakedit started by a program,
+  such as git running `$EDITOR`, from returning before the file is closed), `themes.rs`,
   `logging.rs` (`--log`), `external.rs` (URLs and Finder reveals handed to the OS; test
   builds record them instead, so no test opens a window).
 - **Views:** `editor/` (`EditorItem`), `panels/terminal.rs`, `panels/git.rs`,
