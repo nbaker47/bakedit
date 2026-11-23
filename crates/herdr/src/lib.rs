@@ -8,6 +8,7 @@ pub mod mock;
 mod move_pane;
 mod nav;
 mod query;
+mod root_split;
 mod scroll;
 mod state;
 mod types;
@@ -21,5 +22,6 @@ pub use nav::{navigate, NavOutcome};
 pub use query::{
     focused_pane, pane_at, pane_info, pane_layout, PaneAt, PaneLayout, PaneRect, ScreenSize,
 };
+pub use root_split::{root_split, root_split_with_share, DEFAULT_ROOT_SPLIT_SHARE};
 pub use scroll::{scroll, ScrollOutcome};
 pub use types::{Direction, PaneInfo, ParseDirectionError, Rect, ScrollInfo, SplitDirection};
