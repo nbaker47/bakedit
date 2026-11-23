@@ -796,10 +796,12 @@ fn the_empty_centre_says_what_to_press_at_any_width() {
     let text = frame(&mut shell, 120, 30);
     assert!(text.contains("ctrl-] p         find a file"), "{text}");
     assert!(!text.contains("cmd-p"));
-    // Squeezed between two docks: the heading and the first key, cut cleanly.
+    // Squeezed between two docks (the terminal dragged wide): the heading and the first key,
+    // cut cleanly.
     shell.cmd_keys = true;
     act(&mut shell, "terminal_panel::Toggle");
     act(&mut shell, "project_panel::ToggleFocus");
+    shell.workspace.set_panel_size(PanelId::Terminal, Some(110));
     let text = frame(&mut shell, 150, 30);
     let center = shell.layout().center.unwrap();
     assert!(center.width < 34, "the centre is narrow here: {center:?}");

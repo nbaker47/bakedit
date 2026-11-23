@@ -7,6 +7,10 @@ use crate::workspace::{DockPosition, PanelId, Workspace, Zoomed};
 
 /// The centre never gets narrower than this while a side dock is showing.
 pub const MIN_CENTER_WIDTH: u16 = 24;
+/// Side docks at the width they start with (not one the user dragged them to) give way
+/// until the centre has this share of the window, in fifths: their default widths suit a
+/// wide window and would leave a narrow one an editor too small to read.
+const CENTER_SHARE_FIFTHS: u16 = 2;
 /// The centre never gets shorter than this while the bottom dock is showing.
 pub const MIN_CENTER_HEIGHT: u16 = 4;
 /// The narrowest a side dock is drawn.
@@ -99,22 +103,35 @@ pub fn compute_with(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId
     let wanted = |panel: Option<PanelId>| -> u16 {
         panel.map(|p| ws.panel_size(p).unwrap_or_else(|| default_width(p)).max(MIN_DOCK_WIDTH)).unwrap_or(0)
     };
+    let at_default = |panel: Option<PanelId>| panel.is_some_and(|p| ws.panel_size(p).is_none());
     let (mut left_width, mut right_width) = (wanted(left), wanted(right));
     let dividers = |l: u16, r: u16| (l > 0) as u16 + (r > 0) as u16;
-    let overflow = |l: u16, r: u16| (l + r + dividers(l, r) + MIN_CENTER_WIDTH).saturating_sub(body.width);
-    let mut excess = overflow(left_width, right_width);
-    if excess > 0 {
-        // Shrink the docks in proportion to their size, down to the minimum each.
-        let shrinkable_left = left_width.saturating_sub(MIN_DOCK_WIDTH);
-        let shrinkable_right = right_width.saturating_sub(MIN_DOCK_WIDTH);
+    let overflow_for = |l: u16, r: u16, center: u16| (l + r + dividers(l, r) + center).saturating_sub(body.width);
+    let overflow = |l: u16, r: u16| overflow_for(l, r, MIN_CENTER_WIDTH);
+    // Shrink the docks that may shrink in proportion to what each can give, down to the
+    // minimum each, by up to `excess` columns.
+    let shrink = |l: &mut u16, r: &mut u16, excess: u16, (left_may, right_may): (bool, bool)| {
+        let shrinkable_left = if left_may { l.saturating_sub(MIN_DOCK_WIDTH) } else { 0 };
+        let shrinkable_right = if right_may { r.saturating_sub(MIN_DOCK_WIDTH) } else { 0 };
         let shrinkable = shrinkable_left + shrinkable_right;
         if shrinkable > 0 {
             let take = excess.min(shrinkable);
             let from_left = ((take as u32 * shrinkable_left as u32).div_ceil(shrinkable as u32) as u16).min(shrinkable_left);
             let from_right = (take - from_left.min(take)).min(shrinkable_right);
-            left_width -= from_left;
-            right_width -= from_right;
+            *l -= from_left;
+            *r -= from_right;
         }
+    };
+    // First the docks at their default width make room for a fair share of the window.
+    let share = (body.width / 5 * CENTER_SHARE_FIFTHS).max(MIN_CENTER_WIDTH);
+    let fair_excess = overflow_for(left_width, right_width, share);
+    if fair_excess > 0 {
+        shrink(&mut left_width, &mut right_width, fair_excess, (at_default(left), at_default(right)));
+    }
+    // Then any dock gives way, down to the centre's absolute minimum.
+    let mut excess = overflow(left_width, right_width);
+    if excess > 0 {
+        shrink(&mut left_width, &mut right_width, excess, (true, true));
         excess = overflow(left_width, right_width);
     }
     // Still too tight: drop the right dock, then the left, rather than squeeze the editor.
@@ -268,21 +285,44 @@ mod tests {
     }
 
     #[test]
-    fn docks_shrink_to_keep_the_centre_usable() {
+    fn docks_at_their_default_width_leave_the_centre_two_fifths() {
         let mut ws = workspace();
         ws.open_panel(Terminal);
         ws.open_panel(Project);
-        // 85 + 33 + 2 dividers + 24 centre = 144 needed; only 120 available.
-        let layout = compute(&ws, screen(120, 40), widths);
-        let left = layout.panel(Terminal).unwrap();
-        let right = layout.panel(Project).unwrap();
+        // 85 + 33 + 2 dividers leave 80 of 200: two fifths already, nothing moves.
+        let layout = compute(&ws, screen(200, 40), widths);
+        assert_eq!(layout.center.unwrap().width, 80);
+        for (width, center_width) in [(140, 56), (120, 48), (100, 40)] {
+            let layout = compute(&ws, screen(width, 30), widths);
+            let left = layout.panel(Terminal).unwrap();
+            let right = layout.panel(Project).unwrap();
+            let center = layout.center.unwrap();
+            assert_eq!(center.width, center_width, "{width} columns");
+            assert!(left.width < 85 && left.width >= MIN_DOCK_WIDTH, "{width}: {left:?}");
+            assert!(right.width < 33 && right.width >= MIN_DOCK_WIDTH, "{width}: {right:?}");
+            assert!(left.width > right.width, "they give way in proportion");
+            assert_eq!(left.width + 1 + center.width + 1 + right.width, width);
+            assert_eq!(center.x, left.width + 1);
+            assert_eq!(right.x, center.right() + 1);
+        }
+    }
+
+    #[test]
+    fn a_dock_the_user_widened_keeps_its_width_down_to_the_centre_minimum() {
+        let mut ws = workspace();
+        ws.open_panel(Terminal);
+        ws.open_panel(Project);
+        ws.set_panel_size(Terminal, Some(90));
+        // Only the tree (at its default) gives way for the share; the terminal stays 90.
+        let layout = compute(&ws, screen(160, 30), widths);
+        assert_eq!(layout.panel(Terminal).unwrap().width, 90);
+        assert_eq!(layout.panel(Project).unwrap().width, MIN_DOCK_WIDTH);
+        assert_eq!(layout.center.unwrap().width, 160 - 90 - MIN_DOCK_WIDTH - 2);
+        // Narrower still: then it gives way too, to keep the centre's absolute minimum.
+        let layout = compute(&ws, screen(120, 30), widths);
         let center = layout.center.unwrap();
         assert_eq!(center.width, MIN_CENTER_WIDTH);
-        assert!(left.width < 85 && left.width >= MIN_DOCK_WIDTH);
-        assert!(right.width < 33 && right.width >= MIN_DOCK_WIDTH);
-        assert_eq!(left.width + 1 + center.width + 1 + right.width, 120);
-        assert_eq!(center.x, left.width + 1);
-        assert_eq!(right.x, center.right() + 1);
+        assert!(layout.panel(Terminal).unwrap().width < 90);
     }
 
     #[test]
