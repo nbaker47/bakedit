@@ -210,7 +210,7 @@ pub fn live_instances(dir: &Path) -> Vec<InstanceInfo> {
             }
         }
     }
-    live.sort_by(|a, b| b.focused_at.cmp(&a.focused_at));
+    live.sort_by_key(|instance| std::cmp::Reverse(instance.focused_at));
     live
 }
 

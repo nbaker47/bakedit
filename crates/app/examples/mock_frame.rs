@@ -3,6 +3,8 @@
 //!
 //!   cargo run -p bakedit --example mock_frame -- /tmp/frame.html [width height] [--picker]
 
+#![allow(clippy::single_range_in_vec_init, clippy::type_complexity)]
+
 use std::ops::Range;
 
 use bakedit::chrome::{self, ModeIndicator, NavLayerIndicator, Status, Tab};

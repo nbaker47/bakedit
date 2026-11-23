@@ -89,7 +89,7 @@ pub fn parse_rfc3339(text: &str) -> Option<i64> {
 
 /// Keep the fullest meter of each window, shortest window first.
 fn fullest_per_window(mut meters: Vec<(Option<u64>, Meter)>) -> Vec<Meter> {
-    meters.sort_by(|a, b| a.0.unwrap_or(u64::MAX).cmp(&b.0.unwrap_or(u64::MAX)));
+    meters.sort_by_key(|meter| meter.0.unwrap_or(u64::MAX));
     let mut out: Vec<Meter> = Vec::new();
     for (_, meter) in meters {
         match out.iter_mut().find(|existing| existing.window == meter.window) {

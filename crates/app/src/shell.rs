@@ -65,6 +65,9 @@ pub struct GitSummary {
     pub changes: usize,
 }
 
+/// Looks up the keys bound to an action, for display.
+pub type BindingHint = Box<dyn Fn(&Action) -> Option<String>>;
+
 pub struct Shell {
     pub settings: Settings,
     pub theme: Theme,
@@ -84,7 +87,7 @@ pub struct Shell {
     /// Completions of the unfinished chord, shown once the user has paused.
     pub which_key: Vec<(String, String)>,
     /// Looks up the key binding to show beside a command palette row.
-    pub binding_hint: Box<dyn Fn(&Action) -> Option<String>>,
+    pub binding_hint: BindingHint,
     panels: HashMap<PanelId, Box<dyn View>>,
     factory: Box<dyn ItemFactory>,
     source: Box<dyn PickerSource>,

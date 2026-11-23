@@ -210,7 +210,7 @@ pub fn row(canvas: &mut Canvas<'_>, x: u16, y: u16, width: u16, row: &Row<'_>, o
         // What to draw in the cell(s).
         let is_space = grapheme == " ";
         let in_indent = char_index < indent_chars;
-        let guide_level = if options.show_indent_guides && in_indent && col % tab == 0 { Some(col / tab) } else { None };
+        let guide_level = if options.show_indent_guides && in_indent && col.is_multiple_of(tab) { Some(col / tab) } else { None };
         let draw_guide = guide_level.is_some_and(|level| level < row.indent_guides);
         for cell in 0..cells {
             let cell_col = col + cell;
@@ -326,6 +326,8 @@ pub struct ScrollMarks {
     pub cursor_line: Option<usize>,
 }
 
+// A drawing call: position, extent and scroll state are all plain numbers.
+#[allow(clippy::too_many_arguments)]
 pub fn scrollbar(
     canvas: &mut Canvas<'_>,
     x: u16,
@@ -369,6 +371,7 @@ pub fn scrollbar(
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;

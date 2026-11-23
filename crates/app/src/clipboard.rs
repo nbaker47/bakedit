@@ -161,7 +161,7 @@ mod tests {
         // Even identical-looking text copied after a non-linewise copy stays character-wise.
         clipboard.set("x", false);
         *shared.0.borrow_mut() = Some("a line\n".to_string());
-        assert_eq!(clipboard.get().unwrap().linewise, false);
+        assert!(!clipboard.get().unwrap().linewise);
     }
 
     #[test]
