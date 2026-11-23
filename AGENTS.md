@@ -57,17 +57,30 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
 - **The running app:** `app.rs` (the main loop: input wiring, timers, drawing, session
   saves, config reloads), `host.rs` (terminal modes and their restore), `main.rs` (every
   `cli.rs` mode), `window.rs` (`--window`, the dedicated Ghostty window), `themes.rs`,
-  `logging.rs` (`--log`).
+  `logging.rs` (`--log`), `external.rs` (URLs and Finder reveals handed to the OS; test
+  builds record them instead, so no test opens a window).
 - **Views:** `editor/` (`EditorItem`), `panels/terminal.rs`, `panels/git.rs`,
   `panels/project.rs`, `items/diff.rs`, `items/search.rs`; `factory.rs` makes the items and
   fills the file finder, branch and recent-project pickers. Each module's header states the
   constructor and methods the app calls; keep those signatures.
-- **Driving the real binary:** `crates/app/tests/scenarios/run.sh <out-dir>` builds a
-  throwaway project and runs the `.keys` scenarios through `scripts/ptyshot.py` (kitty and
-  legacy terminals, cmd+click on terminal paths, reloads, IPC, `--dump-input`, `--probe`),
-  writing text, HTML and PNG snapshots. Run bakedit by hand the same way: `--terminal shell`
-  (never the user's herdr session), `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in a scratch
-  folder, `ZDOTDIR` there too so the panel's shell reads none of the user's dotfiles.
+- **Driving the real binary:** `crates/app/tests/scenarios/run.sh <out-dir> [bakedit]
+  [scenario ...]` builds a throwaway git project (with a Cargo.toml for format on save and a
+  50,000-line file) and runs `<scenario>.keys` scripts through `scripts/ptyshot.py`, a pty
+  and a VT emulator that answers as Ghostty (or, with `--legacy`, a terminal without the
+  kitty protocol). Each script's `expect`, `expect-not`, `expect-at`, `expect-exit` and
+  `exec` lines are its checks; run.sh prints PASS or FAIL per scenario and keeps text, HTML
+  and PNG snapshots (`<scenario>-failed.*` when one fails). `zed-settings.json` is Nathan's
+  editor settings, put where bakedit looks for Zed's. `herdr-session` drives a real herdr
+  through a throwaway server of its own (`crates/herdr/tests/isolated-session.sh`,
+  `herdr-check.py`); `quit` checks the terminal is restored (`check-restored.py`).
+  `tests/scenarios.rs` replays them under `cargo test` (skipped without `uv`). Run bakedit
+  by hand the same way: `--terminal shell` (never the user's herdr session),
+  `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in a scratch folder, `ZDOTDIR` there too so the
+  panel's shell reads none of the user's dotfiles.
+- **Every key does something:** `handlers_tests.rs` builds the real app in each place the
+  keymap's contexts describe and fails on any action the keymap binds or the palette lists
+  that nothing acts on. A binding added without a handler fails it; a deliberate no-op goes
+  in its `DELIBERATE_NO_OPS` with the reason.
 - **Drawing, pure functions of data:** `ui.rs` (clipped `Canvas`, `Style`, truncation),
   `chrome.rs` (tab bar, status bar, prompt, toast), `picker.rs`, `line_input.rs`, `paint.rs`
   (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
