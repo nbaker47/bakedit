@@ -2,6 +2,7 @@
 
 mod client;
 mod collapse;
+pub mod launch;
 mod layout;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
