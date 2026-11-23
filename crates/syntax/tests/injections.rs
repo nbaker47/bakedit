@@ -215,8 +215,8 @@ fn html_scripts_and_styles() {
         text,
         &[
             ("<«style»>", "tag"),
-            (".«card»", "property"),
-            ("a:«hover»", "attribute"),
+            (".«card»", "selector.class"),
+            ("a:«hover»", "selector.pseudo"),
             ("«color»:", "property"),
             ("margin: «0»", "number"),
             ("2«px»", "type"),
@@ -380,8 +380,10 @@ index 1111111..2222222 100644
         &[
             ("fix", "keyword"),
             (" a thing", "title"),
-            ("-old line", "keyword"),
-            ("+new line", "string"),
+            // As in Zed, the marker itself is punctuation.
+            ("«-»old line", "punctuation.special"),
+            ("-«old line»", "keyword"),
+            ("+«new line»", "string"),
             ("@@ -1 +1 @@", "attribute"),
         ],
     );

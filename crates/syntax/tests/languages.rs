@@ -88,6 +88,49 @@ fn rust_macro_arguments_are_highlighted_as_rust() {
 }
 
 #[test]
+fn c_and_cpp_follow_zed_where_the_bundled_queries_do_not() {
+    check_captures(
+        "c",
+        "#ifdef _WIN32\nint run(struct io *self) { goto out; out: return self->read(self) % 2 ? 'a' : '\\n'; }\n#endif\n",
+        &[
+            ("#ifdef «_WIN32»", "constant"),
+            ("goto", "keyword"),
+            // In C a function pointer called through a field is a property.
+            ("self->«read»(", "property"),
+            ("«%» 2", "operator"),
+            ("2 «?» 'a'", "operator"),
+            ("'a' «:» '", "operator"),
+            ("'a'", "string"),
+            ("'«\\n»'", "string.escape"),
+        ],
+    );
+    check_captures(
+        "cpp",
+        "struct Point { int x; ~Point(); bool operator==(const Point&) const; };\n\
+         int f(Point* p, Point q) { ASSERT_OK(p); return p->size() + q.size() + a::b::c(); }\n\
+         #if defined(DEBUG)\n#endif\nclass D : public Point { public: int y; };\n",
+        &[
+            // In C++ a method is a function, through `.`, `->` or nested namespaces.
+            ("p->«size»()", "function"),
+            ("q.«size»()", "function"),
+            ("a::b::«c»()", "function.call"),
+            ("~«Point»()", "function"),
+            ("«operator»==", "keyword"),
+            ("operator«==»", "operator"),
+            // A name in capitals is a built-in constant even where it is called.
+            ("«ASSERT_OK»(p)", "constant.builtin"),
+            ("defined(«DEBUG»)", "constant.macro"),
+            ("«defined»(DEBUG)", "keyword.preproc"),
+            ("q«.»size", "operator"),
+            ("a«::»b", "punctuation.delimiter"),
+            ("D «:» public", "punctuation.delimiter"),
+            ("public«:» int y", "punctuation.delimiter"),
+            ("&) «const»;", "keyword"),
+        ],
+    );
+}
+
+#[test]
 fn the_javascript_family_follows_zed_where_the_bundled_queries_do_not() {
     let text = r#"import React, { useState } from "react";
 import type { Store } from "./store";
@@ -715,8 +758,8 @@ fn go() {
             ("«return» float64", "keyword"),
             ("«if» len", "keyword"),
             ("type «Point»", "type"),
-            ("X, Y «int»", "type"),
-            ("Area() «float64»", "type"),
+            ("X, Y «int»", "type.builtin"),
+            ("Area() «float64»", "type.builtin"),
             ("«Name» string", "property"),
             ("p.«X»*", "property"),
             ("point.«Name»)", "property"),
@@ -748,7 +791,8 @@ fn c() {
             ("/* block */", "comment"),
             ("<stdio.h>", "string"),
             ("\"local.h\"", "string"),
-            ("\"%d %s\\n\"", "string"),
+            ("\"«%d %s»", "string"),
+            ("%s«\\n»\"", "string.escape"),
             ("«#include» <stdio.h>", "keyword"),
             ("«#define» LIMIT", "keyword"),
             ("typedef", "keyword"),
@@ -771,7 +815,11 @@ fn c() {
             ("«add»(p.x", "function"),
             (".x = «1»", "number"),
             ("0x1F", "number"),
-            ("'('", "number"),
+            // A character is a string, as in Zed, not a number.
+            ("'('", "string"),
+            ("LIMIT «&&» true", "operator"),
+            ("argc «>» LIMIT", "operator"),
+            ("add(p.x«,» 2)", "punctuation.delimiter"),
             ("true", "boolean"),
             ("int «a», int b", "variable"),
             ("a «+» b", "operator"),
@@ -787,7 +835,7 @@ fn cpp() {
             ("// A comment.", "comment"),
             ("// namespace geo", "comment"),
             ("<string>", "string"),
-            ("R\"(raw text)\"", "string"),
+            ("R\"(«raw text»)\"", "string"),
             ("«#include» <string>", "keyword"),
             ("«namespace» geo {", "keyword"),
             ("template", "keyword"),
@@ -809,12 +857,12 @@ fn cpp() {
             ("auto «twice»", "function"),
             ("int «main»", "function"),
             ("items.«size»()", "function"),
-            ("geo::«twice»(", "function"),
-            ("std::«move»(", "function"),
+            ("geo::«twice»(", "function.call"),
+            ("std::«move»(", "function.call"),
             ("std::string «name_»;", "property"),
             ("kLimit = «10»", "number"),
             ("true", "boolean"),
-            ("«nullptr» ==", "constant"),
+            ("«nullptr» ==", "constant.builtin"),
             ("int «value») ->", "variable"),
         ],
     );
@@ -856,16 +904,17 @@ fn css() {
             ("!important", "keyword"),
             ("«body»,", "tag"),
             ("> «h1»", "tag"),
-            (".«card»", "property"),
-            ("#«main»", "property"),
+            // Selectors are selectors, which the built-in theme leaves plain.
+            (".«card»", "selector.class"),
+            ("#«main»", "selector.id"),
             ("«color»:", "property"),
             ("«margin»:", "property"),
             ("min-width", "property"),
             ("«var»(", "function"),
             ("«calc»(", "function"),
             ("var(«--accent»)", "variable"),
-            (":«hover»", "attribute"),
-            ("::«before»", "attribute"),
+            (":«hover»", "selector.pseudo"),
+            ("::«before»", "selector.pseudo"),
             ("[«href»", "attribute"),
             ("margin: «0»", "number"),
             ("«100»%", "number"),
@@ -1171,14 +1220,20 @@ fn diff() {
     check(
         "diff",
         &[
-            ("diff --git a/src/main.rs b/src/main.rs", "variable.builtin"),
+            ("«diff» --git", "function"),
+            ("diff «--git»", "variable.parameter"),
+            ("«index» 83db48f", "keyword"),
+            ("100644", "number"),
             ("83db48f", "constant"),
             ("bf2a1c3", "constant"),
-            ("--- a/src/main.rs", "keyword"),
-            ("+++ b/src/main.rs", "string"),
+            // The markers are punctuation; what follows them carries the colour.
+            ("«---» a/src/main.rs", "punctuation.special"),
+            ("--- «a/src/main.rs»", "keyword"),
+            ("+++ «b/src/main.rs»", "string"),
             ("@@ -1,4 +1,4 @@", "attribute"),
-            ("-    println!(\"old\");", "keyword"),
-            ("+    println!(\"new\");", "string"),
+            ("«-»    println!(\"old\");", "punctuation.special"),
+            ("-«    println!(\"old\");»", "keyword"),
+            ("+«    println!(\"new\");»", "string"),
             (" fn main() {", ""),
         ],
     );

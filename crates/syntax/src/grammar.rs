@@ -775,6 +775,140 @@ const BASH_EXTRA: &str = r###"
 /// `suspend fun`) is not recognised. A declaration has only one identifier of its own.
 const KOTLIN_EXTRA: &str = "(function_declaration (simple_identifier) @function)\n";
 
+/// tree-sitter-go, where Zed draws Go differently. These go first, because this grammar's
+/// query is written specific-first:
+///
+/// * A name declared with `const` is a constant, and the key of a struct literal a property.
+/// * A method in an interface is a method, a type parameter a type, and the predeclared
+///   types are built-in types.
+const GO_EXTRA: &str = r#"
+(const_spec name: (identifier) @constant)
+(keyed_element . (literal_element (identifier) @property))
+(method_elem name: (field_identifier) @function.method)
+(type_parameter_declaration name: (identifier) @type)
+((type_identifier) @type.builtin
+ (#any-of? @type.builtin
+   "any" "bool" "byte" "comparable" "complex64" "complex128" "error" "float32" "float64" "int"
+   "int8" "int16" "int32" "int64" "rune" "string" "uint" "uint8" "uint16" "uint32" "uint64"
+   "uintptr"))
+((call_expression function: (identifier) @function.builtin)
+ (#any-of? @function.builtin "clear" "max" "min"))
+"#;
+
+/// tree-sitter-c, where Zed draws C differently (C++ takes these too, before its own
+/// patterns):
+///
+/// * A character literal is a string, not a number, and escapes in strings and characters
+///   are escapes.
+/// * `/`, `%`, `?`, `:` and the rest of the operators are operators; `goto` is a keyword.
+/// * A constant may start with underscores (`_WIN32`).
+/// * A function pointer called through a field (`self->input.read(...)`) is a property.
+/// * Attributes, GNU and C23, are attributes.
+const C_EXTRA: &str = r##"
+["constexpr" "goto" "#elifdef" "#elifndef"] @keyword
+[
+  "=" "+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>=" "++" "--" "+" "-" "*" "/" "%" "~" "&"
+  "|" "^" "<<" ">>" "!" "&&" "||" "==" "!=" "<" ">" "<=" ">=" "->" "?" ":"
+] @operator
+"," @punctuation.delimiter
+["{" "}" "(" ")" "[" "]"] @punctuation.bracket
+(char_literal) @string
+(escape_sequence) @string.escape
+((identifier) @constant
+ (#match? @constant "^_*[A-Z][A-Z\\d_]*$"))
+(call_expression function: (identifier) @function)
+(function_declarator declarator: (identifier) @function)
+(preproc_function_def name: (identifier) @function.special)
+(field_identifier) @property
+(attribute_specifier) @attribute
+(attribute_specifier (argument_list (identifier) @attribute))
+(attribute prefix: (identifier) @attribute)
+(attribute name: (identifier) @attribute)
+"##;
+
+/// tree-sitter-cpp, where Zed draws C++ differently. These come last, after C's patterns
+/// and C++'s own:
+///
+/// * A method called through `.` or `->` is a function (in C it is a property), as are a
+///   function reached through nested namespaces, an operator's name and a destructor's.
+/// * A name in capitals is a built-in constant even where it is called, which is how
+///   function-like macros stand out.
+/// * `.`, `.*`, `->*`, `<=>` and the word operators are operators; `:` and `::` are
+///   punctuation except in a conditional expression.
+/// * More keywords, `static_assert`, and `defined` and its argument in a preprocessor
+///   condition.
+const CPP_EXTRA: &str = r#"
+(call_expression (qualified_identifier (identifier) @function.call))
+(call_expression (qualified_identifier (qualified_identifier (identifier) @function.call)))
+(call_expression
+  (qualified_identifier (qualified_identifier (qualified_identifier (identifier) @function.call))))
+(call_expression function: (identifier) @function)
+(call_expression function: (field_expression field: (field_identifier) @function))
+(template_function name: (identifier) @function)
+(template_method name: (field_identifier) @function)
+(function_declarator declarator: (identifier) @function)
+(function_declarator declarator: (qualified_identifier name: (identifier) @function))
+(function_declarator declarator: (field_identifier) @function)
+(operator_name) @function
+(operator_name (identifier) @operator)
+(destructor_name (identifier) @function)
+((identifier) @constant.builtin
+ (#match? @constant.builtin "^_*[A-Z][A-Z\\d_]*$"))
+"static_assert" @function.builtin
+[
+  "alignas" "alignof" "decltype" "operator" "thread_local" "typedef" "struct" "union" "enum"
+  "extern" "inline" "sizeof"
+  (storage_class_specifier)
+  (type_qualifier)
+] @keyword
+(preproc_defined "defined" @keyword.preproc)
+(preproc_defined (identifier) @constant.macro)
+[(null) "nullptr"] @constant.builtin
+[":" "::"] @punctuation.delimiter
+[
+  "." ".*" "->*" "and" "and_eq" "bitand" "bitor" "compl" "not" "not_eq" "or" "or_eq" "xor"
+  "xor_eq"
+] @operator
+"<=>" @operator.spaceship
+(conditional_expression ":" @operator)
+(user_defined_literal (literal_suffix) @operator)
+"#;
+
+/// tree-sitter-css, where Zed draws a style sheet differently:
+///
+/// * Class, id and pseudo selectors are selectors (which the built-in theme leaves plain),
+///   not properties and attributes.
+/// * A plain value (`none`, `bold`), the name of a keyframe and a media keyword are built-in
+///   constants; `and`, `or`, `not` and `only` are keyword operators.
+/// * The `#` of a colour is part of the colour.
+const CSS_EXTRA: &str = r##"
+(id_name) @selector.id
+(class_name) @selector.class
+(pseudo_element_selector "::" (tag_name) @selector.pseudo)
+(pseudo_class_selector ":" (class_name) @selector.pseudo)
+[(plain_value) (keyframes_name) (keyword_query)] @constant.builtin
+(attribute_selector (plain_value) @string)
+(parenthesized_query (keyword_query) @property)
+([(property_name) (plain_value)] @variable
+ (#match? @variable "^--"))
+["and" "or" "not" "only"] @keyword.operator
+["[" "]"] @punctuation.bracket
+"|" @operator
+(color_value "#" @string.special)
+"##;
+
+/// tree-sitter-diff, where Zed draws a patch differently: the `diff` of a command line is a
+/// function and its arguments parameters, a file mode and a similarity score are numbers,
+/// and `index` is a keyword.
+const DIFF_EXTRA: &str = r#"
+(command "diff" @function (argument) @variable.parameter)
+(mode) @number
+(index "index" @keyword)
+(similarity (score) @number "%" @number)
+["+" "++" "+++" "++++" "-" "--" "---" "----" ".."] @punctuation.special
+[(binary_change) (similarity) (file_change)] @label
+"#;
+
 /// tree-sitter-md's block query, where Zed draws a Markdown file differently:
 ///
 /// * The `#` of a heading, the underline of a setext heading and a thematic break are part
@@ -1034,7 +1168,7 @@ pub(crate) static BASH: GrammarSpec = GrammarSpec {
 pub(crate) static GO: GrammarSpec = GrammarSpec {
     name: "go",
     language: || tree_sitter_go::LANGUAGE.into(),
-    highlights: &[TRUE_FALSE_EXTRA, tree_sitter_go::HIGHLIGHTS_QUERY],
+    highlights: &[TRUE_FALSE_EXTRA, GO_EXTRA, tree_sitter_go::HIGHLIGHTS_QUERY],
     injections: &[],
     locals: &[],
     precedence: Precedence::FirstWins,
@@ -1047,7 +1181,7 @@ pub(crate) static GO: GrammarSpec = GrammarSpec {
 pub(crate) static C: GrammarSpec = GrammarSpec {
     name: "c",
     language: || tree_sitter_c::LANGUAGE.into(),
-    highlights: &[tree_sitter_c::HIGHLIGHT_QUERY, TRUE_FALSE_EXTRA],
+    highlights: &[tree_sitter_c::HIGHLIGHT_QUERY, TRUE_FALSE_EXTRA, C_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
@@ -1063,8 +1197,10 @@ pub(crate) static CPP: GrammarSpec = GrammarSpec {
     language: || tree_sitter_cpp::LANGUAGE.into(),
     highlights: &[
         tree_sitter_c::HIGHLIGHT_QUERY,
+        C_EXTRA,
         tree_sitter_cpp::HIGHLIGHT_QUERY,
         TRUE_FALSE_EXTRA,
+        CPP_EXTRA,
     ],
     injections: &[],
     locals: &[],
@@ -1091,7 +1227,7 @@ pub(crate) static HTML: GrammarSpec = GrammarSpec {
 pub(crate) static CSS: GrammarSpec = GrammarSpec {
     name: "css",
     language: || tree_sitter_css::LANGUAGE.into(),
-    highlights: &[tree_sitter_css::HIGHLIGHTS_QUERY],
+    highlights: &[tree_sitter_css::HIGHLIGHTS_QUERY, CSS_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
@@ -1195,7 +1331,7 @@ pub(crate) static KOTLIN: GrammarSpec = GrammarSpec {
 pub(crate) static DIFF: GrammarSpec = GrammarSpec {
     name: "diff",
     language: || tree_sitter_diff::LANGUAGE.into(),
-    highlights: &[tree_sitter_diff::HIGHLIGHTS_QUERY],
+    highlights: &[tree_sitter_diff::HIGHLIGHTS_QUERY, DIFF_EXTRA],
     injections: &[],
     locals: &[],
     precedence: Precedence::LastWins,
@@ -1388,9 +1524,10 @@ mod tests {
     ///
     /// * `embedded` and `none` mark code inside a string or a fence that is *not* string:
     ///   they exist to stop the surrounding colour, so they must not have one.
-    /// * `label` (YAML anchors, goto labels), `lifetime` (Rust's) and `link_text` (the text
-    ///   of a Markdown link, a branch name in a commit message) are in Zed's vocabulary but
-    ///   the theme does not colour them.
+    /// * `label` (YAML anchors, goto labels), `lifetime` (Rust's), `link_text` (the text of a
+    ///   Markdown link, a branch name in a commit message) and `selector.*` (the class, id
+    ///   and pseudo selectors of a style sheet) are in Zed's vocabulary but the theme does
+    ///   not colour them.
     /// * `error` and `text.*` are tree-sitter-make's: a stray `/` in an automatic variable
     ///   and the message of `$(error ...)`, `$(warning ...)` and `$(info ...)`.
     const UNSTYLED: &[&str] = &[
@@ -1399,6 +1536,9 @@ mod tests {
         "label",
         "lifetime",
         "link_text",
+        "selector.class",
+        "selector.id",
+        "selector.pseudo",
         "error",
         "text.danger",
         "text.warning",
