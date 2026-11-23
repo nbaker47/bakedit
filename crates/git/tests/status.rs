@@ -360,6 +360,42 @@ fn rebase_cherry_pick_revert_and_bisect_are_reported() {
 }
 
 #[test]
+fn a_cherry_pick_of_several_commits_stays_in_progress_between_its_commits() {
+    let test = TestRepo::new();
+    test.write("conflict.txt", "base\n");
+    test.commit_all("base");
+    test.git(&["checkout", "--quiet", "-b", "other"]);
+    test.write("conflict.txt", "theirs\n");
+    test.commit_all("first to pick");
+    test.write("later.txt", "later\n");
+    test.commit_all("second to pick");
+    test.git(&["checkout", "--quiet", "main"]);
+    test.write("conflict.txt", "ours\n");
+    test.commit_all("ours");
+
+    assert!(test.try_git(&["cherry-pick", "other~1", "other"]).is_err());
+    assert_eq!(
+        test.repo.status().unwrap().state,
+        Some(RepoState::CherryPicking)
+    );
+
+    // The user resolves the first commit by hand and commits it. The second is still
+    // waiting: git says "cherry-pick in progress", and so do we.
+    test.write("conflict.txt", "resolved\n");
+    test.repo.stage(&["conflict.txt"]).unwrap();
+    test.repo
+        .commit("first, resolved", bakedit_git::CommitOptions::default())
+        .unwrap();
+    let status = test.repo.status().unwrap();
+    assert!(status.is_clean());
+    assert_eq!(status.state, Some(RepoState::CherryPicking));
+
+    test.git(&["cherry-pick", "--continue"]);
+    assert_eq!(test.repo.status().unwrap().state, None);
+    assert!(test.exists("later.txt"));
+}
+
+#[test]
 fn a_cherry_pick_is_reported_in_a_reftable_repository() {
     isolate_git();
     let sandbox = tempfile::tempdir().unwrap();

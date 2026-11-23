@@ -475,6 +475,44 @@ fn the_hunk_of_a_deleted_file_stages_the_deletion_or_brings_the_file_back() {
 }
 
 #[test]
+fn hunks_before_the_first_commit() {
+    let test = TestRepo::new();
+    let base: String = (1..=30).map(|line| format!("line {line}\n")).collect();
+    test.write("early.txt", &base);
+    test.repo.stage(&["early.txt"]).unwrap();
+    let changed = base
+        .replace("line 2\n", "line two\n")
+        .replace("line 29\n", "line twenty-nine\n");
+    test.write("early.txt", &changed);
+
+    let diff = unstaged(&test, "early.txt");
+    assert_eq!(diff.hunks.len(), 2);
+    test.repo.apply_hunk(&diff, 0, HunkAction::Stage).unwrap();
+    assert_eq!(
+        index_content(&test, "early.txt"),
+        base.replace("line 2\n", "line two\n")
+    );
+    test.repo.apply_hunk(&diff, 1, HunkAction::Discard).unwrap();
+    assert_eq!(
+        test.read("early.txt"),
+        base.replace("line 2\n", "line two\n")
+    );
+
+    // What is staged is one new file; unstaging its hunk makes it untracked again.
+    let diff = staged(&test, "early.txt");
+    assert_eq!(diff.status, DiffStatus::Added);
+    test.repo.apply_hunk(&diff, 0, HunkAction::Unstage).unwrap();
+    assert!(
+        test.repo
+            .status()
+            .unwrap()
+            .entry("early.txt")
+            .unwrap()
+            .untracked
+    );
+}
+
+#[test]
 fn hunks_at_the_start_and_end_of_a_file() {
     let test = TestRepo::new();
     let base: String = (1..=30).map(|line| format!("line {line}\n")).collect();

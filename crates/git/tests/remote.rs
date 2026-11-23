@@ -286,6 +286,27 @@ fn publishing_picks_the_push_default_then_origin_then_the_only_remote() {
 }
 
 #[test]
+fn pushing_and_pulling_before_the_first_commit_are_errors_from_git() {
+    let test = TestRepo::new();
+    let remote = test.sandbox().join("origin.git");
+    fs::create_dir_all(&remote).unwrap();
+    git_in(&remote, &["init", "--quiet", "--bare"]);
+    test.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+
+    // Nothing to push yet, nothing to pull from yet; fetching an empty remote is fine.
+    assert!(matches!(
+        test.repo.push(false),
+        Err(GitError::Failed { .. })
+    ));
+    assert!(matches!(
+        test.repo.pull(false),
+        Err(GitError::Failed { .. })
+    ));
+    assert_eq!(test.repo.fetch().unwrap(), "");
+    assert!(test.repo.status().unwrap().is_clean());
+}
+
+#[test]
 fn pushing_a_detached_head_is_an_error_from_git() {
     let test = TestRepo::with_commit();
     test.add_origin();

@@ -357,6 +357,21 @@ fn restore_never_deletes_files_that_only_exist_in_the_work_tree() {
 }
 
 #[test]
+fn restore_before_the_first_commit() {
+    let test = TestRepo::new();
+    test.write("staged.txt", "staged\n");
+    test.repo.stage(&["staged.txt"]).unwrap();
+    test.write("staged.txt", "staged\nand edited\n");
+    test.write("untracked.txt", "untracked\n");
+
+    let outcome = test.repo.restore_all().unwrap();
+    assert_eq!(names(&outcome.restored), ["staged.txt"]);
+    assert_eq!(names(&outcome.untracked), ["untracked.txt"]);
+    assert_eq!(test.read("staged.txt"), "staged\n");
+    assert_eq!(test.read("untracked.txt"), "untracked\n");
+}
+
+#[test]
 fn restore_all_covers_the_whole_work_tree() {
     let test = TestRepo::new();
     test.write("a.txt", "original\n");
@@ -421,6 +436,23 @@ fn the_first_commit() {
         Some("feat: first commit\n\nWith a body.")
     );
     assert!(test.repo.status().unwrap().is_clean());
+}
+
+#[test]
+fn committing_on_a_detached_head() {
+    let test = TestRepo::with_commit();
+    let first = test.head();
+    test.git(&["checkout", "--quiet", "--detach"]);
+    test.write("a.txt", "a\n");
+    test.repo.stage_all().unwrap();
+    let sha = test
+        .repo
+        .commit("on no branch", CommitOptions::default())
+        .unwrap();
+    assert_eq!(sha, test.head());
+    assert_ne!(sha, first);
+    assert_eq!(test.repo.current_branch().unwrap(), None);
+    assert_eq!(test.git(&["rev-parse", "main"]).trim(), first);
 }
 
 #[test]
