@@ -166,7 +166,9 @@ impl Keystroke {
     ///    so a JIS shift+`2` is `"` and not `@`.
     /// 3. Legacy: the key is itself a US shifted symbol with no shift bit, which is how a
     ///    terminal without the kitty protocol sends `{`. It also matches the keystroke
-    ///    written with the unshifted key, `shift-[`.
+    ///    written with the unshifted key, `shift-[`. Not so when the terminal reported a
+    ///    base-layout key: then the symbol really is an unshifted key, like `@` on a JIS
+    ///    keyboard.
     /// 4. Typed character: the event typed one character other than its key (option+`s`
     ///    typing `ß`), the keystroke names that character, and the modifiers are the same
     ///    once shift and alt, which only chose the character, are left out. This is gpui's
@@ -191,7 +193,9 @@ impl Keystroke {
             if shifted.is_some_and(|s| s != c && self.is(mods - Mods::SHIFT, Key::Char(s))) {
                 return true;
             }
-        } else if us_unshifted(c).is_some_and(|u| self.is(mods | Mods::SHIFT, Key::Char(u))) {
+        } else if event.base.is_none()
+            && us_unshifted(c).is_some_and(|u| self.is(mods | Mods::SHIFT, Key::Char(u)))
+        {
             return true;
         }
         let character_mods = Mods::SHIFT | Mods::ALT;
@@ -892,6 +896,17 @@ mod tests {
         assert!(ks("shift-2").matches(&ch('@', NONE)));
         // An unshifted key is never rewritten.
         assert!(!ks("shift-[").matches(&ch('[', NONE)));
+        // A JIS keyboard has `:` and `@` as unshifted keys. A terminal that reports the key's
+        // place on a US layout says as much, and then they are not taken for shifted ones.
+        let mut jis_colon = ch(':', NONE).with_text(":");
+        jis_colon.base = Some('\'');
+        assert!(ks(":").matches(&jis_colon));
+        assert!(!ks("shift-;").matches(&jis_colon));
+        let mut jis_at = ch('@', Mods::CTRL);
+        jis_at.base = Some('[');
+        assert!(ks("ctrl-@").matches(&jis_at));
+        assert!(!ks("ctrl-shift-2").matches(&jis_at));
+        assert!(!ks("ctrl-[").matches(&jis_at));
     }
 
     #[test]
