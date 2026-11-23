@@ -79,25 +79,6 @@ pub enum GitError {
     /// range, the file is binary or conflicted, or the action would delete a file.
     #[error("{0}")]
     InvalidHunk(String),
-
-    /// A file in the work tree could not be read.
-    #[error("could not read {}: {source}", .path.display())]
-    Io {
-        /// The file that could not be read.
-        path: PathBuf,
-        /// The underlying error.
-        #[source]
-        source: io::Error,
-    },
-
-    /// git answered with something this crate does not understand.
-    #[error("unexpected output from git {command}: {detail}")]
-    UnexpectedOutput {
-        /// The git subcommand that produced the output.
-        command: String,
-        /// What was wrong with it.
-        detail: String,
-    },
 }
 
 impl GitError {
