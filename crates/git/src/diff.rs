@@ -632,7 +632,9 @@ fn parse_mode(text: &[u8]) -> Option<u32> {
 
 impl Repo {
     /// The changes between two of `HEAD`, the index and the work tree, one [`FileDiff`]
-    /// per changed file, sorted by path.
+    /// per changed file, sorted by path. (A file whose type changed, from a regular file
+    /// to a symbolic link say, is the exception: git reports it twice, as a deletion and
+    /// an addition.)
     ///
     /// [`DiffTarget::HeadToWorktree`] ends with the untracked files (ignored files left
     /// out), each shown as one hunk that adds every line. An untracked file that is
