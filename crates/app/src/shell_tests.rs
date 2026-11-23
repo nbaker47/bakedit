@@ -19,7 +19,7 @@ use crate::ui::{Canvas, Style};
 use crate::view::{Context, Cursor, Cx, Effect, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View};
 use crate::workspace::{DockPosition, Focus, PanelId, Zoomed};
 
-type Log = Rc<RefCell<Vec<String>>>;
+pub(crate) type Log = Rc<RefCell<Vec<String>>>;
 
 struct FakePanel {
     name: &'static str,
@@ -35,7 +35,8 @@ impl View for FakePanel {
         None
     }
     fn contexts(&self, out: &mut Vec<Context>) {
-        out.push(Context::new(self.name));
+        // The real tree says whether a name is being edited; the keymap keys off it.
+        out.push(Context::new(self.name).flag_if(self.name == "ProjectPanel", "not_editing"));
     }
     fn handle_action(&mut self, action: &Action, _: &mut Cx<'_>) -> bool {
         self.log.borrow_mut().push(format!("{} action {} {}", self.name, action.name, action.args.clone().unwrap_or(json!(null))));
@@ -95,7 +96,7 @@ impl PickerSource for Source {
     }
 }
 
-fn shell() -> (Shell, Log) {
+pub(crate) fn shell() -> (Shell, Log) {
     let log: Log = Rc::default();
     let mut shell = Shell::new(
         Settings::default(),
@@ -125,11 +126,11 @@ fn frame(shell: &mut Shell, width: u16, height: u16) -> String {
     crate::dump::to_text(&buf)
 }
 
-fn fake(shell: &Shell, index: usize) -> &FakeItem {
+pub(crate) fn fake(shell: &Shell, index: usize) -> &FakeItem {
     shell.pane.item(index).unwrap().as_any().downcast_ref::<FakeItem>().unwrap()
 }
 
-fn fake_mut(shell: &mut Shell, index: usize) -> &mut FakeItem {
+pub(crate) fn fake_mut(shell: &mut Shell, index: usize) -> &mut FakeItem {
     shell.pane.item_mut(index).unwrap().as_any_mut().downcast_mut::<FakeItem>().unwrap()
 }
 

@@ -10,6 +10,7 @@ pub mod fuzzy;
 pub mod hints;
 pub mod host;
 pub mod ipc;
+pub mod keys;
 pub mod layout;
 pub mod line_input;
 pub mod minimap;
@@ -26,3 +27,6 @@ pub mod workspace;
 
 #[cfg(test)]
 mod shell_tests;
+
+#[cfg(test)]
+mod keys_tests;

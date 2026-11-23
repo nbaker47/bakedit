@@ -315,6 +315,8 @@ pub(crate) mod test_support {
         /// Actions this item claims, and a log of the ones it was offered.
         pub handles: Vec<&'static str>,
         pub seen: Vec<String>,
+        /// The key context it reports ("Fake" unless a test wants it to pass for an editor).
+        pub context: &'static str,
     }
 
     impl FakeItem {
@@ -329,6 +331,7 @@ pub(crate) mod test_support {
                 saves: 0,
                 handles: Vec::new(),
                 seen: Vec::new(),
+                context: "Fake",
             })
         }
 
@@ -353,7 +356,7 @@ pub(crate) mod test_support {
             None
         }
         fn contexts(&self, out: &mut Vec<Context>) {
-            out.push(Context::new("Fake"));
+            out.push(Context::new(self.context).value("mode", "full"));
         }
         fn handle_action(&mut self, action: &Action, _: &mut Cx<'_>) -> bool {
             self.seen.push(action.name.clone());
