@@ -171,6 +171,35 @@ impl Repo {
         Ok((output.code == Some(0)).then(|| output.line_text()))
     }
 
+    /// Best-guess default base ref for branch diffs (`origin/HEAD` target such as
+    /// `origin/main`, else `origin/main`, `origin/master`, `main`, or `master`).
+    pub fn default_base_ref(&self) -> Option<String> {
+        if let Ok(out) = self
+            .git()
+            .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+            .probe()
+        {
+            if out.code == Some(0) {
+                let name = out.line_text();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        for candidate in ["origin/main", "origin/master", "main", "master"] {
+            let rev = format!("{candidate}^{{commit}}");
+            if self
+                .git()
+                .args(["rev-parse", "--quiet", "--verify", &rev])
+                .probe()
+                .is_ok_and(|out| out.code == Some(0))
+            {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    }
+
     /// A git command that runs at the top of this work tree.
     pub(crate) fn git(&self) -> Git<'_> {
         Git::new(&self.root)

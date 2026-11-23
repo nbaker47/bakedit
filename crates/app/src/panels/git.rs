@@ -34,14 +34,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bakedit_core::{Action, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb, Theme};
-use bakedit_git::{CommitOptions, DiffTarget, DisplayStatus, FileState, GitError, RepoState, StageState, Status, StatusEntry};
+use bakedit_git::{CommitOptions, DiffStatus, DiffTarget, DisplayStatus, FileState, GitError, RepoState, StageState, Status, StatusEntry};
 use bakedit_text::{Buffer, Clipboard as TextClipboard, ClipboardPiece, Command, DisplayPosition, EditSettings, Editor, Motion};
 use ratatui::layout::Rect;
 use serde_json::json;
 
 use crate::background::Task;
 use crate::paint::{self, PaintOptions, Row, ScrollMarks};
-use crate::project::Project;
+use crate::project::{DiffBase, Project};
 use crate::settings::Icons;
 use crate::ui::{self, Canvas, Style};
 use crate::view::{Context, Cursor, CursorShape, Cx, Effect, FsChange, Question, RenderCx, View};
@@ -148,6 +148,10 @@ pub struct GitPanel {
     counts_task: Option<Task<HashMap<PathBuf, (usize, usize)>>>,
     counts_stale: bool,
     counts_started: Option<Instant>,
+    /// Active diff base (`Uncommitted` vs `Branch(ref_name)`) and background loader for branch diffs.
+    diff_base: DiffBase,
+    branch_task: Option<Task<Result<(Vec<Change>, HashMap<PathBuf, (usize, usize)>), String>>>,
+    branch_stale: bool,
 
     message: Editor,
     /// First visual row of the message shown.
@@ -160,6 +164,7 @@ pub struct GitPanel {
     // Where things were drawn, for the mouse.
     repo_button: Rect,
     branch_button: Rect,
+    mode_button: Rect,
     list_area: Rect,
     message_area: Rect,
     /// The rows of the message box that hold text (the band minus its padding).
@@ -396,6 +401,9 @@ impl GitPanel {
             counts_task: None,
             counts_stale: true,
             counts_started: None,
+            diff_base: cx.project.diff_base().clone(),
+            branch_task: None,
+            branch_stale: true,
             message: message_editor(""),
             message_top: 0,
             reveal_message: false,
@@ -404,6 +412,7 @@ impl GitPanel {
             pending: Vec::new(),
             repo_button: Rect::default(),
             branch_button: Rect::default(),
+            mode_button: Rect::default(),
             list_area: Rect::default(),
             message_area: Rect::default(),
             message_text: Rect::default(),
@@ -417,16 +426,36 @@ impl GitPanel {
 
     // ---- the list --------------------------------------------------------------------
 
-    /// Rebuild the list when the project has a newer status. Returns true if it changed.
+    /// Rebuild the list when the project has a newer status or diff base. Returns true if it changed.
     fn refresh(&mut self, project: &Project) -> bool {
         let generation = project.git_generation();
         let status = project.status().cloned();
+        let diff_base = project.diff_base().clone();
+        let base_changed = self.diff_base != diff_base;
         let same = status.as_ref().map(Arc::as_ptr) == self.status.as_ref().map(Arc::as_ptr);
-        if self.generation == Some(generation) && same {
+        if self.generation == Some(generation) && same && !base_changed {
             return false;
         }
         self.generation = Some(generation);
-        if same {
+        self.status = status.clone();
+        if base_changed {
+            self.diff_base = diff_base;
+            self.branch_task = None;
+            self.branch_stale = true;
+            self.counts_stale = true;
+            if matches!(self.diff_base, DiffBase::Branch(_)) {
+                self.changes.clear();
+                self.counts.clear();
+                self.selected = 0;
+                self.selected_path = None;
+                return true;
+            }
+        }
+        if matches!(self.diff_base, DiffBase::Branch(_)) {
+            self.branch_stale = true;
+            return true;
+        }
+        if same && !base_changed {
             return false;
         }
         self.counts_stale = true;
@@ -443,8 +472,12 @@ impl GitPanel {
             Group::Tracked => 1,
             Group::Untracked => 2,
         });
+        self.apply_changes(changes);
+        true
+    }
+
+    fn apply_changes(&mut self, changes: Vec<Change>) {
         self.changes = changes;
-        self.status = status;
         // The selection stays on its file when the list is rebuilt under it.
         let kept = self.selected_path.as_ref().and_then(|path| self.changes.iter().position(|change| &change.path == path));
         match kept {
@@ -452,7 +485,6 @@ impl GitPanel {
             None => self.selected = self.selected.min(self.changes.len().saturating_sub(1)),
         }
         self.selected_path = self.changes.get(self.selected).map(|change| change.path.clone());
-        true
     }
 
     fn list_rows(&self) -> Vec<ListRow> {
@@ -785,6 +817,10 @@ impl GitPanel {
     // ---- counts of added and removed lines -------------------------------------------
 
     fn kick_counts(&mut self, project: &Project) {
+        if matches!(self.diff_base, DiffBase::Branch(_)) {
+            self.kick_branch_diff(project);
+            return;
+        }
         if self.counts_task.is_some() || !self.counts_stale {
             return;
         }
@@ -809,6 +845,48 @@ impl GitPanel {
                 }
             }
             counts
+        }));
+    }
+
+    fn kick_branch_diff(&mut self, project: &Project) {
+        if self.branch_task.is_some() || !self.branch_stale {
+            return;
+        }
+        let DiffBase::Branch(base_ref) = &self.diff_base else { return };
+        let Some(repo) = project.repo().cloned() else {
+            self.branch_stale = false;
+            return;
+        };
+        let base_ref = base_ref.clone();
+        let status_snapshot = self.status.clone();
+        self.branch_stale = false;
+        self.branch_task = Some(project.spawn(move || {
+            let files = repo.diff_against_ref(&base_ref).map_err(|error| error.to_string())?;
+            let mut counts = HashMap::new();
+            let mut changes = Vec::with_capacity(files.len());
+            for file in files {
+                counts.insert(file.path.clone(), (file.additions(), file.deletions()));
+                let (status, group) = match file.status {
+                    DiffStatus::Added => (DisplayStatus::Added, Group::Tracked),
+                    DiffStatus::Deleted => (DisplayStatus::Deleted, Group::Tracked),
+                    DiffStatus::Modified => (DisplayStatus::Modified, Group::Tracked),
+                    DiffStatus::Renamed | DiffStatus::Copied => (DisplayStatus::Renamed, Group::Tracked),
+                    DiffStatus::Untracked => (DisplayStatus::Untracked, Group::Untracked),
+                    DiffStatus::Conflicted => (DisplayStatus::Conflict, Group::Conflicts),
+                };
+                let stage = status_snapshot
+                    .as_deref()
+                    .and_then(|st| st.entry(&file.path))
+                    .map(StatusEntry::stage_state)
+                    .unwrap_or(StageState::Unstaged);
+                changes.push(Change { path: file.path, status, stage, group });
+            }
+            changes.sort_by_key(|change| match change.group {
+                Group::Conflicts => 0,
+                Group::Tracked => 1,
+                Group::Untracked => 2,
+            });
+            Ok((changes, counts))
         }));
     }
 
@@ -948,13 +1026,16 @@ impl GitPanel {
             }
             return;
         };
-        // The right side: the job that is running, else how many files changed.
-        let right = match cx.project.busy() {
-            Some(job) => format!("{job}…"),
-            None => match self.changes.len() {
-                0 => String::new(),
-                1 => "1 change".to_string(),
-                n => format!("{n} changes"),
+        // The right side: the job that is running, else the active diff base / change count.
+        let (right, right_accent) = match cx.project.busy() {
+            Some(job) => (format!("{job}…"), false),
+            None => match &self.diff_base {
+                DiffBase::Branch(base) => (format!("vs {base} ▾"), true),
+                DiffBase::Uncommitted => match self.changes.len() {
+                    0 => ("Uncommitted ▾".to_string(), false),
+                    1 => ("1 change ▾".to_string(), false),
+                    n => (format!("{n} changes ▾"), false),
+                },
             },
         };
         let right_width = ui::width(&right) as u16;
@@ -1011,7 +1092,13 @@ impl GitPanel {
             put(canvas, &mut x, "  upstream gone", Style::colors(theme.warning, bg));
         }
         if !right.is_empty() {
-            canvas.text_right(area.right() - 1, area.y, &right, Style::colors(theme.text_muted, bg));
+            let color = if right_accent { theme.text_accent } else { theme.text_muted };
+            let style = if right_accent { Style::colors(color, bg).bold() } else { Style::colors(color, bg) };
+            canvas.text_right(area.right() - 1, area.y, &right, style);
+            if cx.project.busy().is_none() {
+                let x = (area.right() - 1).saturating_sub(right_width);
+                self.mode_button = Rect::new(x, area.y, right_width, 1);
+            }
         }
     }
 
@@ -1024,6 +1111,13 @@ impl GitPanel {
         if cx.project.repo().is_none() {
             lines.push(("Not a git repository".to_string(), text));
             lines.push(("Run git init in the terminal to track changes".to_string(), muted));
+        } else if let DiffBase::Branch(base) = &self.diff_base {
+            if self.branch_task.is_some() || self.branch_stale {
+                lines.push((format!("Comparing against {base}…"), muted));
+            } else {
+                lines.push((format!("No changes since {base}"), text));
+                lines.push(("Press ctrl-g b or click the header to switch back to uncommitted changes".to_string(), muted));
+            }
         } else if let Some(status) = &self.status {
             lines.push(("No changes".to_string(), text));
             lines.push(("Everything is committed. Edit a file and it appears here".to_string(), muted));
@@ -1250,6 +1344,7 @@ impl View for GitPanel {
         canvas.fill(area, theme.panel_bg);
         self.repo_button = Rect::default();
         self.branch_button = Rect::default();
+        self.mode_button = Rect::default();
         self.list_area = Rect::default();
         self.message_area = Rect::default();
         self.message_text = Rect::default();
@@ -1381,6 +1476,10 @@ impl View for GitPanel {
                     cx.push(Effect::Dispatch(Action::new("branches::OpenRecent")));
                     return true;
                 }
+                if inside(self.mode_button) {
+                    cx.push(Effect::Dispatch(Action::new("git::SelectDiffBase")));
+                    return true;
+                }
                 if inside(self.commit_button) {
                     return self.handle_action(&Action::new(if self.amending.is_some() { "git::Amend" } else { "git::Commit" }), cx);
                 }
@@ -1440,6 +1539,22 @@ impl View for GitPanel {
         if self.counts_task.as_ref().is_some_and(Task::is_finished) {
             self.counts_task = None;
         }
+        if let Some(loaded) = self.branch_task.as_mut().and_then(Task::poll) {
+            self.branch_task = None;
+            if matches!(self.diff_base, DiffBase::Branch(_)) {
+                match loaded {
+                    Ok((changes, counts)) => {
+                        self.counts = counts;
+                        self.apply_changes(changes);
+                    }
+                    Err(error) => cx.error(format!("Branch diff failed: {error}")),
+                }
+                dirty = true;
+            }
+        }
+        if self.branch_task.as_ref().is_some_and(Task::is_finished) {
+            self.branch_task = None;
+        }
         self.kick_counts(cx.project);
         if let Some(loaded) = self.amend_load.as_mut().and_then(Task::poll) {
             self.amend_load = None;
@@ -1472,6 +1587,7 @@ impl View for GitPanel {
         // A file that was already modified and is edited again changes no status.
         if change.rescan || change.paths.iter().any(|path| cx.project.git_path(path).is_some()) {
             self.counts_stale = true;
+            self.branch_stale = true;
             self.kick_counts(cx.project);
         }
     }

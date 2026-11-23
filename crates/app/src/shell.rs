@@ -333,6 +333,7 @@ impl Shell {
                     PickerKind::Outline => "Outline",
                     PickerKind::Branches => "GitBranchSelector",
                     PickerKind::Repositories => "GitRepoSelector",
+                    PickerKind::DiffBase => "GitDiffBaseSelector",
                     PickerKind::Links => "LinkPicker",
                     PickerKind::RecentProjects => "RecentProjects",
                 }));
@@ -698,6 +699,11 @@ impl Shell {
             "outline::Toggle" => self.toggle_picker(PickerKind::Outline),
             "branches::OpenRecent" => self.toggle_picker(PickerKind::Branches),
             "git::SelectRepository" => self.toggle_picker(PickerKind::Repositories),
+            "git::SelectDiffBase" => self.toggle_picker(PickerKind::DiffBase),
+            "git::ToggleBranchDiff" => {
+                let msg = self.project.toggle_branch_diff();
+                self.set_status(msg, false);
+            }
             "terminal::OpenLinks" => self.toggle_picker(PickerKind::Links),
             "projects::OpenRecent" => self.toggle_picker(PickerKind::RecentProjects),
             "go_to_line::Toggle" => {
@@ -1081,6 +1087,7 @@ impl Shell {
             PickerKind::Outline => "Go to symbol",
             PickerKind::Branches => "Switch branch",
             PickerKind::Repositories => "Select repository",
+            PickerKind::DiffBase => "Diff base (uncommitted or branch)",
             PickerKind::Links => "Open a path or link from the terminal",
             PickerKind::RecentProjects => "Open a recent project",
         };
@@ -1093,6 +1100,7 @@ impl Shell {
             PickerKind::Outline => "No matching symbols",
             PickerKind::Branches => "No matching branches",
             PickerKind::Repositories => "No git repositories found in this folder",
+            PickerKind::DiffBase => "No matching branches",
             PickerKind::Links if self.view_rows.is_empty() => "No paths or links on screen: they appear here when a program prints one",
             PickerKind::Links => "No matching paths or links",
             PickerKind::RecentProjects => "No recent projects",
@@ -1509,6 +1517,14 @@ impl Shell {
             Effect::SelectRepo(root) => {
                 self.project.select_repo(&root);
                 self.git = self.project.git_summary();
+            }
+            Effect::SetDiffBase(base) => {
+                let (target, msg) = match base {
+                    Some(name) => (crate::project::DiffBase::Branch(name.clone()), format!("Diff: branch vs {name}")),
+                    None => (crate::project::DiffBase::Uncommitted, "Diff: uncommitted changes".to_string()),
+                };
+                self.project.set_diff_base(target);
+                self.set_status(msg, false);
             }
             Effect::Quit => self.request_quit(None),
         }

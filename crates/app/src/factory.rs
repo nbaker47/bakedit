@@ -61,13 +61,14 @@ pub struct AppSource {
     files: Vec<FileRow>,
     branches: Vec<String>,
     repos: Vec<PathBuf>,
+    diff_bases: Vec<Option<String>>,
     projects: Vec<PathBuf>,
 }
 
 impl AppSource {
     /// A source that keeps the recent projects in `state_dir`.
     pub fn new(state_dir: PathBuf) -> AppSource {
-        AppSource { state_dir, files: Vec::new(), branches: Vec::new(), repos: Vec::new(), projects: Vec::new() }
+        AppSource { state_dir, files: Vec::new(), branches: Vec::new(), repos: Vec::new(), diff_bases: Vec::new(), projects: Vec::new() }
     }
 
     fn file_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
@@ -159,6 +160,38 @@ impl AppSource {
             .collect()
     }
 
+    fn diff_base_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
+        self.diff_bases.clear();
+        let active = cx.project.diff_base();
+        let mut entries: Vec<(Option<String>, String, Option<String>, bool)> = vec![(
+            None,
+            "Uncommitted changes".to_string(),
+            Some("staged & unstaged vs HEAD".to_string()),
+            *active == crate::project::DiffBase::Uncommitted,
+        )];
+        if let Some(branches) = cx.project.branches() {
+            for branch in branches.iter() {
+                let is_active = matches!(active, crate::project::DiffBase::Branch(b) if b == &branch.name);
+                let detail = if branch.subject.is_empty() { None } else { Some(branch.subject.clone()) };
+                entries.push((Some(branch.name.clone()), branch.name.clone(), detail, is_active));
+            }
+        }
+        let labels: Vec<&str> = entries.iter().map(|(_, label, _, _)| label.as_str()).collect();
+        fuzzy::filter(labels, query)
+            .into_iter()
+            .map(|found| {
+                let (value, label, detail, is_active) = &entries[found.index];
+                self.diff_bases.push(value.clone());
+                let mut item = PickerItem::new(label.clone()).matched(found.positions);
+                item.detail = detail.clone();
+                if *is_active {
+                    item.hint = Some("active".to_string());
+                }
+                item
+            })
+            .collect()
+    }
+
     fn project_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
         let home = dirs::home_dir();
         let shown = |path: &Path| match home.as_deref().and_then(|home| path.strip_prefix(home).ok()) {
@@ -203,6 +236,7 @@ impl PickerSource for AppSource {
             PickerKind::FileFinder => self.file_rows(query, cx),
             PickerKind::Branches => self.branch_rows(query, cx),
             PickerKind::Repositories => self.repo_rows(query, cx),
+            PickerKind::DiffBase => self.diff_base_rows(query, cx),
             PickerKind::RecentProjects => self.project_rows(query, cx),
             // The shell and the views fill the others.
             PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links => Vec::new(),
@@ -249,6 +283,17 @@ impl PickerSource for AppSource {
                     cx.push(Effect::SelectRepo(path));
                 }
             }
+            (PickerKind::DiffBase, Some(row)) => {
+                if let Some(base) = self.diff_bases.get(row).cloned() {
+                    cx.push(Effect::SetDiffBase(base));
+                }
+            }
+            (PickerKind::DiffBase, None) => {
+                let name = query.trim();
+                if !name.is_empty() {
+                    cx.push(Effect::SetDiffBase(Some(name.to_string())));
+                }
+            }
             (PickerKind::RecentProjects, Some(row)) => {
                 if let Some(path) = self.projects.get(row).cloned() {
                     cx.push(Effect::OpenProject(path));
@@ -276,6 +321,7 @@ impl PickerSource for AppSource {
             PickerKind::FileFinder => cx.project.index_generation(),
             PickerKind::Branches => cx.project.branches_version(),
             PickerKind::Repositories => cx.project.repos_version(),
+            PickerKind::DiffBase => cx.project.branches_version().wrapping_add(cx.project.git_generation()),
             _ => 0,
         }
     }

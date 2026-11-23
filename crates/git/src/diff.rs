@@ -651,6 +651,25 @@ impl Repo {
         self.diff_paths(target, &[])
     }
 
+    /// All changes in the current branch and work tree relative to `base_ref` (using the
+    /// merge-base of `base_ref` and `HEAD`, plus untracked files), matching Zed's
+    /// "Changes since <base>" branch diff.
+    pub fn diff_against_ref(&self, base_ref: &str) -> Result<Vec<FileDiff>> {
+        let base = match self.git().args(["merge-base", base_ref, "HEAD"]).probe() {
+            Ok(out) if out.code == Some(0) && !out.line_text().is_empty() => out.line_text(),
+            _ => base_ref.to_string(),
+        };
+        let output = self
+            .git()
+            .args(DIFF_OPTIONS)
+            .arg(&base)
+            .arg("--")
+            .run()?;
+        let mut files = parse_diff(&output.stdout);
+        files.extend(self.untracked_diffs(&[])?);
+        Ok(files)
+    }
+
     /// The changes to one file, or `None` when it does not differ between the two
     /// versions `target` names.
     ///

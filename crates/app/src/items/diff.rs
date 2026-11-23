@@ -108,6 +108,7 @@ pub struct ProjectDiff {
     task: Option<Task<Result<Loaded, String>>>,
     /// The git generation the diff was last read at.
     generation: Option<u64>,
+    diff_base: crate::project::DiffBase,
     /// Files changed on disk since the diff was read.
     stale: bool,
     error: Option<String>,
@@ -252,6 +253,7 @@ impl ProjectDiff {
             number_width: 3,
             task: None,
             generation: None,
+            diff_base: cx.project.diff_base().clone(),
             stale: true,
             error: None,
             cursor: 0,
@@ -286,7 +288,15 @@ impl ProjectDiff {
         };
         self.generation = Some(generation);
         self.stale = false;
-        self.task = Some(cx.project.spawn(move || repo.diff_files(DiffTarget::HeadToWorktree).map(build).map_err(|error| error.to_string())));
+        let base = cx.project.diff_base().clone();
+        self.diff_base = base.clone();
+        self.task = Some(cx.project.spawn(move || {
+            let result = match &base {
+                crate::project::DiffBase::Uncommitted => repo.diff_files(DiffTarget::HeadToWorktree),
+                crate::project::DiffBase::Branch(ref_name) => repo.diff_against_ref(ref_name),
+            };
+            result.map(build).map_err(|error| error.to_string())
+        }));
     }
 
     fn anchor(&self) -> Option<Anchor> {
@@ -841,7 +851,11 @@ impl Item for ProjectDiff {
             Icons::Nerd => Some(("\u{f1d3}".to_string(), cx.theme.modified)),
             Icons::Ascii => None,
         };
-        Tab { title: "Project Diff".to_string(), icon, ..Default::default() }
+        let title = match &self.diff_base {
+            crate::project::DiffBase::Uncommitted => "Project Diff".to_string(),
+            crate::project::DiffBase::Branch(base) => format!("Diff vs {base}"),
+        };
+        Tab { title, icon, ..Default::default() }
     }
 
     fn as_any(&self) -> &dyn Any {

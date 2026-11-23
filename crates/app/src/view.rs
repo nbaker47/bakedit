@@ -122,6 +122,9 @@ pub enum Effect {
     /// Switch the active git repository in a multi-repo workspace (without changing the
     /// open project root).
     SelectRepo(PathBuf),
+    /// Switch the git diff base between uncommitted changes (`None`) and a branch/ref
+    /// (`Some(ref_name)`).
+    SetDiffBase(Option<String>),
     Quit,
 }
 
@@ -338,6 +341,7 @@ pub enum PickerKind {
     Outline,
     Branches,
     Repositories,
+    DiffBase,
     /// Paths and URLs visible in the terminal.
     Links,
     RecentProjects,

@@ -95,6 +95,8 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("git::RestoreTrackedFiles", None, Some("git: discard all tracked changes")),
     ("git::TrashUntrackedFiles", None, None),
     ("git::SelectRepository", None, Some("git: select repository")),
+    ("git::ToggleBranchDiff", None, Some("git: toggle branch diff (vs main)")),
+    ("git::SelectDiffBase", None, Some("git: select diff base (uncommitted or branch)")),
     ("branches::OpenRecent", None, Some("git: switch branch")),
     // Editing
     ("editor::Undo", None, None),

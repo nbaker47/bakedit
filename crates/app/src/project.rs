@@ -58,6 +58,17 @@ pub struct DiscoveredRepo {
     pub label: String,
 }
 
+/// Which base the git panel and project diff compare the work tree against.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DiffBase {
+    /// Staged, unstaged, and untracked changes against `HEAD` (default).
+    #[default]
+    Uncommitted,
+    /// All changes in the current branch and work tree since the merge-base with this ref
+    /// (for example `origin/main` or `main`).
+    Branch(String),
+}
+
 /// Git facts for the status bar.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitSummary {
@@ -175,6 +186,7 @@ pub struct Project {
     repos_version: u64,
     repo: Option<Repo>,
     git_top: Option<PathBuf>,
+    diff_base: DiffBase,
     status: Option<Arc<Status>>,
     /// Entry index by path relative to the top of the work tree.
     status_index: HashMap<PathBuf, usize>,
@@ -412,6 +424,7 @@ impl Project {
             repos_version: 0,
             repo: None,
             git_top: None,
+            diff_base: DiffBase::Uncommitted,
             status: None,
             status_index: HashMap::new(),
             git_generation: 0,
@@ -496,6 +509,7 @@ impl Project {
         }
         self.repo = next_repo;
         self.git_top = next_top;
+        self.diff_base = DiffBase::Uncommitted;
         self.status = None;
         self.status_index.clear();
         self.bases.borrow_mut().clear();
@@ -511,6 +525,36 @@ impl Project {
         if let Some(link) = &self.link {
             link.progress.requested.fetch_add(1, Ordering::SeqCst);
             let _ = link.status_requests.send(StatusCmd::SelectRepo(repo_root.to_path_buf()));
+        }
+    }
+
+    /// What the git panel and project diff compare the work tree against.
+    pub fn diff_base(&self) -> &DiffBase {
+        &self.diff_base
+    }
+
+    /// Change the diff base and bump `git_generation` so the git panel and diff view reload.
+    pub fn set_diff_base(&mut self, base: DiffBase) {
+        if self.diff_base == base {
+            return;
+        }
+        self.diff_base = base;
+        self.git_generation += 1;
+    }
+
+    /// Toggle between uncommitted changes (`HEAD`) and a branch diff against the repo's
+    /// default base ref (`origin/main`, `main`, etc.). Returns a short status description.
+    pub fn toggle_branch_diff(&mut self) -> String {
+        match &self.diff_base {
+            DiffBase::Branch(_) => {
+                self.set_diff_base(DiffBase::Uncommitted);
+                "Diff: uncommitted changes".to_string()
+            }
+            DiffBase::Uncommitted => {
+                let base = self.repo.as_ref().and_then(Repo::default_base_ref).unwrap_or_else(|| "main".to_string());
+                self.set_diff_base(DiffBase::Branch(base.clone()));
+                format!("Diff: branch vs {base}")
+            }
         }
     }
 
