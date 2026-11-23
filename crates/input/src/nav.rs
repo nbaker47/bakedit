@@ -227,6 +227,13 @@ impl NavLayer {
     /// text keys are too).
     pub const REQUIRED_KITTY_FLAGS: u8 = host::KITTY_EVENT_TYPES | host::KITTY_ALL_KEYS;
 
+    /// Whether the layer can work with these kitty keyboard flags active on the terminal:
+    /// true when all of [`REQUIRED_KITTY_FLAGS`](NavLayer::REQUIRED_KITTY_FLAGS) are among
+    /// them.
+    pub fn works_with(kitty_flags: u8) -> bool {
+        kitty_flags & NavLayer::REQUIRED_KITTY_FLAGS == NavLayer::REQUIRED_KITTY_FLAGS
+    }
+
     /// A layer with this configuration, with the trigger up.
     pub fn new(config: NavLayerConfig) -> NavLayer {
         NavLayer {

@@ -98,6 +98,13 @@ fn the_default_mapping_is_the_karabiner_rule() {
     assert_eq!(config.tap_passthrough, Mods::SUPER | Mods::ALT);
     assert_eq!(config.alone_timeout, Duration::from_millis(1000));
     assert_eq!(NavLayer::REQUIRED_KITTY_FLAGS, 2 | 8);
+    for flags in 0..=255u8 {
+        assert_eq!(
+            NavLayer::works_with(flags),
+            flags & 2 != 0 && flags & 8 != 0,
+            "{flags}"
+        );
+    }
     assert_eq!(NavLayer::new(config.clone()).config(), &config);
 }
 

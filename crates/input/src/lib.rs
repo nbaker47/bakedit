@@ -37,6 +37,18 @@
 //! let lines: Vec<String> = keys.into_iter().map(|ev| describe(&InputEvent::Key(ev))).collect();
 //! assert_eq!(lines, ["key press   up"]);
 //! ```
+//!
+//! # What the terminal can do decides two things
+//!
+//! At startup the app writes [`host::enter_sequence`], which ends with a round of queries.
+//! The terminal's `KittyKeyboardFlags` reply (or its absence by the time the
+//! `DeviceAttributes` reply arrives) says which keyboard flags took effect. The app passes
+//! those flags to [`Parser::set_kitty_flags`], and switches the nav layer on only if
+//! [`NavLayer::works_with`] them: the layer cannot work without key releases, and a
+//! terminal that does not report them would leave it on after the first `;`.
+//!
+//! When the terminal loses focus the app calls [`NavLayer::reset`] and
+//! [`HeldMods::clear`], because the releases of whatever was held may never arrive.
 
 #![warn(missing_docs)]
 

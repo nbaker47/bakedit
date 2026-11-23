@@ -89,9 +89,8 @@ impl App {
                 }
                 InputEvent::Reply(TerminalReply::KittyKeyboardFlags(flags)) => {
                     self.parser.set_kitty_flags(flags);
-                    let required = NavLayer::REQUIRED_KITTY_FLAGS;
-                    self.keys
-                        .extend(self.nav.set_enabled(flags & required == required));
+                    let on = NavLayer::works_with(flags);
+                    self.keys.extend(self.nav.set_enabled(on));
                     self.log.push(line);
                 }
                 _ => self.log.push(line),
