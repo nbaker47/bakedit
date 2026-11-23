@@ -329,6 +329,30 @@ fn zed_settings_path() -> PathBuf {
     config_home().join("zed").join("settings.json")
 }
 
+/// The text of a configuration file that does not exist yet, written when the user first
+/// opens it (`zed::OpenSettingsFile`, `zed::OpenKeymap`).
+///
+/// For `settings.json` it is a copy of Zed's settings when `zed_settings` can be read:
+/// bakedit has been reading that file until now and reads only its own once it exists, so
+/// starting from a copy changes nothing. Otherwise, and for `keymap.json` (which is loaded
+/// after the built-in keymap and so may start empty), a short note on the format around an
+/// empty object or list.
+pub fn first_version(name: &str, zed_settings: Option<&Path>) -> String {
+    if name == "keymap.json" {
+        return "// bakedit's own key bindings, in Zed's keymap format: https://zed.dev/docs/key-bindings\n\
+                // They are read after the built-in keymap (zed: open default keymap), so they win.\n\
+                // Set a key to null to switch a built-in binding off.\n[\n]\n"
+            .to_string();
+    }
+    match zed_settings.and_then(|path| std::fs::read_to_string(path).ok()) {
+        Some(zed) => format!(
+            "// bakedit's settings, copied from Zed's settings.json when this file was first opened.\n\
+             // From now on bakedit reads this file instead of Zed's.\n{zed}"
+        ),
+        None => "// bakedit's settings, in Zed's settings format: https://zed.dev/docs/configuring-zed\n{\n}\n".to_string(),
+    }
+}
+
 /// Load the user's settings following the order in the module docs.
 pub fn load() -> LoadedSettings {
     load_from(&settings_path(), &zed_settings_path())

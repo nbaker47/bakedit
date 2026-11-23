@@ -776,3 +776,27 @@ fn the_empty_centre_says_what_to_press_at_any_width() {
     assert!(text.contains("No file open"), "{text}");
     assert!(text.lines().any(|line| line.contains("cmd-p find")), "{text}");
 }
+
+#[test]
+fn opening_the_settings_or_keymap_starts_the_file_when_there_is_none() {
+    let config_home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(config_home.path().join("zed")).unwrap();
+    std::fs::write(config_home.path().join("zed/settings.json"), "{ \"vim_mode\": true }\n").unwrap();
+    let (mut shell, _) = shell();
+    shell.config_dir = config_home.path().join("bakedit");
+    act(&mut shell, "zed::OpenSettingsFile");
+    let settings = std::fs::read_to_string(shell.config_dir.join("settings.json")).unwrap();
+    assert!(settings.ends_with("{ \"vim_mode\": true }\n"), "a copy of Zed's, which was read until now: {settings}");
+    assert!(crate::settings::Settings::parse(&settings, &mut Vec::new()).vim_mode, "the copy reads the same");
+    let opened = shell.pane.active().and_then(|item| item.path()).map(Path::to_path_buf);
+    assert_eq!(opened, Some(shell.config_dir.join("settings.json")));
+    act(&mut shell, "zed::OpenKeymap");
+    let keymap = std::fs::read_to_string(shell.config_dir.join("keymap.json")).unwrap();
+    let mut loaded = bakedit_keymap::Keymap::new();
+    assert!(loaded.load(&keymap, bakedit_keymap::KeymapSource::User).is_empty(), "{keymap}");
+    assert!(loaded.is_empty());
+    // An existing file is opened as it is.
+    std::fs::write(shell.config_dir.join("keymap.json"), "[]").unwrap();
+    act(&mut shell, "zed::OpenKeymap");
+    assert_eq!(std::fs::read_to_string(shell.config_dir.join("keymap.json")).unwrap(), "[]");
+}

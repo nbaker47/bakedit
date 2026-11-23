@@ -92,6 +92,9 @@ pub struct Shell {
     pub which_key: Vec<(String, String)>,
     /// Looks up the key binding to show beside a command palette row.
     pub binding_hint: BindingHint,
+    /// bakedit's configuration folder, where `zed::OpenSettingsFile` and `zed::OpenKeymap`
+    /// find (or start) the files: [`crate::settings::config_dir`] unless a test moves it.
+    pub config_dir: PathBuf,
     panels: HashMap<PanelId, Box<dyn View>>,
     factory: Box<dyn ItemFactory>,
     source: Box<dyn PickerSource>,
@@ -173,6 +176,7 @@ impl Shell {
             pending_keys: None,
             which_key: Vec::new(),
             binding_hint: Box::new(|_| None),
+            config_dir: crate::settings::config_dir(),
             panels: HashMap::new(),
             factory,
             source,
@@ -701,8 +705,8 @@ impl Shell {
                 let Some(path) = action.arg_str("path") else { return false };
                 crate::external::reveal(Path::new(path));
             }
-            "zed::OpenSettingsFile" | "zed::OpenSettings" => self.effects.push(Effect::open(crate::settings::settings_path())),
-            "zed::OpenKeymap" => self.effects.push(Effect::open(crate::settings::keymap_path())),
+            "zed::OpenSettingsFile" | "zed::OpenSettings" => self.open_config_file("settings.json"),
+            "zed::OpenKeymap" => self.open_config_file("keymap.json"),
             "zed::OpenDefaultKeymap" => self.open_page("Default Keymap", crate::keys::DEFAULT_KEYMAP, Some("JSON")),
             "zed::Quit" => self.request_quit(action.arg_str("save_intent")),
             // One terminal lives in the panel; a "new terminal" from outside it brings that up.
@@ -726,6 +730,22 @@ impl Shell {
             _ => return false,
         }
         true
+    }
+
+    /// Open `settings.json` or `keymap.json` from bakedit's configuration folder, writing a
+    /// first version when there is none yet (see [`crate::settings::first_version`]).
+    fn open_config_file(&mut self, name: &str) {
+        let path = self.config_dir.join(name);
+        if !path.exists() {
+            let zed_settings = self.config_dir.parent().map(|home| home.join("zed").join("settings.json"));
+            let text = crate::settings::first_version(name, zed_settings.as_deref());
+            let written = std::fs::create_dir_all(&self.config_dir).and_then(|()| std::fs::write(&path, text));
+            if let Err(error) = written {
+                self.set_status(format!("Could not create {}: {error}", path.display()), true);
+                return;
+            }
+        }
+        self.effects.push(Effect::open(path));
     }
 
     fn resize_active_dock(&mut self, delta: i32) {
