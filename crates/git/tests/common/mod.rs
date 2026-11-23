@@ -9,7 +9,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Once;
 
 use bakedit_git::Repo;
@@ -38,6 +38,9 @@ pub fn isolate_git() {
             "GIT_DIR",
             "GIT_WORK_TREE",
             "GIT_INDEX_FILE",
+            "GIT_TEMPLATE_DIR",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",
             "GIT_AUTHOR_DATE",
@@ -57,6 +60,10 @@ pub fn try_git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
         .current_dir(dir)
         .args(args)
         .env("LC_ALL", "C")
+        // A fixture command must never wait for someone to type something.
+        .env("GIT_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
         .output()
         .expect("git can be started");
     if output.status.success() {
