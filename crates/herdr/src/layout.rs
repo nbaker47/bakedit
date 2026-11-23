@@ -203,9 +203,13 @@ pub(crate) fn focus_pane(client: &Client, pane_id: &str) -> Result<(), HerdrErro
 
 #[cfg(test)]
 pub(crate) mod testing {
-    //! Builders for layout JSON in the shape herdr sends it.
+    //! Builders for layout JSON in the shape herdr sends it, and a tab that keeps state.
+
+    use std::sync::{Arc, Mutex};
 
     use serde_json::{json, Value};
+
+    use crate::mock::{MockServer, Reply, Request};
 
     /// A pane leaf.
     pub(crate) fn pane(id: &str) -> Value {
@@ -234,6 +238,114 @@ pub(crate) mod testing {
                 "root": root,
             }
         })
+    }
+
+    /// A tab that answers the three calls collapsing makes the way herdr does: it hands out
+    /// its layout, changes split ratios (clamped to 0.1..=0.9 and kept as 32-bit floats, like
+    /// herdr's), and moves the focus. Whatever drives it, this crate or the user's script,
+    /// sees a tab that really changes.
+    pub(crate) struct FakeTab {
+        pub(crate) root: Value,
+        pub(crate) focused: String,
+    }
+
+    impl FakeTab {
+        pub(crate) fn new(root: Value, focused: &str) -> Arc<Mutex<FakeTab>> {
+            Arc::new(Mutex::new(FakeTab {
+                root,
+                focused: focused.to_string(),
+            }))
+        }
+
+        /// A mock server backed by `tab`.
+        pub(crate) fn serve(tab: &Arc<Mutex<FakeTab>>) -> MockServer {
+            let tab = Arc::clone(tab);
+            MockServer::with_handler(move |request| tab.lock().unwrap().answer(request))
+        }
+
+        fn answer(&mut self, request: &Request) -> Option<Reply> {
+            let pane = request.params.get("pane_id").and_then(Value::as_str);
+            if pane.is_some_and(|pane| !self.has_pane(pane)) {
+                return Some(not_found("pane_not_found", "pane not found"));
+            }
+            match request.method.as_str() {
+                "layout.export" => Some(Reply::Result(export_result(
+                    &self.focused,
+                    false,
+                    self.root.clone(),
+                ))),
+                "layout.set_split_ratio" => {
+                    let path = request.params["path"].as_array()?;
+                    let mut node = &mut self.root;
+                    for side in path {
+                        if node["type"] != "split" {
+                            return Some(not_found("split_not_found", "split path not found"));
+                        }
+                        node = &mut node[if side.as_bool()? { "second" } else { "first" }];
+                    }
+                    if node["type"] != "split" {
+                        return Some(not_found("split_not_found", "split path not found"));
+                    }
+                    node["ratio"] = json!(herdr_ratio(request.params["ratio"].as_f64()?));
+                    Some(Reply::Result(json!({"type": "layout_split_ratio_set"})))
+                }
+                "pane.focus" => {
+                    self.focused = pane?.to_string();
+                    Some(Reply::Result(json!({"type": "pane_info"})))
+                }
+                _ => None,
+            }
+        }
+
+        fn has_pane(&self, pane: &str) -> bool {
+            leaf_ids(&self.root).iter().any(|id| id == pane)
+        }
+
+        /// The tab as one line, such as `(a |0.5 (b /0.1 c)) focus=b`.
+        pub(crate) fn picture(&self) -> String {
+            format!("{} focus={}", draw(&self.root), self.focused)
+        }
+    }
+
+    fn not_found(code: &str, message: &str) -> Reply {
+        Reply::Error {
+            code: code.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    /// A ratio as herdr would report it after being asked to set `ratio`.
+    pub(crate) fn herdr_ratio(ratio: f64) -> f64 {
+        let stored = (ratio as f32).clamp(0.1, 0.9);
+        stored.to_string().parse().unwrap_or(0.5)
+    }
+
+    /// The pane ids of a layout tree in JSON form, first child before second.
+    pub(crate) fn leaf_ids(node: &Value) -> Vec<String> {
+        if node["type"] == "pane" {
+            return vec![node["pane_id"].as_str().unwrap_or_default().to_string()];
+        }
+        let mut ids = leaf_ids(&node["first"]);
+        ids.extend(leaf_ids(&node["second"]));
+        ids
+    }
+
+    /// A layout tree in JSON form as one line: `|` splits side by side, `/` stacks.
+    pub(crate) fn draw(node: &Value) -> String {
+        if node["type"] == "pane" {
+            return node["pane_id"].as_str().unwrap_or_default().to_string();
+        }
+        let bar = if node["direction"] == "right" {
+            "|"
+        } else {
+            "/"
+        };
+        format!(
+            "({} {bar}{} {})",
+            draw(&node["first"]),
+            node["ratio"],
+            draw(&node["second"])
+        )
     }
 }
 
@@ -391,6 +503,53 @@ mod tests {
             json!({"path": [true, false], "ratio": 0.9, "pane_id": "w1:p2"})
         );
         assert_eq!(requests[1].params, json!({"pane_id": "w1:p3"}));
+    }
+
+    #[test]
+    fn the_fake_tab_changes_like_herdr_does() {
+        use super::testing::{herdr_ratio, FakeTab};
+        let tab = FakeTab::new(right(0.5, pane("a"), down(0.3, pane("b"), pane("c"))), "a");
+        let server = FakeTab::serve(&tab);
+        let client = server.client();
+        assert_eq!(export(&client, None).unwrap().focused_pane_id, "a");
+        set_split_ratio(&client, &[true], 0.97, "a").unwrap();
+        set_split_ratio(&client, &[], 0.02, "c").unwrap();
+        focus_pane(&client, "c").unwrap();
+        assert_eq!(tab.lock().unwrap().picture(), "(a |0.1 (b /0.9 c)) focus=c");
+        let layout = export(&client, Some("b")).unwrap();
+        assert_eq!(layout.focused_pane_id, "c");
+        assert_eq!(layout.root.split_at(&[true]).unwrap().ratio, 0.9);
+        // What herdr refuses, the fake refuses with the same codes.
+        assert_eq!(
+            set_split_ratio(&client, &[false], 0.5, "a")
+                .unwrap_err()
+                .code(),
+            Some("split_not_found")
+        );
+        assert_eq!(
+            set_split_ratio(&client, &[true, true, true], 0.5, "a")
+                .unwrap_err()
+                .code(),
+            Some("split_not_found")
+        );
+        assert_eq!(
+            focus_pane(&client, "zz").unwrap_err().code(),
+            Some("pane_not_found")
+        );
+        assert_eq!(
+            export(&client, Some("zz")).unwrap_err().code(),
+            Some("pane_not_found")
+        );
+        assert_eq!(
+            client
+                .call("pane.close", json!({"pane_id": "a"}))
+                .unwrap_err()
+                .code(),
+            Some("mock_unexpected")
+        );
+        assert_eq!(herdr_ratio(0.42), 0.42);
+        assert_eq!(herdr_ratio(1.0 - 0.1), 0.9);
+        assert_eq!(herdr_ratio(0.123456789), 0.12345679);
     }
 
     #[test]

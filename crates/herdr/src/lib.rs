@@ -38,6 +38,8 @@
 
 mod client;
 mod collapse;
+#[cfg(test)]
+mod collapse_parity;
 pub mod launch;
 mod layout;
 #[cfg(any(test, feature = "mock"))]
