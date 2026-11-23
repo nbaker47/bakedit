@@ -11,6 +11,7 @@ pub mod keys;
 pub mod links;
 mod osc;
 mod pty;
+pub mod screen;
 
 pub use config::{
     find_program, inherited_env_names, split_command_line, TermColors, TermConfig, DEFAULT_COMMAND,
@@ -23,3 +24,4 @@ pub use links::{
     default_search_bases, detect_links, link_at, resolve_path, resolve_reference, LinkSpan,
     LinkTarget, ResolvedPath,
 };
+pub use screen::{Cell, Cursor, CursorShape, ScreenLink, SelectionKind, TermModes, Underline};
