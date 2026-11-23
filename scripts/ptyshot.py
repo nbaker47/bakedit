@@ -11,15 +11,29 @@ and as HTML that headless Chrome can turn into a picture.
 Script lines (blank lines and lines starting with # are skipped):
     wait 0.5            pause, in seconds, while still reading output
     text hello world    type plain text
+    paste some text     a bracketed paste (\\n in it is a new line)
     key cmd-shift-p     a key with modifiers, pressed and released the way a kitty-protocol
                         terminal sends them (with --legacy: the bytes a legacy terminal sends,
-                        and nothing at all for a cmd chord)
+                        and nothing at all for a cmd chord); several keys separated by spaces
+                        are pressed one after another
     down ;              press a key and keep it held (kitty protocol only)
     up ;                let a held key go
     send \\x1b[I         raw bytes, with Python escapes
     click 10 5 [cmd]    left click at column 10, row 5 (0-based); "cmd" holds the command key
     resize 100x30       change the window size (the program gets SIGWINCH)
     snap name           write <out>-name.txt and <out>-name.html
+    expect some text    wait (up to --timeout seconds) until the screen shows the text; the
+                        run fails if it never does
+    expect-not text     the screen must not show the text (after a short read)
+    expect-at 3 0 text  the screen shows the text starting at column 3 of row 0
+    expect-exit         wait for the program to exit by itself, with status 0
+    exec command        run a shell command (sh -c) with the scenario's environment (and
+                        PTYSHOT_RAW, the --raw-out file, written so far); the run fails if it
+                        exits with an error
+    log label           print a line in the transcript (for timings)
+
+A failed expectation writes the screen as <out>-failed.txt/.html, says what was expected on
+stderr, and makes ptyshot exit with status 1 once the program has been closed.
 
 The emulated terminal answers the questions bakedit asks at startup as Ghostty would: the
 keyboard protocol flags (31) and the device attributes. With --legacy it is a terminal
@@ -34,6 +48,7 @@ import pty
 import select
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -44,8 +59,9 @@ import pyte
 
 MODS = {"shift": 1, "alt": 2, "ctrl": 4, "cmd": 8}
 NAMED = {"enter": 13, "escape": 27, "tab": 9, "backspace": 127, "space": 32}
-ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D", "home": "H", "end": "F"}
-TILDE = {"insert": 2, "delete": 3, "pageup": 5, "pagedown": 6}
+ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D", "home": "H", "end": "F", "f1": "P", "f2": "Q", "f4": "S"}
+TILDE = {"insert": 2, "delete": 3, "pageup": 5, "pagedown": 6, "f3": 13, "f5": 15, "f6": 17, "f7": 18, "f8": 19, "f9": 20,
+         "f10": 21, "f11": 23, "f12": 24}
 SHIFTED = dict(zip('1234567890-=[]\\;\',./`', '!@#$%^&*()_+{}|:"<>?~'))
 MODIFIER_KEYS = {"shift": 57441, "ctrl": 57442, "alt": 57443, "cmd": 57444}
 
@@ -155,7 +171,7 @@ def to_html(screen: pyte.Screen, fg: str, bg: str) -> str:
            f"body{{margin:0;background:{bg}}}pre{{margin:0;padding:8px;font-family:'MesloLGSDZ Nerd Font Mono','MesloLGS NF',Menlo,monospace;"
            f"font-size:14px;line-height:1.25;color:{fg};background:{bg};font-variant-ligatures:none}}"
            "span{display:inline-block;height:1.25em;vertical-align:top}.cur{outline:1px solid #fff;outline-offset:-1px}",
-           "</style><pre>"]
+           f"</style><pre data-size=\"{screen.columns}x{screen.lines}\">"]
     for y in range(screen.lines):
         row = screen.buffer[y]
         x = 0
@@ -193,6 +209,8 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=1.5)
     ap.add_argument("--legacy", action="store_true", help="do not answer capability queries (a terminal without the kitty protocol)")
     ap.add_argument("--env", action="append", default=[], help="NAME=value for the child")
+    ap.add_argument("--timeout", type=float, default=8.0, help="how long `expect` waits, in seconds")
+    ap.add_argument("--raw-out", help="write every byte the program wrote to this file")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -201,17 +219,18 @@ def main() -> int:
     cols, rows = (int(n) for n in args.size.lower().split("x"))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 
+    env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", TERM_PROGRAM="ptyshot", BAKEDIT_CLIPBOARD="memory")
+    for name in list(env):
+        if name.startswith("HERDR_"):
+            del env[name]
+    for item in args.env:
+        name, _, value = item.partition("=")
+        env[name] = value
+
     pid, fd = pty.fork()
     if pid == 0:
         # The size first, so the program never sees another one at start.
         fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 16))
-        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", BAKEDIT_CLIPBOARD="memory")
-        for name in list(env):
-            if name.startswith("HERDR_"):
-                del env[name]
-        for item in args.env:
-            name, _, value = item.partition("=")
-            env[name] = value
         os.execvpe(command[0], command, env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 16))
 
@@ -219,6 +238,9 @@ def main() -> int:
     stream = pyte.ByteStream(screen)
     pending = b""
     answered = False
+    raw_file = open(args.raw_out, "wb") if args.raw_out else None
+    exit_status = None
+    failure = None
 
     def pump(seconds: float) -> bool:
         """Read output for `seconds`. Returns False once the child has gone."""
@@ -237,6 +259,8 @@ def main() -> int:
                 return False
             if not data:
                 return False
+            if raw_file:
+                raw_file.write(data)
             if not answered:
                 # Look at everything new (plus a tail of the last read, for a query cut in
                 # two): the query may arrive in one read with plenty of output after it.
@@ -256,6 +280,28 @@ def main() -> int:
             f.write(to_html(screen, "#f8f8f2", "#12101a"))
         print(f"--- {name} (cursor {screen.cursor.x},{screen.cursor.y}) ---\n{text}")
 
+    def shows(text: str) -> bool:
+        return any(text in line for line in screen.display)
+
+    def expect(text: str) -> bool:
+        """Read until the screen shows `text`, or the timeout passes."""
+        deadline = time.time() + args.timeout
+        while True:
+            if shows(text):
+                return True
+            if time.time() > deadline or not pump(0.05):
+                return shows(text)
+
+    def wait_exit() -> int | None:
+        """Read until the program exits by itself; its exit status, or None at the timeout."""
+        deadline = time.time() + args.timeout
+        while time.time() < deadline:
+            done, status_code = os.waitpid(pid, os.WNOHANG)
+            if done:
+                return status_code
+            pump(0.05)
+        return None
+
     alive = pump(args.settle)
     if args.script:
         for raw in open(args.script, encoding="utf-8"):
@@ -267,16 +313,59 @@ def main() -> int:
                 alive = pump(float(rest))
             elif verb == "snap":
                 snap(rest or "snap")
+            elif verb == "log":
+                print(f"--- {rest} at {time.time():.3f}")
+            elif verb == "expect":
+                started = time.time()
+                if not expect(rest):
+                    failure = f"the screen never showed {rest!r}"
+                    break
+                print(f"--- expect {rest!r}: {time.time() - started:.2f}s")
+            elif verb == "expect-not":
+                pump(0.3)
+                if shows(rest):
+                    failure = f"the screen shows {rest!r}"
+                    break
+            elif verb == "expect-at":
+                col, row, text = rest.split(" ", 2)
+                col, row = int(col), int(row)
+                deadline = time.time() + args.timeout
+                while screen.display[row][col:col + len(text)] != text and time.time() < deadline and pump(0.05):
+                    pass
+                if screen.display[row][col:col + len(text)] != text:
+                    failure = f"row {row} has {screen.display[row][col:col + len(text)]!r} at column {col}, not {text!r}"
+                    break
+            elif verb == "exec":
+                if raw_file:
+                    raw_file.flush()
+                result = subprocess.run(["/bin/sh", "-c", rest], env=dict(env, PTYSHOT_RAW=args.raw_out or ""))
+                if result.returncode != 0:
+                    failure = f"`{rest}` exited with {result.returncode}"
+                    break
+            elif verb == "expect-exit":
+                exit_status = wait_exit()
+                if exit_status is None:
+                    failure = "the program did not exit"
+                    break
+                if os.waitstatus_to_exitcode(exit_status) != 0:
+                    failure = f"the program exited with {os.waitstatus_to_exitcode(exit_status)}"
+                    break
+                alive = False
             elif not alive:
                 print(f"child exited before: {line}", file=sys.stderr)
+                failure = f"the program exited before: {line}"
                 break
             elif verb == "text":
                 if args.legacy:
                     os.write(fd, rest.encode())
                 else:
                     os.write(fd, b"".join(press_and_release(c if c != " " else "space") for c in rest))
+            elif verb == "paste":
+                os.write(fd, b"\x1b[200~" + rest.replace("\\n", "\n").encode() + b"\x1b[201~")
             elif verb == "key":
-                os.write(fd, encode_key_legacy(rest) if args.legacy else press_and_release(rest))
+                for spec in rest.split():
+                    os.write(fd, encode_key_legacy(spec) if args.legacy else press_and_release(spec))
+                    pump(0.02)
             elif verb == "down":
                 os.write(fd, encode_key(rest))
             elif verb == "up":
@@ -298,6 +387,15 @@ def main() -> int:
                 alive = pump(0.15)
     else:
         snap("final")
+
+    if failure:
+        snap("failed")
+        print(f"ptyshot: {failure}", file=sys.stderr)
+
+    if exit_status is not None:
+        if raw_file:
+            raw_file.close()
+        return 1 if failure else 0
 
     # Hang up, and keep reading while the program leaves: closing a terminal waits for its
     # output to be read, so a program that writes on the way out would never finish.
@@ -323,11 +421,14 @@ def main() -> int:
         ready, _, _ = select.select([fd], [], [], 0.05)
         if ready:
             try:
-                if not os.read(fd, 65536):
-                    pass
+                data = os.read(fd, 65536)
+                if raw_file and data:
+                    raw_file.write(data)
             except OSError:
                 pass
-    return 0
+    if raw_file:
+        raw_file.close()
+    return 1 if failure else 0
 
 
 if __name__ == "__main__":
