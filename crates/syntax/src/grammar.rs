@@ -437,6 +437,24 @@ const BASH_EXTRA: &str = "(case_item \")\" @punctuation.delimiter)\n";
 /// `suspend fun`) is not recognised. A declaration has only one identifier of its own.
 const KOTLIN_EXTRA: &str = "(function_declaration (simple_identifier) @function)\n";
 
+/// tree-sitter-md injects each piece of HTML on its own, so a closing tag is parsed without
+/// the tag it closes and gets no highlight. Neovim's copy of these queries combines the
+/// pieces into one HTML document: the tags of one paragraph, and the HTML blocks of one
+/// file (a `<details>` and its `</details>` are separate blocks with Markdown between
+/// them). These patterns do the same and, coming last, replace the bundled ones.
+const MARKDOWN_INLINE_HTML_INJECTION: &str = r#"
+((html_tag) @injection.content
+ (#set! injection.language "html")
+ (#set! injection.combined))
+"#;
+
+/// See [`MARKDOWN_INLINE_HTML_INJECTION`].
+const MARKDOWN_HTML_BLOCK_INJECTION: &str = r#"
+((html_block) @injection.content
+ (#set! injection.language "html")
+ (#set! injection.combined))
+"#;
+
 /// PHP's injection of HTML into the text outside `<?php ... ?>` ships in the grammar's
 /// repository as `queries/injections-text.scm` but is not exported by its Rust binding.
 const PHP_TEXT_INJECTION: &str = r#"
@@ -579,7 +597,10 @@ pub(crate) static MARKDOWN: GrammarSpec = GrammarSpec {
     name: "markdown",
     language: || tree_sitter_md::LANGUAGE.into(),
     highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
-    injections: &[tree_sitter_md::INJECTION_QUERY_BLOCK],
+    injections: &[
+        tree_sitter_md::INJECTION_QUERY_BLOCK,
+        MARKDOWN_HTML_BLOCK_INJECTION,
+    ],
     locals: &[],
     precedence: Precedence::LastWins,
     children: InjectedChildren::ExcludeNamed,
@@ -592,7 +613,10 @@ pub(crate) static MARKDOWN_INLINE: GrammarSpec = GrammarSpec {
     name: "markdown_inline",
     language: || tree_sitter_md::INLINE_LANGUAGE.into(),
     highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
-    injections: &[tree_sitter_md::INJECTION_QUERY_INLINE],
+    injections: &[
+        tree_sitter_md::INJECTION_QUERY_INLINE,
+        MARKDOWN_INLINE_HTML_INJECTION,
+    ],
     locals: &[],
     precedence: Precedence::LastWins,
     children: InjectedChildren::ExcludeNamed,

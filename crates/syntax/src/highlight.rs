@@ -277,9 +277,9 @@ fn predicates_hold(predicates: &[Predicate], matched: &QueryMatch, text: &str) -
 // Injections
 // ---------------------------------------------------------------------------------------
 
-/// One injection found in a layer, before it becomes a layer itself.
+/// One match of an injection pattern.
 struct Injection {
-    /// The first content node's range: two patterns that inject the same node compete.
+    /// The range of the first content node: two patterns that inject the same node compete.
     key: (usize, usize),
     pattern: usize,
     spec: &'static GrammarSpec,
@@ -287,7 +287,7 @@ struct Injection {
     combined: bool,
 }
 
-/// Run the layer's injections query and push a new layer for each injection.
+/// Run the layer's injections query and push a new layer for each injected document.
 fn collect_injections(
     cursor: &mut QueryCursor,
     layer: &Layer,
@@ -328,64 +328,66 @@ fn collect_injections(
             key.get_or_insert((node.start_byte(), node.end_byte()));
             content_pieces(node, pattern.include_children, own.children, &mut pieces);
         }
-        let Some(key) = key else { continue };
-        let existing = pattern
-            .combined
-            .then(|| {
-                found.iter_mut().find(|i| {
-                    i.combined && i.pattern == matched.pattern_index && std::ptr::eq(i.spec, spec)
-                })
-            })
-            .flatten();
-        match existing {
-            Some(injection) => injection.pieces.append(&mut pieces),
-            None => found.push(Injection {
+        if let Some(key) = key {
+            let (pattern, combined) = (matched.pattern_index, pattern.combined);
+            found.push(Injection {
                 key,
-                pattern: matched.pattern_index,
+                pattern,
                 spec,
                 pieces,
-                combined: pattern.combined,
-            }),
+                combined,
+            });
         }
     }
     drop(matches);
 
     // When two patterns inject the same node, the grammar's precedence picks one, as it
-    // does for highlights.
+    // does for highlights. The sort is stable, so equal keys stay in pattern order.
     found.sort_by_key(|injection| (injection.key, injection.pattern));
     let last_wins = own.precedence == Precedence::LastWins;
-    let mut index = 0;
-    while index < found.len() {
-        let mut group_end = index + 1;
-        while group_end < found.len()
-            && found[group_end].key == found[index].key
-            && !found[group_end].combined
-        {
-            group_end += 1;
+    let mut winners: Vec<Injection> = Vec::with_capacity(found.len());
+    for injection in found {
+        match winners.last_mut() {
+            Some(previous) if previous.key == injection.key => {
+                if last_wins {
+                    *previous = injection;
+                }
+            }
+            _ => winners.push(injection),
         }
-        let single = !found[index].combined;
-        let chosen = if single && last_wins {
-            group_end - 1
-        } else {
-            index
-        };
-        let next = if single { group_end } else { index + 1 };
-        let injection = &mut found[chosen];
-        let ranges = clip_to_parent(
-            normalize_pieces(std::mem::take(&mut injection.pieces)),
-            &layer.ranges,
-        );
-        if !ranges.is_empty() {
-            if let Ok(grammar) = grammar::load(injection.spec) {
-                pending.push(Layer {
-                    grammar,
-                    ranges,
-                    depth: layer.depth + 1,
-                    parent: Some(own),
-                });
+    }
+
+    // A combined pattern makes one document, per language, out of everything it matched.
+    let mut documents: Vec<Injection> = Vec::with_capacity(winners.len());
+    let mut combined_at: HashMap<(usize, *const GrammarSpec), usize> = HashMap::new();
+    for mut injection in winners {
+        if !injection.combined {
+            documents.push(injection);
+            continue;
+        }
+        let group = (injection.pattern, injection.spec as *const GrammarSpec);
+        match combined_at.get(&group) {
+            Some(&index) => documents[index].pieces.append(&mut injection.pieces),
+            None => {
+                combined_at.insert(group, documents.len());
+                documents.push(injection);
             }
         }
-        index = next;
+    }
+
+    for document in documents {
+        let ranges = clip_to_parent(normalize_pieces(document.pieces), &layer.ranges);
+        if ranges.is_empty() {
+            continue;
+        }
+        if let Ok(grammar) = grammar::load(document.spec) {
+            pending.push(Layer {
+                grammar,
+                ranges,
+                depth: layer.depth + 1,
+                parent: Some(own),
+            });
+        }
     }
 }
 
