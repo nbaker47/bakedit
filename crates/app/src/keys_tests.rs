@@ -160,6 +160,13 @@ fn command_hints_show_the_bound_keys() {
     let hint = router.hint_for(&bakedit_core::Action::new("file_finder::Toggle"), &shell.contexts());
     assert_eq!(hint.as_deref(), Some("⌘P"));
     assert_eq!(router.hint_for(&bakedit_core::Action::new("no::SuchAction"), &shell.contexts()), None);
+    // A palette command without arguments shows the key bound to it with arguments.
+    let lookup = router.binding_hint();
+    assert_eq!(lookup(&bakedit_core::Action::new("editor::ToggleComments")).as_deref(), Some("⌘/"));
+    // One listed with arguments shows only a key bound with exactly those.
+    let replace = bakedit_core::Action::with_args("pane::DeploySearch", serde_json::json!({ "replace_enabled": true }));
+    assert_eq!(lookup(&replace).as_deref(), Some("⌘⇧H"));
+    assert_eq!(lookup(&bakedit_core::Action::new("pane::DeploySearch")).as_deref(), Some("⌘⇧F"));
 }
 
 #[test]

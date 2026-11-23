@@ -173,8 +173,7 @@ impl KeyRouter {
     pub fn binding_hint(&self) -> BindingHint {
         let keymap = Arc::new(self.keymap.clone());
         Box::new(move |action: &Action| {
-            keymap
-                .bindings_for_action(&action.name, action.args.as_ref(), None)
+            bindings_running(&keymap, action, None)
                 .into_iter()
                 .min_by_key(|binding| (binding.keystrokes().len(), !binding.keystroke_text().contains("cmd")))
                 .map(|binding| binding.display_mac())
@@ -220,12 +219,31 @@ impl KeyRouter {
     /// The keys to show next to a command, for where the focus is now.
     pub fn hint_for(&self, action: &Action, contexts: &[Context]) -> Option<String> {
         // Of the bindings that work here, show the handiest: fewest keys, cmd before others.
-        self.keymap
-            .bindings_for_action(&action.name, action.args.as_ref(), Some(&key_contexts(contexts)))
+        bindings_running(&self.keymap, action, Some(&key_contexts(contexts)))
             .into_iter()
             .min_by_key(|binding| (binding.keystrokes().len(), !binding.keystroke_text().contains("cmd")))
             .map(|binding| binding.display_mac())
     }
+}
+
+/// The bindings that run `action`. A command listed without arguments runs with the
+/// defaults, so the keys bound to its name with arguments count for it too (cmd-/ runs
+/// editor::ToggleComments with Zed's options); a command listed with arguments needs a
+/// binding with exactly those.
+fn bindings_running<'a>(keymap: &'a Keymap, action: &Action, contexts: Option<&[KeyContext]>) -> Vec<&'a bakedit_keymap::Binding> {
+    let exact = keymap.bindings_for_action(&action.name, action.args.as_ref(), contexts);
+    if !exact.is_empty() || action.args.is_some() {
+        return exact;
+    }
+    let mut variants: Vec<Option<serde_json::Value>> = Vec::new();
+    for binding in keymap.bindings() {
+        if let Some(bound) = binding.action().filter(|bound| bound.name == action.name) {
+            if !variants.contains(&bound.args) {
+                variants.push(bound.args);
+            }
+        }
+    }
+    variants.iter().flat_map(|args| keymap.bindings_for_action(&action.name, args.as_ref(), contexts)).collect()
 }
 
 /// Run one binding's actions. A single action reports whether anything took it; a sequence
