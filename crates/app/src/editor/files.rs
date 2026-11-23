@@ -312,6 +312,7 @@ impl EditorItem {
         let mut dirty = false;
         if self.modal != cx.settings.vim_mode {
             self.modal = cx.settings.vim_mode;
+            self.end_insert_run();
             self.insert = false;
             self.selecting = None;
             self.clamp_nav_cursor();

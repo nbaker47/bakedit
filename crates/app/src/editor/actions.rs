@@ -173,7 +173,25 @@ impl EditorItem {
         true
     }
 
+    /// Leave edit mode's undo run: everything typed since it began becomes one undo step.
+    pub(super) fn end_insert_run(&mut self) {
+        if let Some(mark) = self.insert_mark.take() {
+            self.editor.squash_undo_steps(mark);
+        }
+    }
+
     fn vim_action(&mut self, name: &str, cx: &mut Cx<'_>) -> bool {
+        // What an edit started here (o's new line included) is undone in one step.
+        let mark = self.editor.undo_steps();
+        let was_inserting = self.insert;
+        let handled = self.vim_action_inner(name, cx);
+        if self.insert && !was_inserting {
+            self.insert_mark = Some(mark);
+        }
+        handled
+    }
+
+    fn vim_action_inner(&mut self, name: &str, cx: &mut Cx<'_>) -> bool {
         match name {
             "vim::InsertBefore" => self.enter_insert(),
             "vim::InsertAfter" => {
@@ -208,6 +226,7 @@ impl EditorItem {
                 self.insert = false;
                 self.selecting = None;
                 self.editor.break_undo_group();
+                self.end_insert_run();
                 let buffer = self.editor.buffer();
                 let head = self.cursor();
                 if self.editor.selections().is_single_cursor() && head > buffer.line_to_char(buffer.char_to_line(head)) {

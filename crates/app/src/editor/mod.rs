@@ -109,6 +109,9 @@ pub struct EditorItem {
     modal: bool,
     /// In edit mode (only meaningful when `modal`).
     insert: bool,
+    /// How many undo steps there were when edit mode began: leaving it fuses the steps
+    /// since into one, so that `u` takes back a whole edit, as in vim.
+    insert_mark: Option<usize>,
     selecting: Option<Visual>,
 
     git: GitMarks,
@@ -208,6 +211,7 @@ impl EditorItem {
             minimap_override: None,
             modal: cx.settings.vim_mode,
             insert: false,
+            insert_mark: None,
             selecting: None,
             git: GitMarks::default(),
             find: None,

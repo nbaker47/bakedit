@@ -278,6 +278,34 @@ fn nav_mode_e_lands_on_the_last_character_of_each_word() {
 }
 
 #[test]
+fn one_undo_takes_back_a_whole_edit_mode_session() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "one\ntwo\n");
+    let steps = item.editor.undo_steps();
+    // o, typing slowly enough for several undo steps, a paste, escape.
+    act(&mut item, &mut harness, "vim::InsertLineBelow");
+    type_text(&mut item, &mut harness, "new");
+    item.editor.break_undo_group();
+    item.handle_paste(" line", &mut harness.cx());
+    item.editor.break_undo_group();
+    type_text(&mut item, &mut harness, "!");
+    act(&mut item, &mut harness, "vim::NormalBefore");
+    assert_eq!(text_of(&item), "one\nnew line!\ntwo\n");
+    assert_eq!(item.editor.undo_steps(), steps + 1, "the session is one step");
+    act(&mut item, &mut harness, "editor::Undo");
+    assert_eq!(text_of(&item), "one\ntwo\n", "the new line goes too");
+    assert_eq!(item.editor.undo_steps(), steps);
+    act(&mut item, &mut harness, "editor::Redo");
+    assert_eq!(text_of(&item), "one\nnew line!\ntwo\n");
+    // A session of one keystroke is one step as well.
+    act(&mut item, &mut harness, "vim::InsertBefore");
+    type_text(&mut item, &mut harness, "x");
+    act(&mut item, &mut harness, "vim::NormalBefore");
+    act(&mut item, &mut harness, "editor::Undo");
+    assert_eq!(text_of(&item), "one\nnew line!\ntwo\n");
+}
+
+#[test]
 fn undo_in_nav_mode_leaves_no_selection() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "one\ntwo\nthree\n");
