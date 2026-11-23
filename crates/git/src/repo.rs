@@ -26,6 +26,10 @@ pub struct Repo {
     git_dir: PathBuf,
     common_dir: PathBuf,
     network_timeout: Option<Duration>,
+    /// Git composes decomposed file names in this repository (`core.precomposeUnicode`),
+    /// so paths given to it have to be composed too.
+    #[cfg(target_os = "macos")]
+    composes_names: bool,
 }
 
 impl Repo {
@@ -42,11 +46,18 @@ impl Repo {
         let git_dir = rev_parse_path(&start, "--absolute-git-dir")?;
         let common_dir = rev_parse_path(&start, "--git-common-dir")?;
         let common_dir = start.join(common_dir);
+        #[cfg(target_os = "macos")]
+        let composes_names = Git::new(&root)
+            .args(["config", "--type=bool", "--get", "core.precomposeUnicode"])
+            .probe()
+            .is_ok_and(|output| output.line() == b"true");
         Some(Repo {
             root,
             git_dir,
             common_dir: common_dir.canonicalize().unwrap_or(common_dir),
             network_timeout: Some(DEFAULT_NETWORK_TIMEOUT),
+            #[cfg(target_os = "macos")]
+            composes_names,
         })
     }
 
@@ -88,20 +99,28 @@ impl Repo {
     /// the work tree through a symbolic link it is resolved first, and that also works
     /// for files that no longer exist. The root itself gives the empty path.
     ///
+    /// On macOS the result is also spelled the way git spells it: a file name the file
+    /// system holds in decomposed form ("u" plus a combining diaeresis) comes back
+    /// composed ("ü") when the repository has `core.precomposeUnicode` on, which is what
+    /// [`Repo::status`] and every other call report for that file. Every method that
+    /// takes a path does this itself; use it directly to match your own paths (from a
+    /// directory listing, say) against paths in results.
+    ///
     /// Fails with [`GitError::PathOutsideRepo`] when the path is not inside the work
     /// tree.
     pub fn relative_path(&self, path: impl AsRef<Path>) -> Result<PathBuf> {
         let path = path.as_ref();
         let outside = || GitError::PathOutsideRepo(path.to_path_buf());
-        if path.is_relative() {
-            return normalize_relative(path).ok_or_else(outside);
-        }
-        if let Ok(rest) = path.strip_prefix(&self.root) {
-            return normalize_relative(rest).ok_or_else(outside);
-        }
-        let resolved = resolve_existing_part(path);
-        let rest = resolved.strip_prefix(&self.root).map_err(|_| outside())?;
-        normalize_relative(rest).ok_or_else(outside)
+        let relative = if path.is_relative() {
+            normalize_relative(path)
+        } else if let Ok(rest) = path.strip_prefix(&self.root) {
+            normalize_relative(rest)
+        } else {
+            let resolved = resolve_existing_part(path);
+            let rest = resolved.strip_prefix(&self.root).map_err(|_| outside())?;
+            normalize_relative(rest)
+        };
+        Ok(self.spelled_like_git(relative.ok_or_else(outside)?))
     }
 
     /// The full hash of the commit `HEAD` points at, or `None` before the first commit.
@@ -126,6 +145,15 @@ impl Repo {
     /// A git command that runs at the top of this work tree.
     pub(crate) fn git(&self) -> Git<'_> {
         Git::new(&self.root)
+    }
+
+    /// `relative` in the form git uses for file names in this repository.
+    fn spelled_like_git(&self, relative: PathBuf) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        if self.composes_names {
+            return crate::precompose::precompose_path(relative);
+        }
+        relative
     }
 
     /// The value of the configuration variable `key`, or `None` when it is not set.
@@ -193,6 +221,8 @@ mod tests {
             git_dir: PathBuf::from(root).join(".git"),
             common_dir: PathBuf::from(root).join(".git"),
             network_timeout: Some(DEFAULT_NETWORK_TIMEOUT),
+            #[cfg(target_os = "macos")]
+            composes_names: false,
         }
     }
 
@@ -230,6 +260,30 @@ mod tests {
             Err(GitError::PathOutsideRepo(path)) => assert_eq!(path, Path::new("/elsewhere/file")),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn decomposed_names_are_composed_when_git_composes_them() {
+        let mut repo = repo_at("/work/project");
+        let decomposed = "/work/project/dir/u\u{308}.txt";
+        assert_eq!(
+            repo.relative_path(decomposed).unwrap(),
+            Path::new("dir/u\u{308}.txt")
+        );
+        repo.composes_names = true;
+        assert_eq!(
+            repo.relative_path(decomposed).unwrap(),
+            Path::new("dir/\u{fc}.txt")
+        );
+        assert_eq!(
+            repo.relative_path("dir/u\u{308}.txt").unwrap(),
+            Path::new("dir/\u{fc}.txt")
+        );
+        assert_eq!(
+            repo.relative_path("plain/ascii.txt").unwrap(),
+            Path::new("plain/ascii.txt")
+        );
     }
 
     #[test]

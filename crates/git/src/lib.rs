@@ -54,6 +54,8 @@ mod log;
 mod patch;
 mod paths;
 mod permalink;
+#[cfg(target_os = "macos")]
+mod precompose;
 mod remote;
 mod repo;
 mod status;

@@ -11,5 +11,9 @@ thiserror.workspace = true
 log.workspace = true
 libc.workspace = true
 
+# Only macOS git rewrites decomposed file names; see src/precompose.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+unicode-normalization = "0.1.26"
+
 [dev-dependencies]
 tempfile.workspace = true
