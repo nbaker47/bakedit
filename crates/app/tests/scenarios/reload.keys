@@ -1,0 +1,10 @@
+# run.sh writes keymap.json (cmd-y opens the command palette) three seconds in; the editor
+# notices the file changed and reloads it without a restart.
+wait 6
+snap reloaded
+key cmd-y
+wait 0.5
+snap palette
+key escape
+key cmd-q
+wait 1

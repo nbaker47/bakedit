@@ -99,8 +99,8 @@ impl AppSource {
                 item.icon = Some(file_icon(cx.settings, &name, false, false));
                 if let Some(line) = parsed.line {
                     item.hint = Some(match parsed.col {
-                        Some(col) => format!("{line}:{col}"),
-                        None => line.to_string(),
+                        Some(col) => format!("line {line}, column {col}"),
+                        None => format!("line {line}"),
                     });
                 }
                 self.files.push(FileRow { path: cx.root.join(&found.path), line: parsed.line, column: parsed.col });
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(rows[0].label, "lib.rs");
         assert_eq!(rows[0].detail.as_deref(), Some("src"));
         assert_eq!(rows[0].matched, vec![0, 1, 2], "matches are drawn on the name");
-        assert_eq!(rows[0].hint.as_deref(), Some("2"));
+        assert_eq!(rows[0].hint.as_deref(), Some("line 2"));
         assert!(rows[0].icon.is_some());
         source.confirm(PickerKind::FileFinder, Some(0), "lib:2", false, &mut harness.cx());
         assert_eq!(

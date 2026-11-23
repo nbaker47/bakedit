@@ -1,0 +1,9 @@
+# run.sh runs, from another process three seconds in, `bakedit --action command_palette::Toggle`
+# and then `bakedit README.md:2`: both reach this window, the way an agent's hook would.
+wait 4.5
+snap action
+key escape
+wait 1.5
+snap opened
+key cmd-q
+wait 1

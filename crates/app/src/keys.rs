@@ -110,16 +110,14 @@ impl KeyRouter {
             return;
         }
         let contexts = key_contexts(&shell.contexts());
+        let palette = crate::actions::palette();
         let mut seen = std::collections::HashSet::new();
         shell.which_key = self
             .keymap
             .pending_completions(self.matcher.pending(), &contexts)
             .into_iter()
             .filter(|(keys, _)| seen.insert(keys.clone()))
-            .map(|(keys, action)| {
-                let title = crate::actions::title(&action.name);
-                (keys, title.split_once(": ").map(|(_, rest)| rest.to_string()).unwrap_or(title))
-            })
+            .map(|(keys, action)| (keys, crate::actions::describe(&action, &palette)))
             .collect();
     }
 

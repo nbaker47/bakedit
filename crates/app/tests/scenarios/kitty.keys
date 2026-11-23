@@ -1,0 +1,70 @@
+# bakedit as a Ghostty window with the kitty keyboard protocol sends it (ptyshot answers the
+# startup queries with flags 31). Every key here is a press and its release.
+
+# Start: the terminal on the left, the file tree on the right, the keyboard in the centre.
+wait 2.5
+snap start
+
+# cmd-t: the terminal takes the keyboard.
+key cmd-t
+wait 0.5
+snap terminal
+
+# A path printed in the terminal, cmd+clicked: it opens in the editor at that line.
+text echo src/lib.rs:2
+key enter
+wait 0.8
+click 3 1 cmd
+wait 1.2
+snap link
+
+# cmd-t twice: the terminal takes the keyboard again, then hides.
+key cmd-t
+key cmd-t
+wait 0.3
+
+# cmd-g: the git panel in the left dock, listing the changes.
+key cmd-g
+wait 1
+snap git
+key cmd-g
+
+# cmd-shift-e: the file tree takes the keyboard.
+key cmd-shift-e
+wait 0.3
+snap tree
+key cmd-e
+
+# cmd-p: the file finder. Type, enter opens the file at the line asked for.
+key cmd-p
+wait 0.5
+snap finder-empty
+text main:2
+wait 0.5
+snap finder
+key enter
+wait 1.5
+snap editor
+
+# A chord: cmd-k waits for its second key; after a pause the completions are listed.
+key cmd-k
+wait 1.2
+snap chord
+key escape
+wait 0.3
+
+# cmd-alt-t: the terminal fullscreen; cmd-e back to the editor.
+key cmd-alt-t
+wait 0.5
+snap terminal-zoom
+key cmd-e
+wait 0.3
+
+# A narrower window.
+resize 120x34
+wait 1.2
+snap narrow
+
+# cmd-q: nothing unsaved, so it quits at once and the session is saved.
+key cmd-q
+wait 1

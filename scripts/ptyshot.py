@@ -238,8 +238,11 @@ def main() -> int:
             if not data:
                 return False
             if not answered:
-                pending = (pending + data)[-64:]
-                if b"\x1b[c" in pending:
+                # Look at everything new (plus a tail of the last read, for a query cut in
+                # two): the query may arrive in one read with plenty of output after it.
+                window = pending + data
+                pending = window[-8:]
+                if b"\x1b[c" in window:
                     # Ghostty answers in order: the flags first, the attributes last.
                     os.write(fd, b"\x1b[?62;4c" if args.legacy else b"\x1b[?31u\x1b[?62;4c")
                     answered = True

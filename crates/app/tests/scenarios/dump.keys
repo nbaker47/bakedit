@@ -1,0 +1,9 @@
+# bakedit --dump-input: every event decoded, one line each; ctrl-c twice ends it.
+wait 1
+key cmd-shift-p
+text a;
+click 4 2 cmd
+key ctrl-c
+key ctrl-c
+wait 0.5
+snap events

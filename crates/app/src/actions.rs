@@ -158,6 +158,51 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("zed::Quit", None, Some("bakedit: quit")),
 ];
 
+/// Namespaces whose verbs read well on their own ("save", "close tab"); the others name the
+/// thing acted on and keep it ("terminal panel: toggle").
+const PLAIN_NAMESPACES: &[&str] = &["editor: ", "pane: ", "workspace: ", "zed: ", "bakedit: "];
+
+/// A short description of what a binding runs, for the which-key list: the command
+/// palette's wording when the action is in it, the arguments that tell bindings of one
+/// action apart ("select between paren", "navigate left"), and each step of a sequence.
+pub fn describe(action: &Action, palette: &[Command]) -> String {
+    if action.name == "action::Sequence" {
+        let steps: Vec<String> = action
+            .args
+            .as_ref()
+            .and_then(|args| args.as_array())
+            .map(|steps| steps.iter().filter_map(Action::from_json).map(|step| describe(&step, palette)).collect())
+            .unwrap_or_default();
+        return if steps.is_empty() { "several actions".to_string() } else { steps.join(" + ") };
+    }
+    let listed = palette
+        .iter()
+        .find(|command| command.action == *action)
+        .or_else(|| palette.iter().find(|command| command.action.name == action.name && command.action.args.is_none()));
+    let mut text = match listed {
+        Some(command) => command.title.clone(),
+        None => {
+            let mut text = title(&action.name);
+            // Only the arguments that say which variant this is: words and numbers.
+            let mut push = |value: &serde_json::Value| match value {
+                serde_json::Value::String(word) => text.push_str(&format!(" {word}")),
+                serde_json::Value::Number(number) => text.push_str(&format!(" {number}")),
+                _ => {}
+            };
+            match &action.args {
+                Some(serde_json::Value::Object(map)) => map.values().for_each(&mut push),
+                Some(other) => push(other),
+                None => {}
+            }
+            text
+        }
+    };
+    if let Some(rest) = PLAIN_NAMESPACES.iter().find_map(|prefix| text.strip_prefix(prefix)) {
+        text = rest.to_string();
+    }
+    text
+}
+
 /// Everything the command palette offers, in catalogue order.
 pub fn palette() -> Vec<Command> {
     PALETTE
@@ -175,6 +220,7 @@ pub fn palette() -> Vec<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashSet;
 
     #[test]
@@ -187,6 +233,28 @@ mod tests {
         assert_eq!(title("zed::OpenSettingsFile"), "zed: open settings file");
         assert_eq!(title("editor::ToggleLSPStuff"), "editor: toggle lsp stuff");
         assert_eq!(title("Standalone"), "standalone");
+    }
+
+    #[test]
+    fn which_key_descriptions_say_what_each_binding_does() {
+        let palette = palette();
+        let describe = |name: &str, args: Option<serde_json::Value>| describe(&Action { name: name.into(), args }, &palette);
+        // The namespace stays where the verb alone would not say what is toggled.
+        assert_eq!(describe("terminal_panel::Toggle", None), "terminal panel: toggle");
+        assert_eq!(describe("file_finder::Toggle", None), "file finder: open a file");
+        assert_eq!(describe("command_palette::Toggle", None), "command palette: toggle");
+        // Generic namespaces go; the palette's wording is used.
+        assert_eq!(describe("workspace::Save", None), "save");
+        assert_eq!(describe("workspace::FocusCenterPane", None), "focus the editor");
+        assert_eq!(describe("pane::CloseActiveItem", Some(json!({ "close_pinned": false }))), "close tab");
+        assert_eq!(describe("zed::Quit", None), "quit");
+        // Arguments tell apart the bindings of one action.
+        assert_eq!(describe("editor::SelectBetween", Some(json!({ "kind": "paren" }))), "select between paren");
+        assert_eq!(describe("herdr::Navigate", Some(json!("left"))), "herdr: navigate left");
+        assert_eq!(describe("pane::ActivateItem", Some(json!(3))), "activate item 3");
+        // A sequence lists its steps.
+        let sequence = Some(json!(["git::Diff", "workspace::ToggleZoom"]));
+        assert_eq!(describe("action::Sequence", sequence), "git: project diff + toggle fullscreen for the focused pane");
     }
 
     #[test]

@@ -95,7 +95,11 @@ struct ConfigFiles {
 impl ConfigFiles {
     fn new() -> ConfigFiles {
         let config_home = settings::config_dir().parent().map(Path::to_path_buf).unwrap_or_default();
-        let paths = vec![settings::settings_path(), settings::keymap_path(), config_home.join("zed").join("settings.json")];
+        ConfigFiles::watching(vec![settings::settings_path(), settings::keymap_path(), config_home.join("zed").join("settings.json")])
+    }
+
+    /// Watch these files, as they are now.
+    fn watching(paths: Vec<PathBuf>) -> ConfigFiles {
         let mut files = ConfigFiles { stamps: Vec::new(), paths };
         files.stamps = files.read();
         files
@@ -562,10 +566,7 @@ impl App {
                 self.parser.set_kitty_flags(0);
                 self.shell.cmd_keys = false;
                 self.apply_nav_layer(false);
-                self.shell.set_status(
-                    "This terminal sends no cmd keys and no key releases: use ctrl-] as the prefix (ctrl-] t terminal, ctrl-] p files, ctrl-] ? every key)",
-                    false,
-                );
+                self.shell.set_status("No cmd keys from this terminal: use the ctrl-] prefix (ctrl-] ? lists every key)", false);
                 self.dirty = true;
             }
             other => log::debug!("terminal reply: {other:?}"),
@@ -796,6 +797,23 @@ mod tests {
         assert_eq!(modal_name(&picker).as_deref(), Some("FileFinder"));
         let prompt = Some(Modal::Prompt { prompt: crate::chrome::Prompt::new("?", &["Cancel"]), answers: vec![Vec::new()] });
         assert_eq!(modal_name(&prompt).as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn config_files_that_appear_change_or_go_are_noticed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let keymap = dir.path().join("keymap.json");
+        let mut files = ConfigFiles::watching(vec![dir.path().join("settings.json"), keymap.clone()]);
+        assert!(!files.changed(), "nothing happened yet");
+        std::fs::write(&keymap, "[]").unwrap();
+        assert!(files.changed(), "a new file");
+        assert!(!files.changed(), "noticed once");
+        // A later write moves the modification time (set it explicitly: file systems round).
+        let later = std::time::SystemTime::now() + Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&keymap).unwrap().set_modified(later).unwrap();
+        assert!(files.changed());
+        std::fs::remove_file(&keymap).unwrap();
+        assert!(files.changed(), "a removed file");
     }
 
     #[test]

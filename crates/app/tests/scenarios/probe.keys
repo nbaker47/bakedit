@@ -1,0 +1,3 @@
+# bakedit --probe: what the terminal answered to the startup queries.
+wait 2.5
+snap report

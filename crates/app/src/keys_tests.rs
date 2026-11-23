@@ -161,3 +161,16 @@ fn command_hints_show_the_bound_keys() {
     assert_eq!(hint.as_deref(), Some("⌘P"));
     assert_eq!(router.hint_for(&bakedit_core::Action::new("no::SuchAction"), &shell.contexts()), None);
 }
+
+#[test]
+fn the_key_bindings_page_lists_every_binding_by_context() {
+    let (router, _) = KeyRouter::new(Some(r#"[{ "context": "Workspace", "bindings": { "cmd-y": "command_palette::Toggle", "cmd-p": null } }]"#));
+    let page = router.listing();
+    assert!(page.starts_with("Key bindings: the built-in keymap, then ~/.config/bakedit/keymap.json."));
+    assert!(page.contains("\nWorkspace\n"), "a heading per context");
+    assert!(page.contains("\nEverywhere\n"), "bindings without a context");
+    assert!(page.lines().any(|l| l.trim_start().starts_with("cmd-p") && l.ends_with("file_finder::Toggle")), "built-in bindings");
+    assert!(page.lines().any(|l| l.contains("cmd-y") && l.contains("command_palette::Toggle") && l.ends_with("· keymap.json")), "the user's are marked");
+    assert!(page.lines().any(|l| l.contains("cmd-p") && l.contains("(switched off)")), "a null binding says so");
+    assert!(page.contains(r#"editor::SelectBetween {"kind":"paren"}"#), "arguments are shown");
+}

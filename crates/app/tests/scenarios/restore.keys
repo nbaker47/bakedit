@@ -1,0 +1,6 @@
+# Run after kitty.keys on the same state: the session it saved when cmd-q quit comes back
+# (lib.rs and main.rs open, main.rs in front at line 2, the left dock closed).
+wait 2.5
+snap start
+key cmd-q
+wait 1
