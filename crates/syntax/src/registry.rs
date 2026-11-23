@@ -52,7 +52,7 @@ const BASE: Language = Language {
 };
 
 /// Every language. Plain text is first; the rest are in no particular order.
-pub(crate) static LANGUAGES: [Language; 39] = [
+pub(crate) static LANGUAGES: &[Language] = &[
     Language {
         id: "plain_text",
         name: "Plain Text",
@@ -158,6 +158,9 @@ pub(crate) static LANGUAGES: [Language; 39] = [
             "composer.lock",
             "flake.lock",
             "Pipfile.lock",
+            "Package.resolved",
+            "bun.lock",
+            "deno.lock",
         ],
         aliases: &["jsonc", "json5"],
         line_comment: Some("// "),
@@ -492,8 +495,9 @@ pub(crate) static LANGUAGES: [Language; 39] = [
         grammar: Some(&grammar::GIT_COMMIT),
         ..BASE
     },
-    // The languages below have no grammar that both builds against this tree-sitter and
-    // ships a usable highlights query. They are plain text with the right conventions.
+    // The languages below were wanted with highlighting, but have no grammar crate that both
+    // builds against this tree-sitter and ships a usable highlights query. They are plain
+    // text with the right conventions.
     Language {
         id: "terraform",
         name: "Terraform",
@@ -576,6 +580,82 @@ pub(crate) static LANGUAGES: [Language; 39] = [
         line_comment: Some("# "),
         autoclose: &[],
         indent_after: "",
+        ..BASE
+    },
+    // Common formats nobody asked to have highlighted. Knowing them still gets comment
+    // toggling and bracket matching right, and keeps them from being soft-wrapped as prose.
+    Language {
+        id: "xml",
+        name: "XML",
+        extensions: &[
+            "xml",
+            "plist",
+            "svg",
+            "xsd",
+            "xsl",
+            "xslt",
+            "xib",
+            "storyboard",
+            "entitlements",
+            "csproj",
+            "props",
+            "targets",
+        ],
+        block_comment: HTML_BLOCK,
+        brackets: &[ROUND, SQUARE, CURLY, ANGLE],
+        word_chars: "-",
+        ..BASE
+    },
+    Language {
+        id: "ini",
+        name: "INI",
+        extensions: &[
+            "ini",
+            "cfg",
+            "conf",
+            "properties",
+            "desktop",
+            "service",
+            "editorconfig",
+        ],
+        file_names: &[
+            ".editorconfig",
+            ".gitconfig",
+            ".gitmodules",
+            ".npmrc",
+            ".gitattributes",
+        ],
+        aliases: &["dosini", "gitconfig"],
+        line_comment: Some("# "),
+        indent_after: "",
+        ..BASE
+    },
+    Language {
+        id: "cmake",
+        name: "CMake",
+        extensions: &["cmake"],
+        file_names: &["CMakeLists.txt"],
+        line_comment: Some("# "),
+        autoclose: CLOSE_DOUBLE,
+        ..BASE
+    },
+    Language {
+        id: "proto",
+        name: "Proto",
+        extensions: &["proto"],
+        aliases: &["protobuf"],
+        line_comment: Some("// "),
+        block_comment: C_BLOCK,
+        tab_size: 2,
+        ..BASE
+    },
+    Language {
+        id: "graphql",
+        name: "GraphQL",
+        extensions: &["graphql", "graphqls", "gql"],
+        line_comment: Some("# "),
+        autoclose: CLOSE_DOUBLE,
+        tab_size: 2,
         ..BASE
     },
 ];

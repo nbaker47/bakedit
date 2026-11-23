@@ -126,7 +126,7 @@ impl Language {
 
 /// Every language, plain text first.
 pub fn languages() -> &'static [Language] {
-    &LANGUAGES
+    LANGUAGES
 }
 
 /// The language with this id (`rust`, `plain_text`), or `None`.
@@ -389,6 +389,11 @@ mod tests {
             ("main.dart", "dart"),
             ("App.vue", "vue"),
             ("App.svelte", "svelte"),
+            ("Info.plist", "xml"),
+            ("icon.svg", "xml"),
+            ("settings.ini", "ini"),
+            ("schema.graphql", "graphql"),
+            ("api.proto", "proto"),
             ("notes.txt", "plain_text"),
         ];
         for (path, expected) in cases {
@@ -446,6 +451,11 @@ mod tests {
             (".clang-format", "yaml"),
             (".prettierrc", "json"),
             ("flake.lock", "json"),
+            ("bun.lock", "json"),
+            ("Package.resolved", "json"),
+            ("CMakeLists.txt", "cmake"),
+            (".editorconfig", "ini"),
+            (".gitconfig", "ini"),
             ("LICENSE", "plain_text"),
         ];
         for (path, expected) in cases {
