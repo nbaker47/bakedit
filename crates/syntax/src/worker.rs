@@ -207,7 +207,15 @@ fn run(
 ) {
     let mut highlighter = Highlighter::new();
     while let Some((doc_id, job, cancel)) = next_job(shared) {
-        let outcome = highlight_job(&mut highlighter, &job, &cancel, breaks);
+        let attempt = surviving(|| highlight_job(&mut highlighter, &job, &cancel, breaks));
+        let outcome = attempt.unwrap_or_else(|| {
+            // A bug met this text. The highlighter may have been left half-way through
+            // something, so start a new one, and answer with no highlights rather than not
+            // at all.
+            highlighter = Highlighter::new();
+            let plain = LineHighlights::with_line_breaks(&job.text, &[], breaks);
+            Some((plain, Vec::new()))
+        });
         let mut queue = shared.lock();
         queue.running = None;
         // A cancelled run was superseded or forgotten: its answer is not wanted.
@@ -227,6 +235,13 @@ fn run(
         }
         wake();
     }
+}
+
+/// Run `work`, turning a panic in it into `None` so that it does not end the thread: one
+/// text that trips a bug must not cost every other document its highlights for the rest of
+/// the session.
+fn surviving<T>(work: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).ok()
 }
 
 /// Block until a document is waiting and claim it. `None` means the worker is shutting down.
@@ -550,6 +565,14 @@ mod tests {
         assert!(!lines.is_empty());
         assert_eq!(brackets.len(), 4);
         assert!(crate::grammar::UNTOUCHED.outline_is_loaded());
+    }
+
+    #[test]
+    fn a_panic_in_the_work_is_contained() {
+        assert_eq!(surviving(|| 5), Some(5));
+        let lost: Option<u32> =
+            surviving(|| panic!("a deliberate panic, to test that it is caught"));
+        assert_eq!(lost, None);
     }
 
     #[test]
