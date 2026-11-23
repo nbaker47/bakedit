@@ -43,6 +43,21 @@ const BASE_CACHE_LIMIT: usize = 128;
 /// How many recent files and search queries are kept.
 const HISTORY_LIMIT: usize = 100;
 
+/// How deep below a non-repo project root to scan for nested git repositories
+/// (3 covers `~/Code/<repo>` as well as `~/Code/worktrees/<repo>/<lane>`).
+const NESTED_REPO_DEPTH: usize = 3;
+
+/// A git repository found at or below the project root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredRepo {
+    pub repo: Repo,
+    /// Top of the work tree spelled the way the project root is spelled.
+    pub top: PathBuf,
+    /// Path relative to the project root (e.g. `starbase`, `worktrees/bakedit/feat`),
+    /// or the directory name when the repository is at or above the project root.
+    pub label: String,
+}
+
 /// Git facts for the status bar.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitSummary {
@@ -95,19 +110,26 @@ struct Job {
     reply: Sender<Result<String, String>>,
 }
 
+enum StatusCmd {
+    Refresh,
+    SelectRepo(PathBuf),
+}
+
 enum ReadRequest {
     Base { repo: Repo, path: PathBuf, relative: PathBuf, epoch: u64 },
     Branches { repo: Repo, epoch: u64 },
 }
 
 enum GitMsg {
-    /// The repository was found (or is gone). `top` is the top of its work tree spelled
-    /// the way the project root is spelled.
+    /// The set of repositories at or nested under the project root.
+    Repos(Vec<DiscoveredRepo>),
+    /// The active repository was found, switched, or is gone. `top` is the top of its
+    /// work tree spelled the way the project root is spelled.
     Discovered { repo: Option<Repo>, top: Option<PathBuf> },
-    Status(Result<Status, String>),
+    Status { repo_root: PathBuf, result: Result<Status, String> },
     JobFinished { label: String, result: Result<String, String> },
     Base { path: PathBuf, epoch: u64, base: GitBase },
-    Branches { epoch: u64, branches: Result<Vec<Branch>, String> },
+    Branches { repo_root: PathBuf, epoch: u64, branches: Result<Vec<Branch>, String> },
 }
 
 /// Counts status reads asked for and done, so tests can wait for the last one.
@@ -136,7 +158,7 @@ struct BranchCache {
 
 struct GitLink {
     events: Sender<GitMsg>,
-    status_requests: Sender<()>,
+    status_requests: Sender<StatusCmd>,
     progress: Arc<StatusProgress>,
     jobs: OnceCell<Sender<Job>>,
     reads: OnceCell<Sender<ReadRequest>>,
@@ -149,6 +171,8 @@ pub struct Project {
     // Git. `link` is `None` for a detached project.
     link: Option<GitLink>,
     git_events: Receiver<GitMsg>,
+    repos: Vec<DiscoveredRepo>,
+    repos_version: u64,
     repo: Option<Repo>,
     git_top: Option<PathBuf>,
     status: Option<Arc<Status>>,
@@ -192,10 +216,14 @@ fn describe(error: &GitError) -> String {
 /// The top of the work tree, spelled the way the project root is spelled (git reports it
 /// with symbolic links resolved, the project root is kept as the user gave it).
 fn top_in_project_spelling(root: &Path, repo: &Repo) -> PathBuf {
-    if root.starts_with(repo.root()) {
+    if root.starts_with(repo.root()) || repo.root().starts_with(root) {
         return repo.root().to_path_buf();
     }
     let Ok(canonical) = root.canonicalize() else { return repo.root().to_path_buf() };
+    // Nested repo below a symlinked project root (e.g. macOS `/var/folders` -> `/private/var/folders`).
+    if let Ok(below) = repo.root().strip_prefix(&canonical) {
+        return root.join(below);
+    }
     let Ok(below) = canonical.strip_prefix(repo.root()) else { return repo.root().to_path_buf() };
     let mut top = root.to_path_buf();
     for _ in below.components() {
@@ -206,30 +234,85 @@ fn top_in_project_spelling(root: &Path, repo: &Repo) -> PathBuf {
     top
 }
 
-fn status_thread(root: PathBuf, requests: Receiver<()>, events: Sender<GitMsg>, progress: Arc<StatusProgress>, waker: Waker) {
+fn repo_label(root: &Path, top: &Path) -> String {
+    if let Ok(rel) = top.strip_prefix(root) {
+        if !rel.as_os_str().is_empty() {
+            return rel.to_string_lossy().into_owned();
+        }
+    }
+    top.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| top.display().to_string())
+}
+
+fn discover_all(root: &Path) -> Vec<DiscoveredRepo> {
+    if let Some(repo) = Repo::discover(root) {
+        let top = top_in_project_spelling(root, &repo);
+        let label = repo_label(root, &top);
+        return vec![DiscoveredRepo { repo, top, label }];
+    }
+    Repo::discover_nested(root, NESTED_REPO_DEPTH)
+        .into_iter()
+        .map(|repo| {
+            let top = top_in_project_spelling(root, &repo);
+            let label = repo_label(root, &top);
+            DiscoveredRepo { repo, top, label }
+        })
+        .collect()
+}
+
+fn status_thread(root: PathBuf, requests: Receiver<StatusCmd>, events: Sender<GitMsg>, progress: Arc<StatusProgress>, waker: Waker) {
     let mut repo: Option<Repo> = None;
+    let mut repos: Vec<DiscoveredRepo> = Vec::new();
     let mut last_discover: Option<Instant> = None;
-    while requests.recv().is_ok() {
-        while requests.try_recv().is_ok() {}
+    while let Ok(first) = requests.recv() {
+        let mut pending_select = match first {
+            StatusCmd::SelectRepo(path) => Some(path),
+            StatusCmd::Refresh => None,
+        };
+        while let Ok(cmd) = requests.try_recv() {
+            if let StatusCmd::SelectRepo(path) = cmd {
+                pending_select = Some(path);
+            }
+        }
         let target = progress.requested.load(Ordering::SeqCst);
-        if repo.is_none() && last_discover.is_none_or(|at| at.elapsed() >= DISCOVER_GAP) {
+
+        if let Some(wanted) = pending_select {
+            let chosen = repos.iter().find(|r| r.repo.root() == wanted || r.top == wanted).map(|r| r.repo.clone()).or_else(|| Repo::discover(&wanted));
+            let top = chosen.as_ref().map(|r| top_in_project_spelling(&root, r));
+            repo = chosen.clone();
+            if events.send(GitMsg::Discovered { repo: chosen, top }).is_err() {
+                return;
+            }
+        } else if repo.is_none() && last_discover.is_none_or(|at| at.elapsed() >= DISCOVER_GAP) {
             last_discover = Some(Instant::now());
-            repo = Repo::discover(&root);
-            let top = repo.as_ref().map(|repo| top_in_project_spelling(&root, repo));
-            if events.send(GitMsg::Discovered { repo: repo.clone(), top }).is_err() {
+            repos = discover_all(&root);
+            if events.send(GitMsg::Repos(repos.clone())).is_err() {
+                return;
+            }
+            if let Some(first_repo) = repos.first() {
+                repo = Some(first_repo.repo.clone());
+                if events.send(GitMsg::Discovered { repo: Some(first_repo.repo.clone()), top: Some(first_repo.top.clone()) }).is_err() {
+                    return;
+                }
+            } else if events.send(GitMsg::Discovered { repo: None, top: None }).is_err() {
                 return;
             }
         }
+
         if let Some(found) = &repo {
+            let repo_root = found.root().to_path_buf();
             let result = found.status().map_err(|error| describe(&error));
             let failed = result.is_err();
-            if events.send(GitMsg::Status(result)).is_err() {
+            if events.send(GitMsg::Status { repo_root: repo_root.clone(), result }).is_err() {
                 return;
             }
             // A status that fails usually means the repository went away: look again.
-            if failed && Repo::discover(&root).is_none() {
+            if failed && Repo::discover(&repo_root).is_none() {
                 repo = None;
+                repos.retain(|r| r.repo.root() != repo_root);
                 last_discover = Some(Instant::now());
+                if events.send(GitMsg::Repos(repos.clone())).is_err() {
+                    return;
+                }
                 if events.send(GitMsg::Discovered { repo: None, top: None }).is_err() {
                     return;
                 }
@@ -241,7 +324,7 @@ fn status_thread(root: PathBuf, requests: Receiver<()>, events: Sender<GitMsg>, 
     }
 }
 
-fn jobs_thread(jobs: Receiver<Job>, events: Sender<GitMsg>, status_requests: Sender<()>, progress: Arc<StatusProgress>, waker: Waker) {
+fn jobs_thread(jobs: Receiver<Job>, events: Sender<GitMsg>, status_requests: Sender<StatusCmd>, progress: Arc<StatusProgress>, waker: Waker) {
     for job in jobs {
         // A view's closure that panics must not take the queue down with it: every later
         // job would fail and this one would show as running for ever.
@@ -255,7 +338,7 @@ fn jobs_thread(jobs: Receiver<Job>, events: Sender<GitMsg>, status_requests: Sen
             return;
         }
         progress.requested.fetch_add(1, Ordering::SeqCst);
-        let _ = status_requests.send(());
+        let _ = status_requests.send(StatusCmd::Refresh);
         waker.wake();
     }
 }
@@ -269,7 +352,7 @@ fn reads_thread(requests: Receiver<ReadRequest>, events: Sender<GitMsg>, waker: 
                 GitMsg::Base { path, epoch, base }
             }
             ReadRequest::Branches { repo, epoch } => {
-                GitMsg::Branches { epoch, branches: repo.branches().map_err(|error| describe(&error)) }
+                GitMsg::Branches { repo_root: repo.root().to_path_buf(), epoch, branches: repo.branches().map_err(|error| describe(&error)) }
             }
         };
         if events.send(message).is_err() {
@@ -325,6 +408,8 @@ impl Project {
             waker,
             link,
             git_events,
+            repos: Vec::new(),
+            repos_version: 0,
             repo: None,
             git_top: None,
             status: None,
@@ -369,10 +454,64 @@ impl Project {
 
     // ---- git ---------------------------------------------------------------------------
 
-    /// The repository the project is in. `None` until it has been found, and when there
-    /// is none. Clone it into a [`Project::spawn`] to read diffs, logs and the like.
+    /// The repository the project is in (or the currently selected nested repository).
+    /// `None` until it has been found, and when there is none. Clone it into a
+    /// [`Project::spawn`] to read diffs, logs and the like.
     pub fn repo(&self) -> Option<&Repo> {
         self.repo.as_ref()
+    }
+
+    /// All git repositories discovered at or below the project root.
+    pub fn repos(&self) -> &[DiscoveredRepo] {
+        &self.repos
+    }
+
+    /// Changes whenever [`Project::repos`] changes.
+    pub fn repos_version(&self) -> u64 {
+        self.repos_version
+    }
+
+    /// Display name of the active repository when it is nested inside a non-repo project
+    /// root (like `~/Code/starbase` when `~/Code` is open) or when multiple repositories
+    /// exist in the project. `None` for a single repository at or above the project root.
+    pub fn active_repo_label(&self) -> Option<&str> {
+        let active = self.repo.as_ref()?;
+        let found = self.repos.iter().find(|r| r.repo.root() == active.root())?;
+        if self.repos.len() > 1 || (found.top.starts_with(&self.root) && found.top != self.root) {
+            Some(found.label.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// Switch the active git repository to the repository at `repo_root` (a path from
+    /// [`Project::repos`] or any path inside a repository). Clears cached status, bases
+    /// and branches and triggers a fresh status read in the background.
+    pub fn select_repo(&mut self, repo_root: &Path) {
+        let matched = self.repos.iter().find(|r| r.repo.root() == repo_root || r.top == repo_root).cloned();
+        let next_repo = matched.as_ref().map(|r| r.repo.clone());
+        let next_top = matched.as_ref().map(|r| r.top.clone());
+        if self.repo.as_ref().map(Repo::root) == next_repo.as_ref().map(Repo::root) && next_repo.is_some() {
+            return;
+        }
+        self.repo = next_repo;
+        self.git_top = next_top;
+        self.status = None;
+        self.status_index.clear();
+        self.bases.borrow_mut().clear();
+        {
+            let mut cache = self.branches.borrow_mut();
+            cache.value = None;
+            cache.epoch = None;
+            cache.loading = false;
+            cache.version += 1;
+        }
+        self.epoch.set(self.epoch.get() + 1);
+        self.git_generation += 1;
+        if let Some(link) = &self.link {
+            link.progress.requested.fetch_add(1, Ordering::SeqCst);
+            let _ = link.status_requests.send(StatusCmd::SelectRepo(repo_root.to_path_buf()));
+        }
     }
 
     /// The latest status: branch, upstream, ahead and behind, and every changed file.
@@ -402,6 +541,11 @@ impl Project {
         let branch = match (name, state) {
             (Some(name), Some(state)) => Some(format!("{name} ({state})")),
             (name, _) => name,
+        };
+        let branch = match (self.active_repo_label(), branch) {
+            (Some(repo), Some(branch)) => Some(format!("{repo} / {branch}")),
+            (Some(repo), None) => Some(repo.to_string()),
+            (None, branch) => branch,
         };
         GitSummary {
             branch,
@@ -437,7 +581,7 @@ impl Project {
     pub fn refresh_git(&self) {
         if let Some(link) = &self.link {
             link.progress.requested.fetch_add(1, Ordering::SeqCst);
-            let _ = link.status_requests.send(());
+            let _ = link.status_requests.send(StatusCmd::Refresh);
         }
     }
 
@@ -751,19 +895,34 @@ impl Project {
     /// Take in one message from a git thread. Returns true if views may need to redraw.
     fn apply_git(&mut self, message: GitMsg, events: &mut Vec<ProjectEvent>) -> bool {
         match message {
+            GitMsg::Repos(repos) => {
+                if self.repos == repos {
+                    return false;
+                }
+                self.repos = repos;
+                self.repos_version += 1;
+                true
+            }
             GitMsg::Discovered { repo, top } => {
                 let changed = self.repo != repo;
-                if repo.is_none() {
+                if changed {
                     self.status = None;
                     self.status_index.clear();
                     self.bases.borrow_mut().clear();
-                    *self.branches.borrow_mut() = BranchCache::default();
+                    let mut cache = self.branches.borrow_mut();
+                    cache.value = None;
+                    cache.epoch = None;
+                    cache.loading = false;
+                    cache.version += 1;
                 }
                 self.repo = repo;
                 self.git_top = top;
                 changed
             }
-            GitMsg::Status(Ok(status)) => {
+            GitMsg::Status { repo_root, result: Ok(status) } => {
+                if self.repo.as_ref().map(Repo::root) != Some(repo_root.as_path()) {
+                    return false;
+                }
                 if self.status.as_deref() == Some(&status) {
                     return false;
                 }
@@ -771,7 +930,7 @@ impl Project {
                 self.status = Some(Arc::new(status));
                 true
             }
-            GitMsg::Status(Err(reason)) => {
+            GitMsg::Status { result: Err(reason), .. } => {
                 log::warn!("git status failed: {reason}");
                 false
             }
@@ -798,8 +957,11 @@ impl Project {
                 entry.value = Some(Arc::new(base));
                 true
             }
-            GitMsg::Branches { epoch, branches } => {
+            GitMsg::Branches { repo_root, epoch, branches } => {
                 self.reads_in_flight.set(self.reads_in_flight.get().saturating_sub(1));
+                if self.repo.as_ref().map(Repo::root) != Some(repo_root.as_path()) {
+                    return false;
+                }
                 let mut cache = self.branches.borrow_mut();
                 cache.loading = false;
                 cache.epoch = Some(epoch);
@@ -975,6 +1137,39 @@ mod tests {
         let found = project.find_files("notes", 10);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, Path::new("notes.md"));
+    }
+
+    #[test]
+    fn a_parent_folder_discovers_nested_repos_and_switches_between_them() {
+        let parent = tempfile::tempdir().unwrap();
+        let alpha = parent.path().join("alpha");
+        let beta = parent.path().join("beta");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        for (dir, branch, file) in [(&alpha, "main", "a.txt"), (&beta, "dev", "b.txt")] {
+            git(dir, &["init", "-b", branch]);
+            git(dir, &["config", "user.name", "Test"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            std::fs::write(dir.join(file), "initial\n").unwrap();
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-m", "first"]);
+        }
+        std::fs::write(beta.join("b.txt"), "edited\n").unwrap();
+
+        let mut project = open(parent.path());
+        let labels: Vec<&str> = project.repos().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["alpha", "beta"]);
+        assert_eq!(project.active_repo_label(), Some("alpha"));
+        assert_eq!(project.git_summary().branch.as_deref(), Some("alpha / main"));
+        assert_eq!(project.git_summary().changes, 0);
+
+        let beta_root = project.repos()[1].repo.root().to_path_buf();
+        project.select_repo(&beta_root);
+        project.settle(WAIT);
+        assert_eq!(project.active_repo_label(), Some("beta"));
+        assert_eq!(project.git_summary().branch.as_deref(), Some("beta / dev"));
+        assert_eq!(project.git_summary().changes, 1);
+        assert_eq!(project.abs_path(Path::new("b.txt")), Some(beta.join("b.txt")));
     }
 
     #[test]

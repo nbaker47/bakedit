@@ -94,6 +94,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("git::ForcePush", None, Some("git: force push (with lease)")),
     ("git::RestoreTrackedFiles", None, Some("git: discard all tracked changes")),
     ("git::TrashUntrackedFiles", None, None),
+    ("git::SelectRepository", None, Some("git: select repository")),
     ("branches::OpenRecent", None, Some("git: switch branch")),
     // Editing
     ("editor::Undo", None, None),

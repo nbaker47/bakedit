@@ -61,6 +61,35 @@ impl Repo {
         })
     }
 
+    /// Finds git work trees nested inside `root` up to `max_depth` subdirectories deep
+    /// (for example, `~/Code/starbase` or `~/Code/worktrees/starbase/feat`).
+    ///
+    /// Stops descending into any directory that is itself a repository, skips hidden
+    /// directories and common build/dependency caches, and ignores unreadable folders.
+    /// Returns repositories deduplicated by root and sorted shallowest-first, then by path.
+    pub fn discover_nested(root: impl AsRef<Path>, max_depth: usize) -> Vec<Repo> {
+        let root = root.as_ref();
+        if !root.is_dir() || max_depth == 0 {
+            return Vec::new();
+        }
+        let mut candidates = Vec::new();
+        collect_nested_git_dirs(root, 1, max_depth, &mut candidates);
+        candidates.sort_by(|a, b| {
+            let da = a.components().count();
+            let db = b.components().count();
+            da.cmp(&db).then_with(|| a.cmp(b))
+        });
+        let mut repos: Vec<Repo> = Vec::new();
+        for dir in candidates {
+            if let Some(repo) = Repo::discover(&dir) {
+                if !repos.iter().any(|existing| existing.root() == repo.root()) {
+                    repos.push(repo);
+                }
+            }
+        }
+        repos
+    }
+
     /// The top directory of the work tree, as git reports it: absolute, with symbolic
     /// links resolved.
     pub fn root(&self) -> &Path {
@@ -165,6 +194,32 @@ impl Repo {
     /// Every path of `paths` relative to the root. See [`Repo::relative_path`].
     pub(crate) fn relative_paths<P: AsRef<Path>>(&self, paths: &[P]) -> Result<Vec<PathBuf>> {
         paths.iter().map(|path| self.relative_path(path)).collect()
+    }
+}
+
+/// Directory names skipped while looking for nested repositories.
+const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "venv", "__pycache__", "vendor"];
+
+fn collect_nested_git_dirs(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else { continue };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
+            continue;
+        }
+        let path = entry.path();
+        if path.join(".git").exists() {
+            out.push(path);
+            continue;
+        }
+        if depth < max_depth {
+            collect_nested_git_dirs(&path, depth + 1, max_depth, out);
+        }
     }
 }
 

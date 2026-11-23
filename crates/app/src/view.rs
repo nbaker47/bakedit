@@ -119,6 +119,9 @@ pub enum Effect {
     /// Leave this project and open another directory in this window. Unsaved files are
     /// asked about first, as when quitting.
     OpenProject(PathBuf),
+    /// Switch the active git repository in a multi-repo workspace (without changing the
+    /// open project root).
+    SelectRepo(PathBuf),
     Quit,
 }
 
@@ -334,6 +337,7 @@ pub enum PickerKind {
     TabSwitcher,
     Outline,
     Branches,
+    Repositories,
     /// Paths and URLs visible in the terminal.
     Links,
     RecentProjects,

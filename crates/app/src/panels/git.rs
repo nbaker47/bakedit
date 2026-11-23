@@ -158,6 +158,8 @@ pub struct GitPanel {
     pending: Vec<Pending>,
 
     // Where things were drawn, for the mouse.
+    repo_button: Rect,
+    branch_button: Rect,
     list_area: Rect,
     message_area: Rect,
     /// The rows of the message box that hold text (the band minus its padding).
@@ -400,6 +402,8 @@ impl GitPanel {
             amending: None,
             amend_load: None,
             pending: Vec::new(),
+            repo_button: Rect::default(),
+            branch_button: Rect::default(),
             list_area: Rect::default(),
             message_area: Rect::default(),
             message_text: Rect::default(),
@@ -923,15 +927,25 @@ impl GitPanel {
         width + 1
     }
 
-    fn draw_header(&self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
+    fn draw_header(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
         let theme = cx.theme;
         let bg = theme.panel_bg;
         if area.height == 0 {
             return;
         }
         let inner = area.width.saturating_sub(2);
+        let repo_label = cx.project.active_repo_label().map(str::to_string);
+        let multi_repo = cx.project.repos().len() > 1;
         let Some(status) = &self.status else {
-            canvas.text_truncated(area.x + 1, area.y, "Git", Style::colors(theme.text, bg).bold(), inner);
+            if let Some(label) = repo_label {
+                let text = if multi_repo { format!("{label} ▾") } else { label };
+                let used = canvas.text_truncated(area.x + 1, area.y, &text, Style::colors(theme.text_accent, bg).bold(), inner);
+                if multi_repo {
+                    self.repo_button = Rect::new(area.x + 1, area.y, used, 1);
+                }
+            } else {
+                canvas.text_truncated(area.x + 1, area.y, "Git", Style::colors(theme.text, bg).bold(), inner);
+            }
             return;
         };
         // The right side: the job that is running, else how many files changed.
@@ -946,25 +960,42 @@ impl GitPanel {
         let right_width = ui::width(&right) as u16;
         let end = area.x + 1 + if right.is_empty() { inner } else { inner.saturating_sub(right_width + 2) };
         let mut x = area.x + 1;
-        let mut put = |canvas: &mut Canvas<'_>, text: &str, style: Style| {
-            if x < end {
-                x += canvas.text_truncated(x, area.y, text, style, end - x);
+        let put = |canvas: &mut Canvas<'_>, x: &mut u16, text: &str, style: Style| -> u16 {
+            if *x < end {
+                let used = canvas.text_truncated(*x, area.y, text, style, end - *x);
+                *x += used;
+                used
+            } else {
+                0
             }
         };
+        if let Some(label) = repo_label {
+            let start = x;
+            let text = if multi_repo { format!("{label} ▾") } else { label };
+            let used = put(canvas, &mut x, &text, Style::colors(theme.text_accent, bg).bold());
+            if used > 0 && multi_repo {
+                self.repo_button = Rect::new(start, area.y, used, 1);
+            }
+            put(canvas, &mut x, " / ", Style::colors(theme.text_muted, bg));
+        }
         let (name, detached) = match (&status.branch, &status.head) {
             (Some(branch), _) => (branch.clone(), false),
             (None, Some(head)) => (format!("detached at {head}"), true),
             (None, None) => ("no branch".to_string(), true),
         };
+        let branch_start = x;
         if cx.settings.icons == Icons::Nerd {
-            put(canvas, "\u{e0a0} ", Style::colors(theme.text_muted, bg));
+            put(canvas, &mut x, "\u{e0a0} ", Style::colors(theme.text_muted, bg));
         }
-        put(canvas, &name, Style::colors(if detached { theme.warning } else { theme.text }, bg).bold());
+        put(canvas, &mut x, &name, Style::colors(if detached { theme.warning } else { theme.text }, bg).bold());
+        if x > branch_start {
+            self.branch_button = Rect::new(branch_start, area.y, x - branch_start, 1);
+        }
         if status.ahead > 0 {
-            put(canvas, &format!("  ↑{}", status.ahead), Style::colors(theme.created, bg));
+            put(canvas, &mut x, &format!("  ↑{}", status.ahead), Style::colors(theme.created, bg));
         }
         if status.behind > 0 {
-            put(canvas, &format!("  ↓{}", status.behind), Style::colors(theme.modified, bg));
+            put(canvas, &mut x, &format!("  ↓{}", status.behind), Style::colors(theme.modified, bg));
         }
         if let Some(state) = status.state {
             let label = match state {
@@ -974,10 +1005,10 @@ impl GitPanel {
                 RepoState::Reverting => "reverting",
                 RepoState::Bisecting => "bisecting",
             };
-            put(canvas, &format!("  {label}"), Style::colors(theme.warning, bg).bold());
+            put(canvas, &mut x, &format!("  {label}"), Style::colors(theme.warning, bg).bold());
         }
         if status.upstream_gone {
-            put(canvas, "  upstream gone", Style::colors(theme.warning, bg));
+            put(canvas, &mut x, "  upstream gone", Style::colors(theme.warning, bg));
         }
         if !right.is_empty() {
             canvas.text_right(area.right() - 1, area.y, &right, Style::colors(theme.text_muted, bg));
@@ -1217,6 +1248,8 @@ impl View for GitPanel {
     fn render(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
         let theme = cx.theme;
         canvas.fill(area, theme.panel_bg);
+        self.repo_button = Rect::default();
+        self.branch_button = Rect::default();
         self.list_area = Rect::default();
         self.message_area = Rect::default();
         self.message_text = Rect::default();
@@ -1340,6 +1373,14 @@ impl View for GitPanel {
                 true
             }
             MouseKind::Press(MouseButton::Left) => {
+                if inside(self.repo_button) {
+                    cx.push(Effect::Dispatch(Action::new("git::SelectRepository")));
+                    return true;
+                }
+                if inside(self.branch_button) {
+                    cx.push(Effect::Dispatch(Action::new("branches::OpenRecent")));
+                    return true;
+                }
                 if inside(self.commit_button) {
                     return self.handle_action(&Action::new(if self.amending.is_some() { "git::Amend" } else { "git::Commit" }), cx);
                 }

@@ -332,6 +332,7 @@ impl Shell {
                     PickerKind::TabSwitcher => "TabSwitcher",
                     PickerKind::Outline => "Outline",
                     PickerKind::Branches => "GitBranchSelector",
+                    PickerKind::Repositories => "GitRepoSelector",
                     PickerKind::Links => "LinkPicker",
                     PickerKind::RecentProjects => "RecentProjects",
                 }));
@@ -696,6 +697,7 @@ impl Shell {
             }
             "outline::Toggle" => self.toggle_picker(PickerKind::Outline),
             "branches::OpenRecent" => self.toggle_picker(PickerKind::Branches),
+            "git::SelectRepository" => self.toggle_picker(PickerKind::Repositories),
             "terminal::OpenLinks" => self.toggle_picker(PickerKind::Links),
             "projects::OpenRecent" => self.toggle_picker(PickerKind::RecentProjects),
             "go_to_line::Toggle" => {
@@ -1078,6 +1080,7 @@ impl Shell {
             PickerKind::TabSwitcher => "Switch tab",
             PickerKind::Outline => "Go to symbol",
             PickerKind::Branches => "Switch branch",
+            PickerKind::Repositories => "Select repository",
             PickerKind::Links => "Open a path or link from the terminal",
             PickerKind::RecentProjects => "Open a recent project",
         };
@@ -1089,6 +1092,7 @@ impl Shell {
             PickerKind::Outline if self.view_rows.is_empty() => "No symbols in this file",
             PickerKind::Outline => "No matching symbols",
             PickerKind::Branches => "No matching branches",
+            PickerKind::Repositories => "No git repositories found in this folder",
             PickerKind::Links if self.view_rows.is_empty() => "No paths or links on screen: they appear here when a program prints one",
             PickerKind::Links => "No matching paths or links",
             PickerKind::RecentProjects => "No recent projects",
@@ -1502,6 +1506,10 @@ impl Shell {
                 }
             }
             Effect::OpenProject(root) => self.request_open_project(root, None),
+            Effect::SelectRepo(root) => {
+                self.project.select_repo(&root);
+                self.git = self.project.git_summary();
+            }
             Effect::Quit => self.request_quit(None),
         }
     }

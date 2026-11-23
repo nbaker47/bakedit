@@ -60,13 +60,14 @@ pub struct AppSource {
     /// What the last `rows` listed, for `confirm`.
     files: Vec<FileRow>,
     branches: Vec<String>,
+    repos: Vec<PathBuf>,
     projects: Vec<PathBuf>,
 }
 
 impl AppSource {
     /// A source that keeps the recent projects in `state_dir`.
     pub fn new(state_dir: PathBuf) -> AppSource {
-        AppSource { state_dir, files: Vec::new(), branches: Vec::new(), projects: Vec::new() }
+        AppSource { state_dir, files: Vec::new(), branches: Vec::new(), repos: Vec::new(), projects: Vec::new() }
     }
 
     fn file_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
@@ -134,6 +135,30 @@ impl AppSource {
             .collect()
     }
 
+    fn repo_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
+        self.repos.clear();
+        let repos = cx.project.repos();
+        if repos.is_empty() {
+            return Vec::new();
+        }
+        let active = cx.project.repo().map(|r| r.root().to_path_buf());
+        let labels: Vec<&str> = repos.iter().map(|r| r.label.as_str()).collect();
+        fuzzy::filter(labels, query)
+            .into_iter()
+            .map(|found| {
+                let entry = &repos[found.index];
+                self.repos.push(entry.repo.root().to_path_buf());
+                let name = entry.top.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| entry.label.clone());
+                let mut item = PickerItem::new(entry.label.clone()).matched(found.positions);
+                item.icon = Some(file_icon(cx.settings, &name, true, false));
+                if active.as_deref() == Some(entry.repo.root()) {
+                    item.hint = Some("active".to_string());
+                }
+                item
+            })
+            .collect()
+    }
+
     fn project_rows(&mut self, query: &str, cx: &mut Cx<'_>) -> Vec<PickerItem> {
         let home = dirs::home_dir();
         let shown = |path: &Path| match home.as_deref().and_then(|home| path.strip_prefix(home).ok()) {
@@ -177,6 +202,7 @@ impl PickerSource for AppSource {
         match kind {
             PickerKind::FileFinder => self.file_rows(query, cx),
             PickerKind::Branches => self.branch_rows(query, cx),
+            PickerKind::Repositories => self.repo_rows(query, cx),
             PickerKind::RecentProjects => self.project_rows(query, cx),
             // The shell and the views fill the others.
             PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links => Vec::new(),
@@ -218,6 +244,11 @@ impl PickerSource for AppSource {
                 let label = format!("Create branch {name}");
                 let _ = cx.project.git_job(label, move |repo| repo.create_branch(&name, true).map(|()| format!("Switched to a new branch {name}")));
             }
+            (PickerKind::Repositories, Some(row)) => {
+                if let Some(path) = self.repos.get(row).cloned() {
+                    cx.push(Effect::SelectRepo(path));
+                }
+            }
             (PickerKind::RecentProjects, Some(row)) => {
                 if let Some(path) = self.projects.get(row).cloned() {
                     cx.push(Effect::OpenProject(path));
@@ -244,6 +275,7 @@ impl PickerSource for AppSource {
         match kind {
             PickerKind::FileFinder => cx.project.index_generation(),
             PickerKind::Branches => cx.project.branches_version(),
+            PickerKind::Repositories => cx.project.repos_version(),
             _ => 0,
         }
     }
@@ -334,6 +366,32 @@ mod tests {
         source.confirm(PickerKind::Branches, Some(0), "login", false, &mut harness.cx());
         harness.project.settle(Duration::from_secs(20));
         assert_eq!(harness.project.git_summary().branch.as_deref(), Some("feature/login"));
+    }
+
+    #[test]
+    fn repositories_picker_lists_nested_repos_and_emits_select_repo() {
+        let parent = tempfile::tempdir().unwrap();
+        for name in ["alpha", "beta"] {
+            let sub = parent.path().join(name);
+            std::fs::create_dir_all(&sub).unwrap();
+            git(&sub, &["init", "-b", "main"]);
+            git(&sub, &["config", "user.name", "Test"]);
+            git(&sub, &["config", "user.email", "test@example.com"]);
+            std::fs::write(sub.join("f.txt"), "hi\n").unwrap();
+            git(&sub, &["add", "."]);
+            git(&sub, &["commit", "-m", "init"]);
+        }
+        let mut harness = settled(parent.path());
+        let mut source = AppSource::new(parent.path().join("state"));
+        let rows = source.rows(PickerKind::Repositories, "", &mut harness.cx());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "alpha");
+        assert_eq!(rows[0].hint.as_deref(), Some("active"));
+        assert_eq!(rows[1].label, "beta");
+        assert_eq!(rows[1].hint, None);
+        source.confirm(PickerKind::Repositories, Some(1), "", false, &mut harness.cx());
+        let expected_beta = harness.project.repos()[1].repo.root().to_path_buf();
+        assert_eq!(harness.take_effects(), vec![Effect::SelectRepo(expected_beta)]);
     }
 
     #[test]
