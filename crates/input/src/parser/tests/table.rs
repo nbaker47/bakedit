@@ -175,7 +175,7 @@ fn legacy_key_cases() -> Vec<Case> {
 fn tilde_cases() -> Vec<Case> {
     let none = Mods::empty();
     #[rustfmt::skip]
-    let numbers: [(u32, Key); 28] = [
+    let numbers: [(u32, Key); 33] = [
         (1, Key::Home), (2, Key::Insert), (3, Key::Delete), (4, Key::End),
         (5, Key::PageUp), (6, Key::PageDown), (7, Key::Home), (8, Key::End),
         (11, Key::F(1)), (12, Key::F(2)), (13, Key::F(3)), (14, Key::F(4)), (15, Key::F(5)),
@@ -183,6 +183,7 @@ fn tilde_cases() -> Vec<Case> {
         (23, Key::F(11)), (24, Key::F(12)),
         (25, Key::F(13)), (26, Key::F(14)), (28, Key::F(15)), (29, Key::F(16)),
         (31, Key::F(17)), (32, Key::F(18)), (33, Key::F(19)), (34, Key::F(20)),
+        (42, Key::F(21)), (43, Key::F(22)), (44, Key::F(23)), (45, Key::F(24)), (46, Key::F(25)),
     ];
     let mut cases = Vec::new();
     for (number, which) in numbers {
@@ -634,6 +635,8 @@ fn ignored_cases() -> Vec<Case> {
         silent(b"\x1b[27;;~"),
         silent(b"\x1b[30~"),
         silent(b"\x1b[35~"),
+        silent(b"\x1b[41~"),
+        silent(b"\x1b[47~"),
         silent(b"\x1b[~"),
         silent(b"\x1b[3;5;7~"),
         silent(b"\x1b[1;2;3A"),

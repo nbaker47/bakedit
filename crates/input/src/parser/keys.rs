@@ -102,6 +102,8 @@ pub(super) fn tilde_key(number: u32) -> Option<KeyEvent> {
         23..=26 => function(number - 12),
         28 | 29 => function(number - 13),
         31..=34 => function(number - 14),
+        // F21 to F25, where xterm continues the series.
+        42..=46 => function(number - 21),
         KP_BEGIN => keypad(Key::Other(KP_BEGIN)),
         _ => return None,
     })
