@@ -3,26 +3,7 @@
 
 mod common;
 
-use common::{capture_marked, highlight, render};
-
-/// Highlight `text` as `language` and check each `(piece, capture)`; see `languages.rs`.
-fn check(language: &str, text: &str, expectations: &[(&str, &str)]) {
-    let spans = highlight(language, text);
-    let misses: Vec<String> = expectations
-        .iter()
-        .filter_map(|(piece, expected)| {
-            let actual = capture_marked(text, &spans, piece);
-            (actual != *expected)
-                .then(|| format!("  {piece:?}: expected {expected:?}, got {actual:?}"))
-        })
-        .collect();
-    assert!(
-        misses.is_empty(),
-        "{language} is highlighted wrongly:\n{}\n\nall spans:\n{}",
-        misses.join("\n"),
-        render(text, &spans)
-    );
-}
+use common::{capture_marked, check_captures as check, highlight};
 
 #[test]
 fn markdown_fences_are_highlighted_in_their_own_language() {

@@ -6,30 +6,15 @@
 
 mod common;
 
-use common::{capture_marked, highlight, render, SAMPLES};
+use common::{check_captures, highlight, SAMPLES};
 
-/// Highlight the language's sample and check every expectation, reporting all the misses at
-/// once.
+/// Check the language's sample against a table of `(piece, capture)`.
 fn check(language: &str, expectations: &[(&str, &str)]) {
     let sample = SAMPLES
         .iter()
         .find(|sample| sample.language == language)
         .unwrap_or_else(|| panic!("no sample for {language}"));
-    let spans = highlight(language, sample.text);
-    let misses: Vec<String> = expectations
-        .iter()
-        .filter_map(|(piece, expected)| {
-            let actual = capture_marked(sample.text, &spans, piece);
-            (actual != *expected)
-                .then(|| format!("  {piece:?}: expected {expected:?}, got {actual:?}"))
-        })
-        .collect();
-    assert!(
-        misses.is_empty(),
-        "{language} is highlighted wrongly:\n{}\n\nall spans:\n{}",
-        misses.join("\n"),
-        render(sample.text, &spans)
-    );
+    check_captures(language, sample.text, expectations);
 }
 
 #[test]

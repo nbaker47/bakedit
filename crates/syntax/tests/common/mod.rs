@@ -1028,6 +1028,27 @@ pub fn capture_marked(text: &str, spans: &[HighlightSpan], marked: &str) -> &'st
     capture_of_range(text, spans, start + inner.start, start + inner.end)
 }
 
+/// Highlight `text` as `language` and check that each piece is drawn with the capture given
+/// for it, reporting all the misses at once. A piece is written as for [`capture_marked`];
+/// `""` as the capture means no highlight at all.
+pub fn check_captures(language: &str, text: &str, expectations: &[(&str, &str)]) {
+    let spans = highlight(language, text);
+    let misses: Vec<String> = expectations
+        .iter()
+        .filter_map(|(piece, expected)| {
+            let actual = capture_marked(text, &spans, piece);
+            (actual != *expected)
+                .then(|| format!("  {piece:?}: expected {expected:?}, got {actual:?}"))
+        })
+        .collect();
+    assert!(
+        misses.is_empty(),
+        "{language} is highlighted wrongly:\n{}\n\nall spans:\n{}",
+        misses.join("\n"),
+        render(text, &spans)
+    );
+}
+
 /// Every span as `start..end capture "text"`, one per line, for reading in a failure
 /// message.
 pub fn render(text: &str, spans: &[HighlightSpan]) -> String {
