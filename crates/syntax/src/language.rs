@@ -670,26 +670,36 @@ mod tests {
     #[test]
     fn editing_conventions_follow_zed() {
         let get = |id: &str| language_by_id(id).unwrap_or_else(|| panic!("no {id}"));
-        // From the `languages` section of Zed's default settings.
-        assert!(get("go").hard_tabs);
-        assert_eq!(get("dart").tab_size, 2);
-        for id in ["markdown", "plain_text", "git_commit"] {
-            assert!(get(id).soft_wrap, "{id}");
+        // Dart, Go and the three wrapped ones are in the `languages` section of Zed's default
+        // settings; the next five are two columns in Zed's own language configurations; the
+        // last four have no grammar here and follow their formatters.
+        let two_columns = [
+            "dart",
+            "javascript",
+            "typescript",
+            "tsx",
+            "json",
+            "yaml",
+            "terraform",
+            "hcl",
+            "proto",
+            "graphql",
+        ];
+        // A recipe line has to start with a tab, gofmt writes go.mod with tabs, and Godot's
+        // style is tabs.
+        let hard_tabs = ["go", "make", "gomod", "gdscript"];
+        let soft_wrap = ["markdown", "plain_text", "git_commit"];
+        // These lists are the whole of it: everything else is four spaces, not wrapped.
+        for language in languages() {
+            let id = language.id;
+            let columns = if two_columns.contains(&id) { 2 } else { 4 };
+            assert_eq!(language.tab_size, columns, "{id}");
+            assert_eq!(language.hard_tabs, hard_tabs.contains(&id), "{id}");
+            assert_eq!(language.soft_wrap, soft_wrap.contains(&id), "{id}");
         }
-        // Everything else is four spaces, no wrapping.
-        for id in [
-            "rust", "python", "c", "cpp", "swift", "shell", "toml", "html", "css",
-        ] {
-            let language = get(id);
-            assert_eq!(
-                (language.tab_size, language.hard_tabs, language.soft_wrap),
-                (4, false, false),
-                "{id}"
-            );
+        for id in two_columns.iter().chain(&hard_tabs).chain(&soft_wrap) {
+            get(id);
         }
-        // A recipe line has to start with a tab, and gofmt writes go.mod with tabs.
-        assert!(get("make").hard_tabs);
-        assert!(get("gomod").hard_tabs);
 
         assert_eq!(get("rust").line_comment, Some("// "));
         assert_eq!(get("python").line_comment, Some("# "));

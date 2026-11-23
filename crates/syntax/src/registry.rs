@@ -3,8 +3,10 @@
 //! Indent sizes follow Zed: the `languages` section of its default settings gives Go hard
 //! tabs, Dart two columns and soft wrap to Markdown, plain text and commit messages;
 //! JavaScript, TypeScript, TSX, JSON and YAML are two columns in Zed as well (set in each
-//! language's own configuration rather than in the settings file); everything else is four
-//! spaces. Makefiles and `go.mod` use hard tabs because their tools require or write them.
+//! language's own configuration rather than in the settings file). Makefiles and `go.mod`
+//! use hard tabs because their tools require or write them. A few languages that have no
+//! grammar here follow their own formatter: two columns for Terraform, HCL, Proto and
+//! GraphQL, hard tabs for GDScript. Everything else is four spaces.
 
 use crate::grammar::{self, GrammarSpec};
 use crate::language::{language_by_name, Language, Pair};
