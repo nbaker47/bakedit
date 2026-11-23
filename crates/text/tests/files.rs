@@ -14,14 +14,20 @@ fn write(dir: &TempDir, name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn file_names(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> =
-        fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     names.sort();
     names
 }
 
-const KEEP: SaveOptions = SaveOptions { ensure_final_newline: false };
-const FINAL_NEWLINE: SaveOptions = SaveOptions { ensure_final_newline: true };
+const KEEP: SaveOptions = SaveOptions {
+    ensure_final_newline: false,
+};
+const FINAL_NEWLINE: SaveOptions = SaveOptions {
+    ensure_final_newline: true,
+};
 
 #[test]
 fn loads_a_plain_file() {
@@ -49,7 +55,11 @@ fn loads_an_empty_file_and_a_file_without_final_newline() {
     assert_eq!(buffer.len_lines(), 2);
     assert_eq!(buffer.line(1), "b");
     buffer.save(KEEP).unwrap();
-    assert_eq!(fs::read(dir.path().join("tail")).unwrap(), b"a\nb", "saving does not add a newline unasked");
+    assert_eq!(
+        fs::read(dir.path().join("tail")).unwrap(),
+        b"a\nb",
+        "saving does not add a newline unasked"
+    );
 }
 
 #[test]
@@ -66,7 +76,10 @@ fn crlf_is_normalised_in_memory_and_restored_on_save() {
     buffer.edit(&[(3..3, "!\nextra")]);
     assert_eq!(buffer.to_string(), "one!\nextra\ntwo\nthree");
     buffer.save(FINAL_NEWLINE).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), b"one!\r\nextra\r\ntwo\r\nthree\r\n");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        b"one!\r\nextra\r\ntwo\r\nthree\r\n"
+    );
     assert!(!buffer.is_dirty());
 
     // Converting to LF is a change worth saving.
@@ -101,7 +114,10 @@ fn invalid_utf8_is_replaced_and_flagged() {
     assert!(buffer.had_invalid_utf8());
     assert!(!buffer.is_dirty());
     buffer.save(KEEP).unwrap();
-    assert!(!buffer.had_invalid_utf8(), "after a save the file is what the buffer holds");
+    assert!(
+        !buffer.had_invalid_utf8(),
+        "after a save the file is what the buffer holds"
+    );
     assert_eq!(fs::read(&path).unwrap(), "caf\u{fffd}\nok\n".as_bytes());
 }
 
@@ -122,7 +138,10 @@ fn binary_files_are_refused() {
 
     let mut early_nul = vec![b'a'; 8 * 1024 - 1];
     early_nul.push(0);
-    assert!(matches!(Buffer::from_file(write(&dir, "early.txt", &early_nul)), Err(BufferError::Binary { .. })));
+    assert!(matches!(
+        Buffer::from_file(write(&dir, "early.txt", &early_nul)),
+        Err(BufferError::Binary { .. })
+    ));
 }
 
 #[test]
@@ -130,13 +149,19 @@ fn a_missing_file_is_an_io_error() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("nope.txt");
     match Buffer::from_file(&path) {
-        Err(BufferError::Io { path: failed, source }) => {
+        Err(BufferError::Io {
+            path: failed,
+            source,
+        }) => {
             assert_eq!(failed, path);
             assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
         }
         other => panic!("expected an io error, got {other:?}"),
     }
-    assert!(matches!(Buffer::from_file(dir.path()), Err(BufferError::Io { .. })), "a directory is not a file");
+    assert!(
+        matches!(Buffer::from_file(dir.path()), Err(BufferError::Io { .. })),
+        "a directory is not a file"
+    );
 }
 
 #[test]
@@ -166,7 +191,11 @@ fn save_creates_a_new_file() {
     let path = dir.path().join("fresh.txt");
     let mut buffer = Buffer::from_str("brand new");
     buffer.set_path(Some(path.clone()));
-    assert_eq!(buffer.disk_state(), DiskState::Unchanged, "nothing on disk yet");
+    assert_eq!(
+        buffer.disk_state(),
+        DiskState::Unchanged,
+        "nothing on disk yet"
+    );
     buffer.save(FINAL_NEWLINE).unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"brand new\n");
     assert_eq!(file_names(dir.path()), vec!["fresh.txt"]);
@@ -205,7 +234,11 @@ fn save_as_switches_the_path_only_on_success() {
     buffer.save_as(&second, KEEP).unwrap();
     assert_eq!(buffer.path(), Some(second.as_path()));
     assert_eq!(fs::read(&second).unwrap(), b"# one\n");
-    assert_eq!(fs::read(&first).unwrap(), b"one\n", "the old file is untouched");
+    assert_eq!(
+        fs::read(&first).unwrap(),
+        b"one\n",
+        "the old file is untouched"
+    );
     assert!(!buffer.is_dirty());
 }
 
@@ -219,7 +252,10 @@ fn save_keeps_permissions() {
     let mut buffer = Buffer::from_file(&path).unwrap();
     buffer.edit(&[(10..10, "echo hi\n")]);
     buffer.save(KEEP).unwrap();
-    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o750);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o750
+    );
     assert_eq!(fs::read(&path).unwrap(), b"#!/bin/sh\necho hi\n");
 }
 
@@ -233,7 +269,9 @@ fn save_refuses_a_read_only_file() {
     let mut buffer = Buffer::from_file(&path).unwrap();
     buffer.edit(&[(0..4, "lose")]);
     match buffer.save(KEEP) {
-        Err(BufferError::Io { source, .. }) => assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied),
+        Err(BufferError::Io { source, .. }) => {
+            assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied)
+        }
         other => panic!("expected a permission error, got {other:?}"),
     }
     assert_eq!(fs::read(&path).unwrap(), b"keep me\n");
@@ -258,7 +296,13 @@ fn save_follows_symlinks_instead_of_replacing_them() {
     buffer.edit(&[(1..2, "2")]);
     buffer.save(KEEP).unwrap();
 
-    assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is still a link"
+    );
     assert_eq!(fs::read(&target).unwrap(), b"v2\n");
     assert_eq!(file_names(&real_dir), vec!["target.txt"]);
     assert_eq!(file_names(dir.path()), vec!["link.txt", "real"]);
@@ -270,8 +314,14 @@ fn save_follows_symlinks_instead_of_replacing_them() {
     let mut buffer = Buffer::from_str("made through a link\n");
     buffer.set_path(Some(dangling.clone()));
     buffer.save(KEEP).unwrap();
-    assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read(real_dir.join("later.txt")).unwrap(), b"made through a link\n");
+    assert!(fs::symlink_metadata(&dangling)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read(real_dir.join("later.txt")).unwrap(),
+        b"made through a link\n"
+    );
 }
 
 #[cfg(unix)]
@@ -299,7 +349,10 @@ fn ensure_final_newline_adds_trims_and_is_undoable() {
     assert_eq!(summary.map_offset(3, Bias::Left), 3);
     assert_eq!(buffer.to_string(), "a\nb\n");
     assert_eq!(fs::read(&path).unwrap(), b"a\nb\n");
-    assert!(!buffer.is_dirty(), "the newline edit is part of the saved state");
+    assert!(
+        !buffer.is_dirty(),
+        "the newline edit is part of the saved state"
+    );
     buffer.undo().unwrap();
     assert_eq!(buffer.to_string(), "a\nb");
     assert!(buffer.is_dirty());
@@ -309,7 +362,11 @@ fn ensure_final_newline_adds_trims_and_is_undoable() {
     let summary = buffer.save(FINAL_NEWLINE).unwrap();
     assert_eq!(buffer.to_string(), "a\nb\n");
     assert_eq!(fs::read(&path).unwrap(), b"a\nb\n");
-    assert_eq!(summary.map_offset(9, Bias::Left), 4, "a position in the trimmed tail moves to the end");
+    assert_eq!(
+        summary.map_offset(9, Bias::Left),
+        4,
+        "a position in the trimmed tail moves to the end"
+    );
 
     let path = write(&dir, "fine.txt", b"a\nb\n");
     let mut buffer = Buffer::from_file(&path).unwrap();
@@ -325,7 +382,11 @@ fn ensure_final_newline_adds_trims_and_is_undoable() {
     let mut buffer = Buffer::from_file(&path).unwrap();
     buffer.edit(&[(0..1, "b")]);
     buffer.save(KEEP).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), b"b\n\n\n", "without the option nothing is trimmed");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        b"b\n\n\n",
+        "without the option nothing is trimmed"
+    );
 }
 
 /// Rewrite a file from outside and make sure the buffer can tell, whatever the clock's
@@ -349,7 +410,11 @@ fn disk_state_follows_outside_changes() {
     fs::remove_file(&path).unwrap();
     assert_eq!(buffer.disk_state(), DiskState::Deleted);
     assert!(matches!(buffer.reload(), Err(BufferError::Io { .. })));
-    assert_eq!(buffer.to_string(), "one\ntwo\n", "a failed reload leaves the buffer alone");
+    assert_eq!(
+        buffer.to_string(),
+        "one\ntwo\n",
+        "a failed reload leaves the buffer alone"
+    );
 
     // Saving brings the file back.
     buffer.save(KEEP).unwrap();
@@ -384,11 +449,17 @@ fn reload_applies_only_what_changed() {
 
     // Only the changed region was edited, so positions elsewhere just shift.
     let total_removed: usize = summary.changes().map(|change| change.old.len()).sum();
-    assert!(total_removed <= 2, "expected a minimal edit, got {summary:?}");
+    assert!(
+        total_removed <= 2,
+        "expected a minimal edit, got {summary:?}"
+    );
     let moved = summary.map_offset(cursor, Bias::Left);
     assert_eq!(moved, rewritten.find("x + y").unwrap());
     assert_eq!(summary.map_offset(0, Bias::Left), 0);
-    assert_eq!(summary.map_offset(on_changed_line, Bias::Left), rewritten.find("= 20").unwrap());
+    assert_eq!(
+        summary.map_offset(on_changed_line, Bias::Left),
+        rewritten.find("= 20").unwrap()
+    );
 
     // The reload is one undo step.
     buffer.undo().unwrap();
@@ -410,11 +481,19 @@ fn reload_keeps_earlier_undo_history_and_discards_local_edits() {
 
     rewrite(&path, "alpha\nbeta\ngamma\ndelta\n");
     buffer.reload().unwrap();
-    assert_eq!(buffer.to_string(), "alpha\nbeta\ngamma\ndelta\n", "the buffer now holds the file's text");
+    assert_eq!(
+        buffer.to_string(),
+        "alpha\nbeta\ngamma\ndelta\n",
+        "the buffer now holds the file's text"
+    );
     assert!(!buffer.is_dirty());
 
     buffer.undo().unwrap();
-    assert_eq!(buffer.to_string(), "LOCAL alpha\nbeta\ngamma\n", "undoing the reload restores the local edit");
+    assert_eq!(
+        buffer.to_string(),
+        "LOCAL alpha\nbeta\ngamma\n",
+        "undoing the reload restores the local edit"
+    );
     buffer.undo().unwrap();
     assert_eq!(buffer.to_string(), "alpha\nbeta\ngamma\n");
 }
@@ -463,7 +542,10 @@ fn a_large_file_loads_edits_and_saves_quickly() {
     let load_time = start.elapsed();
     assert_eq!(buffer.len_lines(), lines + 1);
     assert_eq!(buffer.len_bytes(), lines * line.len());
-    assert!(load_time < Duration::from_secs(10), "loading took {load_time:?}");
+    assert!(
+        load_time < Duration::from_secs(10),
+        "loading took {load_time:?}"
+    );
 
     let middle = buffer.line_to_char(lines / 2);
     let start = Instant::now();
@@ -477,7 +559,13 @@ fn a_large_file_loads_edits_and_saves_quickly() {
     buffer.edit(&[(0..0, "# header\n")]);
     buffer.save(SaveOptions::default()).unwrap();
     let save_time = start.elapsed();
-    assert!(save_time < Duration::from_secs(10), "saving took {save_time:?}");
-    assert_eq!(fs::metadata(&path).unwrap().len() as usize, lines * line.len() + 9);
+    assert!(
+        save_time < Duration::from_secs(10),
+        "saving took {save_time:?}"
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().len() as usize,
+        lines * line.len() + 9
+    );
     assert!(!buffer.is_dirty());
 }
