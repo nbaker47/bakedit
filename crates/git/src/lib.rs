@@ -4,6 +4,11 @@ mod error;
 mod exec;
 mod paths;
 mod repo;
+mod status;
 
 pub use error::{GitError, Result};
 pub use repo::{Repo, DEFAULT_NETWORK_TIMEOUT};
+pub use status::{
+    parse_status, ConflictKind, DisplayStatus, FileState, RepoState, StageState, Status,
+    StatusCounts, StatusEntry,
+};
