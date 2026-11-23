@@ -74,6 +74,11 @@ impl Shared {
 /// Create one for the whole application. [`request`](SyntaxWorker::request) never blocks on
 /// highlighting; results come out of [`results`](SyntaxWorker::results) in the order they
 /// were finished. Dropping the worker cancels what it is doing and joins the thread.
+///
+/// Every request that is not superseded or forgotten gets exactly one result. A text that
+/// cannot be highlighted (a grammar that fails to load, or a bug that panics on that text)
+/// gets a result with no highlights and no brackets, and the worker carries on with the
+/// next request.
 pub struct SyntaxWorker {
     shared: Arc<Shared>,
     results: Receiver<SyntaxResult>,
@@ -191,7 +196,7 @@ impl Drop for SyntaxWorker {
         }
         self.shared.wake_worker.notify_all();
         if let Some(thread) = self.thread.take() {
-            // The thread only panics if a grammar's scanner does; there is nothing to do
+            // The thread can only have panicked in the wake callback; there is nothing to do
             // about that here.
             let _ = thread.join();
         }
@@ -274,6 +279,8 @@ fn highlight_job(
     cancel: &AtomicBool,
     breaks: LineBreaks,
 ) -> Option<(LineHighlights, Vec<BracketMark>)> {
+    #[cfg(test)]
+    tests::panic_if_asked(&job.text);
     let spans = match highlighter.highlight(job.language, &job.text, Some(cancel)) {
         Ok(spans) => spans,
         Err(SyntaxError::Cancelled) => return None,
@@ -565,6 +572,30 @@ mod tests {
         assert!(!lines.is_empty());
         assert_eq!(brackets.len(), 4);
         assert!(crate::grammar::UNTOUCHED.outline_is_loaded());
+    }
+
+    /// A text that makes highlighting it panic, in the tests only.
+    const PANIC_TEXT: &str = "panic here, to test that the worker survives";
+
+    /// Stands in for a bug in the highlighter that some text sets off.
+    pub(super) fn panic_if_asked(text: &str) {
+        assert!(text != PANIC_TEXT, "a deliberate panic, to test recovery");
+    }
+
+    #[test]
+    fn the_worker_answers_plain_and_carries_on_when_a_text_panics() {
+        let worker = quiet_worker();
+        worker.request(1, 5, rust(), PANIC_TEXT.to_owned());
+        worker.request(2, 1, rust(), "fn after() {}\n".to_owned());
+        let first = worker.results().recv_timeout(TIMEOUT).unwrap();
+        assert_eq!((first.doc_id, first.version), (1, 5));
+        assert_eq!(first.lines.line_count(), 1);
+        assert!(first.lines.is_empty() && first.brackets.is_empty());
+        // The thread is still there, with a highlighter that works.
+        let second = worker.results().recv_timeout(TIMEOUT).unwrap();
+        assert_eq!((second.doc_id, second.version), (2, 1));
+        assert_eq!(second.lines.spans_for_line(0)[0].1.name(), "keyword");
+        assert_eq!(second.brackets.len(), 4);
     }
 
     #[test]
