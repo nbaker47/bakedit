@@ -11,7 +11,8 @@
 //!   `language` is a language name such as `"JSON"` to colour it as.
 //!
 //! Beyond those the app reaches it only through the `View` and `Item` traits: `editor::*`,
-//! `vim::*`, `buffer_search::*` and `search::*` actions from the keymap, `workspace::SaveAsPath`
+//! `vim::*`, `bakedit::ToggleMode` (also sent for a click on the mode in the status bar),
+//! `buffer_search::*` and `search::*` actions from the keymap, `workspace::SaveAsPath`
 //! `{path}`, `go_to` when a file is opened at a line, `picker_rows`, `picker_preview` and
 //! `picker_confirm` for the outline, `paths_changed` when the file changes on disk,
 //! `focus_changed` for autosave, `save`, `position`, `scroll_top` and `set_scroll_top` for

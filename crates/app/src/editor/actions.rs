@@ -1,5 +1,5 @@
 //! Actions and typed keys: every `editor::` action through `bakedit_text::Command`, nav and
-//! edit mode (`vim::*`), scrolling, toggles, and what typing does.
+//! edit mode (`vim::*`, `bakedit::ToggleMode`), scrolling, toggles, and what typing does.
 
 use std::cell::RefCell;
 
@@ -8,7 +8,7 @@ use bakedit_text::{Clipboard, ClipboardPiece, Command, Motion, Selection, Select
 
 use super::layout::Reveal;
 use super::{EditorItem, Visual};
-use crate::view::{Context, Cx};
+use crate::view::{Context, Cx, Effect};
 
 thread_local! {
     /// What this editor last cut or copied, in full (line-wise, one piece per cursor), to
@@ -88,6 +88,45 @@ impl EditorItem {
         self.editor.break_undo_group();
     }
 
+    /// Edit mode to nav mode, the cursor left where it is: what was typed becomes one undo
+    /// step.
+    fn leave_insert(&mut self) {
+        self.insert = false;
+        self.selecting = None;
+        self.editor.break_undo_group();
+        self.end_insert_run();
+    }
+
+    /// Switch nav and edit mode on or off for this editor (`vim_mode`). Either way it
+    /// starts over in nav mode, or plain editing, with nothing being selected.
+    pub(super) fn set_modal(&mut self, on: bool) {
+        self.modal = on;
+        self.end_insert_run();
+        self.insert = false;
+        self.selecting = None;
+        self.clamp_nav_cursor();
+    }
+
+    /// `bakedit::ToggleMode` (cmd-i, or a click on the mode in the status bar): edit mode
+    /// goes to nav mode as escape does, except that the cursor stays put; nav mode, selecting
+    /// or not, goes to edit mode as `i` does, the cursor and any selection kept. With the
+    /// modes off it switches them on for the session, which lands in nav mode.
+    fn toggle_mode(&mut self, cx: &mut Cx<'_>) {
+        if !self.modal {
+            // The setting, not just this editor: the next tick would undo it otherwise.
+            if !cx.settings.vim_mode {
+                cx.push(Effect::Dispatch(Action::new("bakedit::ToggleEditMode")));
+            }
+            self.set_modal(true);
+        } else if self.insert {
+            self.leave_insert();
+        } else {
+            let mark = self.editor.undo_steps();
+            self.enter_insert();
+            self.insert_mark = Some(mark);
+        }
+    }
+
     /// Handle every action this view owns. False lets the next candidate or the shell have it.
     pub(super) fn act(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
         self.sync_engine(cx.settings);
@@ -142,6 +181,10 @@ impl EditorItem {
             }
             "editor::PageUp" => {
                 self.scroll_by(-(self.geo.text.height.max(1) as isize));
+                true
+            }
+            "bakedit::ToggleMode" => {
+                self.toggle_mode(cx);
                 true
             }
             n if n.starts_with("vim::") => self.vim_action(n, cx),
@@ -223,10 +266,7 @@ impl EditorItem {
                 self.enter_insert();
             }
             "vim::NormalBefore" => {
-                self.insert = false;
-                self.selecting = None;
-                self.editor.break_undo_group();
-                self.end_insert_run();
+                self.leave_insert();
                 let buffer = self.editor.buffer();
                 let head = self.cursor();
                 if self.editor.selections().is_single_cursor() && head > buffer.line_to_char(buffer.char_to_line(head)) {

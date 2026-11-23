@@ -9,11 +9,12 @@
 use std::path::Path;
 use std::process::Command;
 
-/// What the editor is for: the panel keys, editing in nav and edit mode, finding, git, the
-/// tree, links from the terminal, the nav layer, herdr's keys, a big file, a terminal without
-/// the kitty protocol, files and actions from other processes, the session, and quitting.
+/// What the editor is for: the panel keys, editing in nav and edit mode and the one key
+/// between them, finding, git, the tree, links from the terminal, the nav layer, herdr's
+/// keys, a big file, a terminal without the kitty protocol, files and actions from other
+/// processes, the session, and quitting.
 const ESSENTIAL: &[&str] = &[
-    "kitty", "restore", "panels", "editing", "search", "git", "tree", "links", "navlayer", "herdr", "bigfile", "legacy", "ipc",
+    "kitty", "restore", "panels", "editing", "modes", "search", "git", "tree", "links", "navlayer", "herdr", "bigfile", "legacy", "ipc",
     "quit", "dump", "herdr-session",
 ];
 

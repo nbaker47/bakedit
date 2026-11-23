@@ -673,6 +673,16 @@
   // i / a / o (and friends) switch to edit mode, escape comes back. That is all of vim
   // there is: no operators, counts, registers, macros or : commands. Every cmd/alt/ctrl
   // binding above works the same in both modes.
+  // cmd-i switches between the two either way (so do ctrl-] i, in any terminal, and a click
+  // on the mode in the status bar): into edit mode with the cursor where it is, back to nav
+  // mode without escape's step to the left. With the modes off it turns them on, as
+  // bakedit::ToggleEditMode does (settings.json is left alone).
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "cmd-i": "bakedit::ToggleMode"
+    }
+  },
   {
     "context": "Editor && mode == full && vim_mode == insert",
     "bindings": {
@@ -826,6 +836,7 @@
       "ctrl-] s": "workspace::Save",
       "ctrl-] w": ["pane::CloseActiveItem", { "close_pinned": false }],
       "ctrl-] o": "terminal::OpenLinks",
+      "ctrl-] i": "bakedit::ToggleMode",
       "ctrl-] ;": "bakedit::ToggleNavLayer",
       "ctrl-] ?": "bakedit::ShowKeybindings",
       "ctrl-] q": "zed::Quit"

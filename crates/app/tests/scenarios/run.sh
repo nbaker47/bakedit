@@ -27,7 +27,7 @@ out="$(cd "$out" && pwd)"
 bin="${2:-${CARGO_TARGET_DIR:-$repo/target}/debug/bakedit}"
 [ -x "$bin" ] || { echo "no bakedit binary at $bin (cargo build -p bakedit)" >&2; exit 1; }
 shift $(( $# >= 2 ? 2 : $# ))
-all=(kitty restore panels editing search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe herdr-session herdr-readme)
+all=(kitty restore panels editing modes search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe herdr-session herdr-readme)
 wanted=("$@")
 [ ${#wanted[@]} -eq 0 ] && wanted=("${all[@]}")
 
@@ -125,6 +125,7 @@ for scenario in "${all[@]}"; do
         restore) run restore 200x52 -- --terminal shell --new "$project" ;;
         panels) make_project; run panels 200x52 -- --terminal shell --new --no-restore "$project" ;;
         editing) make_project; run editing 200x52 -- --terminal shell --new --no-restore "$project" ;;
+        modes) make_project; run modes 200x52 -- --terminal shell --new --no-restore "$project" ;;
         search) make_project; run search 200x52 -- --terminal shell --new --no-restore "$project" ;;
         git) make_project; run git 200x52 -- --terminal shell --new --no-restore "$project" ;;
         tree) make_project; run tree 200x52 -- --terminal shell --new --no-restore "$project" ;;

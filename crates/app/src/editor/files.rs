@@ -311,11 +311,7 @@ impl EditorItem {
     pub(super) fn on_tick(&mut self, cx: &mut Cx<'_>) -> bool {
         let mut dirty = false;
         if self.modal != cx.settings.vim_mode {
-            self.modal = cx.settings.vim_mode;
-            self.end_insert_run();
-            self.insert = false;
-            self.selecting = None;
-            self.clamp_nav_cursor();
+            self.set_modal(cx.settings.vim_mode);
             dirty = true;
         }
         // New highlights arrive through the project: redraw when they differ from the last draw.

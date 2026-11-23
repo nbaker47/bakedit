@@ -442,6 +442,95 @@ fn the_nav_mode_setting_reaches_the_key_context() {
     assert_eq!(contexts[0].values[1], ("vim_mode", "insert".to_string()));
 }
 
+#[test]
+fn the_mode_toggle_goes_to_edit_mode_and_back_leaving_the_cursor() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "hello\nworld\n");
+    act(&mut item, &mut harness, "editor::MoveRight");
+    act(&mut item, &mut harness, "editor::MoveRight");
+    // Nav mode to edit mode with the cursor where it is: the bar before the block's character.
+    assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
+    assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
+    assert_eq!(item.position(), Some((1, 3)));
+    let (_, cursor, _) = harness.draw(&mut item, 40, 5);
+    assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Bar));
+    let mut contexts = Vec::new();
+    item.contexts(&mut contexts);
+    assert_eq!(contexts[0].values[1], ("vim_mode", "insert".to_string()));
+    type_text(&mut item, &mut harness, "XY");
+    assert_eq!(text_of(&item), "heXYllo\nworld\n");
+    // And back: unlike escape, no step to the left.
+    assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
+    assert_eq!(item.position(), Some((1, 5)), "still on the l after what was typed");
+    let (_, cursor, _) = harness.draw(&mut item, 40, 5);
+    assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Block));
+    type_text(&mut item, &mut harness, "z");
+    assert_eq!(text_of(&item), "heXYllo\nworld\n", "nav mode types nothing");
+    // What was typed is one undo step, as after escape.
+    act(&mut item, &mut harness, "editor::Undo");
+    assert_eq!(text_of(&item), "hello\nworld\n");
+    // At the end of a line the block cannot sit past the last character: it goes onto it.
+    act(&mut item, &mut harness, "vim::InsertEndOfLine");
+    assert_eq!(item.position(), Some((1, 6)));
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    assert_eq!(item.position(), Some((1, 5)));
+    assert!(harness.take_effects().is_empty(), "the modes were on: nothing for the shell to do");
+    // From the find bar it switches the text's mode; the bar keeps the keys.
+    act(&mut item, &mut harness, "buffer_search::Deploy");
+    assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
+    assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
+    assert!(item.find_focused());
+}
+
+#[test]
+fn the_mode_toggle_keeps_a_selection_for_edit_mode_to_replace() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "one two three\nsecond\n");
+    act(&mut item, &mut harness, "vim::ToggleVisual");
+    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Select));
+    let selected = item.editor.selections().primary().range();
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
+    assert_eq!(item.editor.selections().primary().range(), selected, "still selected");
+    type_text(&mut item, &mut harness, "1");
+    assert_eq!(text_of(&item), "1 two three\nsecond\n", "typing replaces it");
+    // Whole lines too.
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    act(&mut item, &mut harness, "editor::MoveDown");
+    act(&mut item, &mut harness, "vim::ToggleVisualLine");
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
+    assert_eq!(item.editor.selections().primary().range(), 12..19);
+}
+
+#[test]
+fn the_mode_toggle_turns_the_modes_on_when_they_are_off() {
+    let mut harness = Harness::new("/project");
+    let mut item = plain(&mut harness, "abc\n");
+    for _ in 0..3 {
+        act(&mut item, &mut harness, "editor::MoveRight");
+    }
+    assert_eq!(item.status().mode, None);
+    assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav), "lands in nav mode");
+    assert_eq!(item.position(), Some((1, 3)), "on the last character, not past it");
+    let effects = harness.take_effects();
+    assert_eq!(effects, vec![Effect::Dispatch(Action::new("bakedit::ToggleEditMode"))], "the setting goes on too");
+    // Once the shell has done that, the next tick leaves it on.
+    harness.settings.vim_mode = true;
+    item.tick(&mut harness.cx());
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
+    // The setting just switched on but not yet seen by this editor: nothing more to ask.
+    harness.settings.vim_mode = false;
+    let mut late = plain(&mut harness, "x\n");
+    harness.settings.vim_mode = true;
+    act(&mut late, &mut harness, "bakedit::ToggleMode");
+    assert_eq!(late.status().mode, Some(ModeIndicator::Nav));
+    assert!(harness.take_effects().is_empty());
+}
+
 // ---- find ---------------------------------------------------------------------------------
 
 #[test]
@@ -1207,6 +1296,120 @@ fn the_keymap_drives_nav_mode_edit_mode_and_the_find_bar() {
     // cmd-s saves what was typed.
     send(&mut shell, KeyEvent::new(Key::Char('s'), Mods::SUPER));
     assert!(std::fs::read_to_string(&path).unwrap().contains("seXYcond"));
+}
+
+/// The app's own shell and items over `dir`, and the built-in keymap.
+fn app_shell(dir: &tempfile::TempDir, settings: Settings) -> (crate::shell::Shell, crate::keys::KeyRouter) {
+    use crate::clipboard::{Clipboard, MemoryBackend};
+    use crate::factory::{AppFactory, AppSource};
+    let shell = crate::shell::Shell::new(
+        settings,
+        bakedit_core::Theme::builtin(),
+        crate::project::Project::detached(dir.path()),
+        Clipboard::with_backend(Box::new(MemoryBackend::default())),
+        Box::new(AppFactory),
+        Box::new(AppSource::new(dir.path().to_path_buf())),
+    );
+    let (router, warnings) = crate::keys::KeyRouter::new(None);
+    assert!(warnings.is_empty());
+    (shell, router)
+}
+
+/// The whole window as text, and the cursor it asked for.
+fn shell_frame(shell: &mut crate::shell::Shell, width: u16, height: u16) -> (String, Option<Cursor>) {
+    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, width, height));
+    let cursor = shell.render(&mut buf);
+    (crate::dump::to_text(&buf), cursor)
+}
+
+#[test]
+fn cmd_i_and_ctrl_bracket_i_switch_the_mode_through_the_keymap() {
+    use crate::shell::Shell;
+    use bakedit_core::Key;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", "hello world\n");
+    let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
+    shell.open_file(&path, None, None, false, true);
+    let mode = |shell: &Shell| shell.pane.active().unwrap().status().mode;
+    let position = |shell: &Shell| shell.pane.active().unwrap().position();
+    let text = |shell: &Shell| text_of(shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap());
+    let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
+    let ctrl_bracket = KeyEvent::new(Key::Char(']'), Mods::CTRL);
+    // cmd-i in nav mode, then in edit mode.
+    router.key(&mut shell, &KeyEvent::typed('w'));
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    assert_eq!(position(&shell), Some((1, 7)));
+    router.key(&mut shell, &KeyEvent::typed('x'));
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    assert_eq!(position(&shell), Some((1, 8)), "the cursor stays after the x");
+    assert_eq!(text(&shell), "hello xworld\n");
+    // ctrl-] i, both ways; the i of the chord is not typed.
+    router.key(&mut shell, &ctrl_bracket);
+    router.key(&mut shell, &KeyEvent::typed('i'));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    router.key(&mut shell, &ctrl_bracket);
+    router.key(&mut shell, &KeyEvent::typed('i'));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    assert_eq!(text(&shell), "hello xworld\n");
+    // From SELECT.
+    router.key(&mut shell, &KeyEvent::typed('v'));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Select));
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    router.key(&mut shell, &cmd_i);
+    // With the modes off, cmd-i turns them on for the session and lands in nav mode.
+    shell.dispatch(&Action::new("bakedit::ToggleEditMode"));
+    shell.tick();
+    assert_eq!(mode(&shell), None);
+    router.key(&mut shell, &cmd_i);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    assert!(shell.settings.vim_mode);
+    assert!(shell.status_message().is_some_and(|(text, _)| text.starts_with("Nav and edit modes on")));
+    shell.tick();
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav), "the next tick keeps it");
+}
+
+#[test]
+fn a_click_on_the_mode_in_the_status_bar_switches_it() {
+    use crate::shell::Shell;
+    use crate::workspace::{Focus, PanelId};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", "hello world\n");
+    let settings = Settings { vim_mode: true, breadcrumbs: false, usage_meter: false, ..Settings::default() };
+    let (mut shell, _) = app_shell(&dir, settings);
+    shell.open_file(&path, None, None, false, true);
+    let mode = |shell: &Shell| shell.pane.active().unwrap().status().mode;
+    let press = |shell: &mut Shell, col: u16| shell.handle_mouse(&MouseEvent::new(MouseKind::Press(MouseButton::Left), col, 11));
+    let (text, cursor) = shell_frame(&mut shell, 80, 12);
+    assert!(text.lines().last().unwrap().starts_with(" NAV "), "{text}");
+    assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Block));
+    // A click on it: edit mode, and the pill and the cursor follow at once.
+    assert!(press(&mut shell, 2));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    let (text, cursor) = shell_frame(&mut shell, 80, 12);
+    assert!(text.lines().last().unwrap().starts_with(" EDIT "), "{text}");
+    assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Bar));
+    // Its last cell counts; the bar beside it does not.
+    press(&mut shell, 12);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    assert!(press(&mut shell, 5));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    // With a picker open the click is the picker's.
+    shell.dispatch(&Action::new("file_finder::Toggle"));
+    shell_frame(&mut shell, 80, 12);
+    press(&mut shell, 2);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    shell.dispatch(&Action::new("menu::Cancel"));
+    // With the keyboard in a panel there is no mode shown, and nothing to click.
+    shell.set_focus(Focus::Panel(PanelId::Terminal));
+    let (text, _) = shell_frame(&mut shell, 80, 12);
+    assert!(!text.lines().last().unwrap().contains("NAV"), "{text}");
+    press(&mut shell, 2);
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
 }
 
 /// Writes frames as HTML for looking at, when `BAKEDIT_SNAPSHOT_DIR` names a folder.

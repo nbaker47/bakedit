@@ -168,12 +168,14 @@ impl Default for Status {
 
 /// Draw the status bar in `area` (one row): mode and git on the left, the message in the
 /// middle, the cursor and file facts on the right. On a narrow screen the right side gives
-/// way first, least important item first, so the mode and branch never get cut.
-pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) {
+/// way first, least important item first, so the mode and branch never get cut. Returns
+/// where the mode pill (NAV, EDIT, SELECT) was drawn, for clicks on it: `None` when there is
+/// no mode to show or no room.
+pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> Option<Rect> {
     let bg = theme.status_bar_bg;
     canvas.fill(area, bg);
     if area.width == 0 || area.height == 0 {
-        return;
+        return None;
     }
     let y = area.y;
     let muted = Style::colors(theme.text_muted, bg);
@@ -188,8 +190,11 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
         ModeIndicator::Select => Some(pill("SELECT", theme.conflict)),
         ModeIndicator::None => None,
     };
+    let mut pill = None;
     if let Some((label, style)) = mode {
-        x += canvas.text(x, y, &label, style, area.width);
+        let width = canvas.text(x, y, &label, style, area.width);
+        pill = (width > 0).then(|| Rect::new(x, y, width, 1));
+        x += width;
         x += 1;
     } else {
         x += 1;
@@ -275,6 +280,7 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
             canvas.text_truncated(x, y, message, Style::colors(color, bg), room);
         }
     }
+    pill
 }
 
 // ---- prompt ----------------------------------------------------------------------------
@@ -553,6 +559,21 @@ mod tests {
         assert!(draw_status(&status, 100).starts_with(" Saved"), "no mode and no branch: the message starts the bar");
         status.nav_layer = NavLayerIndicator::Unavailable;
         assert!(draw_status(&status, 100).contains(";layer n/a"));
+    }
+
+    #[test]
+    fn the_status_bar_says_where_it_drew_the_mode() {
+        let pill = |mode: ModeIndicator, area: Rect| {
+            let screen = Rect::new(0, 0, 80, 5);
+            let mut buf = Buffer::empty(screen);
+            let mut canvas = Canvas::new(&mut buf, screen);
+            status_bar(&mut canvas, area, &Status { mode, ..full_status() }, &Theme::builtin())
+        };
+        assert_eq!(pill(ModeIndicator::Nav, Rect::new(0, 3, 60, 1)), Some(Rect::new(0, 3, 5, 1)), "\" NAV \"");
+        assert_eq!(pill(ModeIndicator::Select, Rect::new(10, 3, 60, 1)), Some(Rect::new(10, 3, 8, 1)));
+        assert_eq!(pill(ModeIndicator::None, Rect::new(0, 3, 60, 1)), None);
+        assert_eq!(pill(ModeIndicator::Edit, Rect::new(0, 3, 3, 1)), Some(Rect::new(0, 3, 3, 1)), "only what fits");
+        assert_eq!(pill(ModeIndicator::Nav, Rect::new(0, 3, 0, 1)), None);
     }
 
     fn draw_prompt(prompt: &mut Prompt, width: u16, height: u16) -> Vec<String> {

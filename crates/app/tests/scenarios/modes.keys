@@ -1,0 +1,50 @@
+# One key switches the editor between nav mode and edit mode, both ways: cmd-i (ctrl-] i
+# in any terminal), or a click on the mode in the status bar. The cursor stays where it is.
+
+key cmd-p
+text main.rs
+expect main.rs  src
+key enter
+expect src › main.rs
+expect NAV
+key j j w
+expect  3:5  Rust
+
+# cmd-i: edit mode with the cursor where it was; typing types.
+key cmd-i
+expect EDIT
+expect-not NAV
+expect  3:5  Rust
+text xy
+expect /// xyCounts how
+expect  3:7  Rust
+snap edit
+# cmd-i again: nav mode, and no step to the left as escape takes.
+key cmd-i
+expect NAV
+expect-not EDIT
+expect  3:7  Rust
+text q
+expect-not xyqCounts
+snap nav
+
+# ctrl-] i, both ways.
+key ctrl-] i
+expect EDIT
+key ctrl-] i
+expect NAV
+expect-not EDIT
+
+# A click on the mode in the status bar, both ways.
+click-on NAV
+expect EDIT
+expect-not NAV
+click-on EDIT
+expect NAV
+expect-not EDIT
+
+# One undo takes back what was typed; nothing unsaved, so cmd-q quits at once.
+key u
+expect-not xyCounts
+key cmd-q
+expect-exit

@@ -103,6 +103,9 @@ pub struct Shell {
     layout: Layout,
     screen: Rect,
     tab_hits: Vec<TabHit>,
+    /// Where the last frame drew the mode (NAV, EDIT, SELECT) in the status bar: a click
+    /// there switches the editor in front between nav and edit mode.
+    mode_pill: Option<Rect>,
     dragging: Option<DockPosition>,
     /// The view a mouse button went down in, and where it was drawn: it gets the drags and
     /// the release that follow.
@@ -185,6 +188,7 @@ impl Shell {
             layout: Layout::default(),
             screen: Rect::default(),
             tab_hits: Vec::new(),
+            mode_pill: None,
             dragging: None,
             mouse_capture: None,
             palette: actions::palette(),
@@ -1628,6 +1632,17 @@ impl Shell {
                         self.dragging = Some(divider.position);
                         return true;
                     }
+                    // The mode in the status bar belongs to the editor in front: a click on
+                    // it switches that editor between nav and edit mode, as cmd-i does.
+                    if self.mode_pill.is_some_and(inside) {
+                        let action = Action::new("bakedit::ToggleMode");
+                        let mut cx = cx!(self);
+                        if let Some(item) = self.pane.active_mut() {
+                            item.handle_action(&action, &mut cx);
+                        }
+                        self.apply_effects();
+                        return true;
+                    }
                 }
                 if let Some(hit) = self.tab_hits.iter().find(|hit| inside(hit.rect)).copied() {
                     match event.kind {
@@ -1816,7 +1831,7 @@ impl Shell {
             nav_layer: self.nav_layer,
             nerd_font: self.settings.icons == crate::settings::Icons::Nerd,
         };
-        chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
+        self.mode_pill = chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
         if let Some(strip) = layout.usage {
             let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
             usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);

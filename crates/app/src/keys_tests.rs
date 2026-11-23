@@ -155,6 +155,28 @@ fn the_fallback_prefix_works_without_cmd() {
 }
 
 #[test]
+fn the_mode_keys_fall_through_where_no_editor_takes_them() {
+    let (mut router, _) = setup();
+    let (mut shell, log) = shell();
+    // In the terminal ctrl-] i is offered, nothing takes it, and the i reaches the program.
+    ch(&mut router, &mut shell, 't', CMD);
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Terminal));
+    ch(&mut router, &mut shell, ']', Mods::CTRL);
+    router.key(&mut shell, &KeyEvent::typed('i'));
+    assert!(log.borrow().contains(&"Terminal action bakedit::ToggleMode null".to_string()), "{:?}", log.borrow());
+    assert!(log.borrow().contains(&"Terminal key i".to_string()), "{:?}", log.borrow());
+    // cmd-i is the editor's alone: the terminal gets it as a key.
+    ch(&mut router, &mut shell, 'i', CMD);
+    assert_eq!(log.borrow().iter().filter(|l| l.contains("bakedit::ToggleMode")).count(), 1);
+    // In a picker the i goes into the query.
+    ch(&mut router, &mut shell, 'p', CMD);
+    ch(&mut router, &mut shell, ']', Mods::CTRL);
+    router.key(&mut shell, &KeyEvent::typed('i'));
+    let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder stays open") };
+    assert_eq!(picker.query(), "i");
+}
+
+#[test]
 fn command_hints_show_the_bound_keys() {
     let (router, shell) = setup();
     let hint = router.hint_for(&bakedit_core::Action::new("file_finder::Toggle"), &shell.contexts());

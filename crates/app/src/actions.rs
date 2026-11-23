@@ -149,6 +149,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("herdr::PreviousWorkspace", None, None),
     // bakedit
     ("bakedit::ToggleNavLayer", None, Some("bakedit: toggle the nav layer (hold ; for arrows)")),
+    ("bakedit::ToggleMode", None, Some("bakedit: switch between nav and edit mode")),
     ("bakedit::ToggleEditMode", None, Some("bakedit: toggle nav and edit modes on or off")),
     ("bakedit::ShowKeybindings", None, Some("bakedit: show key bindings")),
     ("bakedit::ReloadConfig", None, Some("bakedit: reload settings and keymap")),
