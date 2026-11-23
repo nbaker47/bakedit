@@ -7,6 +7,7 @@ mod ipc;
 mod layout;
 mod line_input;
 mod minimap;
+mod paint;
 mod picker;
 mod session;
 mod settings;
