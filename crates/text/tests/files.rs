@@ -650,3 +650,24 @@ fn a_large_file_loads_edits_and_saves_quickly() {
     );
     assert!(!buffer.is_dirty());
 }
+
+#[test]
+fn a_buffer_follows_its_file_when_it_is_moved() {
+    let dir = TempDir::new().unwrap();
+    let old = write(&dir, "old.rs", b"fn main() {}\n");
+    let mut buffer = Buffer::from_file(&old).unwrap();
+    let new = dir.path().join("new.rs");
+    fs::rename(&old, &new).unwrap();
+    assert_eq!(buffer.disk_state(), DiskState::Deleted, "before it follows, its file is gone");
+    buffer.follow_move(new.clone());
+    assert_eq!(buffer.path(), Some(new.as_path()));
+    assert_eq!(buffer.disk_state(), DiskState::Unchanged, "the moved file is the one it knew");
+    // Saving writes the new place; nothing comes back at the old one.
+    buffer.save(KEEP).unwrap();
+    assert_eq!(file_names(dir.path()), ["new.rs"]);
+    // A file that is not the one it knew (another program wrote it): its state on disk is
+    // unknown, which reads as changed.
+    let other = write(&dir, "other.rs", b"something else entirely\n");
+    buffer.follow_move(other);
+    assert_eq!(buffer.disk_state(), DiskState::Modified);
+}

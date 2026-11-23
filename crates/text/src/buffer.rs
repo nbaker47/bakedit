@@ -458,6 +458,19 @@ impl Buffer {
         }
     }
 
+    /// The file was moved or renamed to `path` (by this program, so what is on disk is what
+    /// was there). The buffer points at the new place and, when the file there is the one it
+    /// knew (same size and modification time), keeps knowing its state on disk, so the move
+    /// is not taken for a change. Otherwise the state on disk is unknown, as after
+    /// [`Buffer::set_path`].
+    pub fn follow_move(&mut self, path: PathBuf) {
+        let found = file::stamp(&path).ok().flatten();
+        if found.is_none() || found != self.disk {
+            self.disk = None;
+        }
+        self.path = Some(path);
+    }
+
     /// The line ending written on save.
     pub fn line_ending(&self) -> LineEnding {
         self.line_ending

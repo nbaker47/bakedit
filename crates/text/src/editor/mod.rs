@@ -793,6 +793,11 @@ impl Editor {
         self.buffer.set_path(path);
     }
 
+    /// The file was moved or renamed to `path`: see [`Buffer::follow_move`].
+    pub fn follow_move(&mut self, path: PathBuf) {
+        self.buffer.follow_move(path);
+    }
+
     /// Change the line ending written on save.
     pub fn set_line_ending(&mut self, line_ending: LineEnding) {
         self.buffer.set_line_ending(line_ending);
