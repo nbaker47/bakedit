@@ -29,6 +29,12 @@
 //! each round trip is bounded by the client's timeout. They hold no locks and keep no state
 //! between calls, but two of them changing the same tab at the same time interleave like two
 //! copies of a script would: run them from one thread at a time.
+//!
+//! [`launch`] holds what a terminal panel needs to know to start herdr in the first place:
+//! where the executable is, whether the IDE is itself inside a herdr pane, and which session
+//! a command line attaches to.
+
+#![warn(missing_docs)]
 
 mod client;
 mod collapse;
