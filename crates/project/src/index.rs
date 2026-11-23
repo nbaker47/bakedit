@@ -441,15 +441,21 @@ impl Shared {
     /// Make `snapshot` the current list. The generation only moves when the list
     /// differs from the one before, or on the very first publish.
     fn publish(&self, snapshot: IndexSnapshot) {
-        let mut state = self.lock();
-        let first = !state.ready;
-        let changed = first || *state.snapshot != snapshot;
-        if changed {
-            state.snapshot = Arc::new(snapshot);
-            state.generation += 1;
+        // Only the worker thread publishes, so the list cannot change between these two
+        // looks at it; comparing outside the lock keeps searches from waiting on it.
+        let (first, current) = {
+            let state = self.lock();
+            (!state.ready, Arc::clone(&state.snapshot))
+        };
+        let changed = first || *current != snapshot;
+        {
+            let mut state = self.lock();
+            if changed {
+                state.snapshot = Arc::new(snapshot);
+                state.generation += 1;
+            }
+            state.ready = true;
         }
-        state.ready = true;
-        drop(state);
         self.progress.notify_all();
         if changed {
             if let Some(wake) = &self.wake {
