@@ -402,6 +402,29 @@ fn untracked_files_of_every_kind() {
 }
 
 #[test]
+fn an_untracked_file_that_cannot_be_read_is_listed_without_content() {
+    use std::os::unix::fs::PermissionsExt;
+    let test = TestRepo::with_commit();
+    test.write("locked.txt", "nobody may read this\n");
+    test.write("open.txt", "anybody may\n");
+    let locked = test.path("locked.txt");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // An administrator reads everything; nothing to test then.
+    if std::fs::read(&locked).is_ok() {
+        return;
+    }
+
+    let files = test.repo.diff_files(DiffTarget::HeadToWorktree).unwrap();
+    assert_eq!(
+        summary(&files),
+        ["locked.txt: Untracked", "open.txt: Untracked"]
+    );
+    let unreadable = file(&files, "locked.txt");
+    assert!(unreadable.hunks.is_empty() && !unreadable.binary && !unreadable.too_large);
+    assert_eq!(file(&files, "open.txt").hunks.len(), 1);
+}
+
+#[test]
 fn large_untracked_files_are_listed_without_content() {
     let test = TestRepo::with_commit();
     let limit = usize::try_from(MAX_UNTRACKED_FILE_SIZE).unwrap();
