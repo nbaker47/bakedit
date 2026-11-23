@@ -319,6 +319,12 @@ impl KeyEvent {
         self.kind == KeyKind::Release
     }
 
+    /// Text that belongs to no key (an input method, dictation, kitty's text-only event):
+    /// reported as key code 0 with text. Insert it; never match key bindings against it.
+    pub fn is_text_only(&self) -> bool {
+        self.key == Key::Other(0) && self.text.is_some()
+    }
+
     /// The shifted character for this key: what the terminal reported, else the US layout's.
     pub fn shifted_char(&self) -> Option<char> {
         if let Some(c) = self.shifted {
@@ -421,6 +427,13 @@ mod tests {
         let ev = KeyEvent::typed('é');
         assert_eq!((ev.key, ev.mods), (Key::Char('é'), Mods::empty()));
         assert_eq!(ev.text.as_deref(), Some("é"));
+    }
+
+    #[test]
+    fn text_only_events() {
+        assert!(KeyEvent::new(Key::Other(0), Mods::empty()).with_text("é").is_text_only());
+        assert!(!KeyEvent::new(Key::Other(0), Mods::empty()).is_text_only());
+        assert!(!KeyEvent::typed('a').is_text_only());
     }
 
     #[test]
