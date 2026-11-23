@@ -23,10 +23,26 @@ function shadow(console) {
             ("«console».log(module)", "variable.builtin"),
             ("console.log(«module»)", "variable.builtin"),
             // Inside, they are a parameter and a constant.
-            ("shadow(«console»)", "variable"),
+            ("shadow(«console»)", "variable.parameter"),
             ("const «module»", "variable"),
-            ("= «console»;", "variable"),
+            ("= «console»;", "variable.parameter"),
             ("return «module»", "variable"),
+        ],
+    );
+}
+
+#[test]
+fn a_local_that_is_called_is_a_call() {
+    // A reference takes its definition's colour only where the syntax has nothing more
+    // specific to say than "a variable".
+    let text = "function apply(callback, value) {\n  return callback(value);\n}\n";
+    check(
+        "javascript",
+        text,
+        &[
+            ("apply(«callback»,", "variable.parameter"),
+            ("return «callback»(", "function"),
+            ("callback(«value»)", "variable.parameter"),
         ],
     );
 }
@@ -110,9 +126,9 @@ print(n)
             ("function «fact»", "function"),
             ("(«n»)", "variable.parameter"),
             ("if «n» <", "variable.parameter"),
-            // A call, but first of all a reference to the function defined above, so it is
-            // drawn as the definition was.
-            ("«fact»(n - 1)", "function"),
+            // A reference to the function defined above, and written as a call: the syntax
+            // is the more specific of the two.
+            ("«fact»(n - 1)", "function.call"),
             // The parameter is out of scope here.
             ("print(«n»)", "variable"),
         ],

@@ -540,21 +540,183 @@ const PYTHON_EXTRA: &str = r#"
    "object" "range" "set" "slice" "str" "tuple"))
 "#;
 
-/// tree-sitter-javascript treats every capitalised identifier as a constructor (and
-/// tree-sitter-typescript as a type), including the name in a function's own definition. A
-/// React component is a function with a capitalised name, so its definition is said to be a
-/// function again here. References and JSX tags keep the bundled colour, as in Zed.
+/// tree-sitter-javascript and tree-sitter-typescript, brought into line with the queries Zed
+/// uses for JavaScript, TypeScript and TSX. This part is shared by all three:
+///
+/// * The bundled queries treat every capitalised identifier as a constructor or a type. In
+///   Zed a capital alone means nothing: a name is a type because of where it stands (after
+///   `new`, in an `extends` clause, in a type annotation, as a JSX tag). So `React` in an
+///   import or a component passed as a value is a plain variable, while a function
+///   definition with a capitalised name is still a function.
+/// * `Promise`, `Object`, `Array` and the other global classes are types where a static
+///   method is called on them.
+/// * A constant is `ALL_CAPS` with any leading underscores.
+/// * Shorthand and private properties are properties, `constructor` is a constructor.
+/// * Escapes in strings, the delimiters and flags of a regex, `...` and the `?` and `:` of
+///   a conditional are highlighted.
 const JAVASCRIPT_EXTRA: &str = r#"
-[(true) (false)] @boolean
+((identifier) @variable
+ (#match? @variable "^[A-Z]"))
+((call_expression function: (member_expression object: (identifier) @type))
+ (#any-of? @type
+   "Promise" "Array" "Object" "Map" "Set" "WeakMap" "WeakSet" "Date" "Error" "TypeError"
+   "RangeError" "SyntaxError" "ReferenceError" "EvalError" "URIError" "RegExp" "Function"
+   "Number" "String" "Boolean" "Symbol" "BigInt" "Proxy" "ArrayBuffer" "DataView"))
+[
+  (shorthand_property_identifier)
+  (shorthand_property_identifier_pattern)
+  (private_property_identifier)
+] @property
+
+(call_expression function: (identifier) @function)
+(call_expression
+  function: (member_expression property: (private_property_identifier) @function.method))
+(new_expression constructor: (identifier) @type.class)
 (function_declaration name: (identifier) @function)
 (function_expression name: (identifier) @function)
 (generator_function_declaration name: (identifier) @function)
+(method_definition name: (private_property_identifier) @function.method)
+((method_definition name: (property_identifier) @constructor)
+ (#eq? @constructor "constructor"))
 (variable_declarator
   name: (identifier) @function
   value: [(function_expression) (arrow_function)])
 (assignment_expression
   left: (identifier) @function
   right: [(function_expression) (arrow_function)])
+(catch_clause parameter: (identifier) @variable.parameter)
+(arrow_function parameter: (identifier) @variable.parameter)
+
+([
+   (identifier)
+   (shorthand_property_identifier)
+   (shorthand_property_identifier_pattern)
+ ] @constant
+ (#match? @constant "^_*[A-Z_][A-Z\\d_]*$"))
+[(true) (false)] @boolean
+(escape_sequence) @string.escape
+(regex "/" @string.regex)
+(regex_flags) @keyword.operator.regex
+"..." @operator
+(ternary_expression ["?" ":"] @operator)
+"#;
+
+/// What only the JavaScript grammar needs: there a class's name and the class it extends are
+/// plain identifiers, and a destructured parameter is a pattern in the parameter list.
+const JAVASCRIPT_ONLY_EXTRA: &str = r#"
+(class_declaration name: (identifier) @type.class)
+(class name: (identifier) @type.class)
+(class_heritage (identifier) @type.class)
+(formal_parameters
+  [
+    (identifier) @variable.parameter
+    (_ [(identifier) (shorthand_property_identifier_pattern)] @variable.parameter)
+    (_ (object_assignment_pattern
+         left: (shorthand_property_identifier_pattern) @variable.parameter))
+    (assignment_pattern left: (identifier) @variable.parameter)
+  ])
+([
+   (identifier)
+   (shorthand_property_identifier)
+   (shorthand_property_identifier_pattern)
+ ] @constant
+ (#match? @constant "^_*[A-Z_][A-Z\\d_]*$"))
+"#;
+
+/// What the TypeScript grammars need, for TypeScript and TSX:
+///
+/// * The class in an `extends` clause and the namespace of a qualified type are types.
+/// * The names of parameters, destructured ones included, are parameters rather than the
+///   properties their shorthand form would make them.
+/// * The angle brackets of type parameters are brackets, as those of type arguments are;
+///   the `|` and `&` of union and intersection types are punctuation, not operators.
+/// * `infer`, `is` and `module` are keywords, and the `this` type is a built-in type.
+const TYPESCRIPT_EXTRA: &str = r#"
+(this_type) @type.builtin
+(extends_clause value: (identifier) @type.class)
+(nested_type_identifier module: (identifier) @type)
+[
+  (required_parameter (identifier) @variable.parameter)
+  (required_parameter (_ [(identifier) (shorthand_property_identifier_pattern)] @variable.parameter))
+  (required_parameter
+    (_ (object_assignment_pattern
+         left: (shorthand_property_identifier_pattern) @variable.parameter)))
+  (required_parameter (_ (assignment_pattern left: (identifier) @variable.parameter)))
+  (optional_parameter (identifier) @variable.parameter)
+  (optional_parameter (_ [(identifier) (shorthand_property_identifier_pattern)] @variable.parameter))
+  (optional_parameter
+    (_ (object_assignment_pattern
+         left: (shorthand_property_identifier_pattern) @variable.parameter)))
+  (optional_parameter (_ (assignment_pattern left: (identifier) @variable.parameter)))
+  (index_signature name: (identifier) @variable.parameter)
+  (type_predicate name: (identifier) @variable.parameter)
+]
+([
+   (identifier)
+   (shorthand_property_identifier)
+   (shorthand_property_identifier_pattern)
+ ] @constant
+ (#match? @constant "^_*[A-Z_][A-Z\\d_]*$"))
+(template_literal_type) @string
+(template_type "${" @punctuation.special "}" @punctuation.special)
+(type_parameters "<" @punctuation.bracket ">" @punctuation.bracket)
+(type_arguments "<" @punctuation.bracket ">" @punctuation.bracket)
+(union_type "|" @punctuation.special)
+(intersection_type "&" @punctuation.special)
+["infer" "is" "module"] @keyword
+"#;
+
+/// TypeScript only, as in Zed: `null`, `undefined`, `true` and `false` used as types are
+/// built-in types, and so are the names in a type-only import.
+const TYPESCRIPT_ONLY_EXTRA: &str = r#"
+(literal_type [(null) (undefined) (true) (false)] @type.builtin)
+(import_specifier "type" name: (identifier) @type)
+(import_specifier "type" alias: (identifier) @type)
+(import_statement "type"
+  (import_clause (named_imports (import_specifier name: (identifier) @type))))
+(import_statement "type"
+  (import_clause (named_imports (import_specifier alias: (identifier) @type))))
+"#;
+
+/// JSX, for JavaScript and TSX: a component's tag is a tag like any other, not a type, down
+/// to the parts of `<Menu.Item>`; and the `=` of an attribute is punctuation.
+const JSX_EXTRA: &str = r#"
+[
+  (jsx_opening_element name: (identifier) @tag.component.jsx)
+  (jsx_closing_element name: (identifier) @tag.component.jsx)
+  (jsx_self_closing_element name: (identifier) @tag.component.jsx)
+]
+[
+  (jsx_opening_element name: (member_expression
+    object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx))
+  (jsx_closing_element name: (member_expression
+    object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx))
+  (jsx_self_closing_element name: (member_expression
+    object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx))
+]
+[
+  (jsx_opening_element name: (member_expression
+    object: (member_expression
+      object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx)
+    property: (property_identifier) @tag.component.jsx))
+  (jsx_closing_element name: (member_expression
+    object: (member_expression
+      object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx)
+    property: (property_identifier) @tag.component.jsx))
+  (jsx_self_closing_element name: (member_expression
+    object: (member_expression
+      object: (identifier) @tag.component.jsx property: (property_identifier) @tag.component.jsx)
+    property: (property_identifier) @tag.component.jsx))
+]
+([
+   (jsx_opening_element name: (identifier) @tag.jsx)
+   (jsx_closing_element name: (identifier) @tag.jsx)
+   (jsx_self_closing_element name: (identifier) @tag.jsx)
+ ]
+ (#match? @tag.jsx "^[a-z][^.]*$"))
+(jsx_attribute (property_identifier) @attribute.jsx)
+(jsx_attribute "=" @punctuation.delimiter.jsx)
+(html_character_reference) @string.special
 "#;
 
 /// tree-sitter-toml captures the whole `key = value` pair as a property instead of the key,
@@ -681,6 +843,8 @@ pub(crate) static JAVASCRIPT: GrammarSpec = GrammarSpec {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
         tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
         JAVASCRIPT_EXTRA,
+        JAVASCRIPT_ONLY_EXTRA,
+        JSX_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[tree_sitter_javascript::LOCALS_QUERY],
@@ -700,6 +864,8 @@ pub(crate) static TYPESCRIPT: GrammarSpec = GrammarSpec {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
         tree_sitter_typescript::HIGHLIGHTS_QUERY,
         JAVASCRIPT_EXTRA,
+        TYPESCRIPT_EXTRA,
+        TYPESCRIPT_ONLY_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[
@@ -721,6 +887,8 @@ pub(crate) static TSX: GrammarSpec = GrammarSpec {
         tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
         tree_sitter_typescript::HIGHLIGHTS_QUERY,
         JAVASCRIPT_EXTRA,
+        TYPESCRIPT_EXTRA,
+        JSX_EXTRA,
     ],
     injections: &[tree_sitter_javascript::INJECTIONS_QUERY],
     locals: &[

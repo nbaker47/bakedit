@@ -651,7 +651,10 @@ fn clip_to_parent(pieces: Vec<Range>, parent: &[Range]) -> Vec<Range> {
 /// A locals query marks scopes, the names defined in them and the identifiers that may refer
 /// to a name. A reference to a local takes the highlight its definition got, and patterns
 /// marked `(#is-not? local)` do not apply to it: that is how Ruby tells a variable from a
-/// method call.
+/// method call. The definition's highlight only refines a plain `variable`, though. Where
+/// the syntax says more (the name is called, or names a type) the syntax wins, which is
+/// where this differs from tree-sitter's own highlighter and agrees with editors that have
+/// no notion of locals.
 struct Locals<'t> {
     scopes: Vec<Scope>,
     /// The names defined in the open scopes, in order; each scope owns a suffix.
@@ -920,7 +923,16 @@ impl SpanBuilder<'_, '_> {
                     locals.set_highlight(name, own);
                 }
             }
-            if let Some(capture) = inherited.or(own) {
+            // A reference is drawn as its definition was, unless the syntax around it says
+            // something more specific than "a variable": a parameter that is called is a
+            // call, and a local used as a type's namespace is a type.
+            let own_is_specific = own.is_some_and(|capture| capture.root() != "variable");
+            let chosen = if own_is_specific {
+                own
+            } else {
+                inherited.or(own)
+            };
+            if let Some(capture) = chosen {
                 if start < end {
                     self.collected.push(Collected {
                         start: start as u32,

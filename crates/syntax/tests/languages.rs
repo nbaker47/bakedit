@@ -88,6 +88,99 @@ fn rust_macro_arguments_are_highlighted_as_rust() {
 }
 
 #[test]
+fn the_javascript_family_follows_zed_where_the_bundled_queries_do_not() {
+    let text = r#"import React, { useState } from "react";
+import type { Store } from "./store";
+
+const MAX_ITEMS = 3;
+const escaped = "tab\there";
+
+export class List<T> extends React.Component implements Store {
+  #items: T[] = [];
+  constructor(private readonly size: number) { super(); }
+  static of(...values: unknown[]): List<unknown> | null {
+    return values.length > MAX_ITEMS ? null : new List(values.length);
+  }
+}
+
+export const Menu = ({ label, onPick }: { label: string; onPick: () => void }) => {
+  const [open] = useState(false);
+  Promise.resolve(label).then(onPick);
+  return (
+    <Menu.Item title={label} kind="plain">
+      {open && <Fragment key={MAX_ITEMS} />}
+    </Menu.Item>
+  );
+};
+"#;
+    check_captures(
+        "tsx",
+        text,
+        &[
+            // A capital alone does not make a type: only where a name stands does.
+            ("import «React»", "variable"),
+            ("extends «React».", "variable"),
+            ("React.«Component»", "property"),
+            ("new «List»(", "type.class"),
+            ("class «List»", "type"),
+            ("implements «Store»", "type"),
+            ("«Promise».resolve", "type"),
+            ("«MAX_ITEMS» = 3", "constant"),
+            ("key={«MAX_ITEMS»}", "constant"),
+            // A component is a function where it is defined and a tag where it is used.
+            ("const «Menu» =", "function"),
+            ("<«Menu».Item title", "tag.component.jsx"),
+            ("<Menu.«Item» title", "tag.component.jsx"),
+            ("</Menu.«Item»>", "tag.component.jsx"),
+            ("<«Fragment» key", "tag.component.jsx"),
+            ("«title»={label}", "attribute.jsx"),
+            ("title«=»{label}", "punctuation.delimiter.jsx"),
+            // Parameters, also destructured ones.
+            ("({ «label», onPick }", "variable.parameter"),
+            ("private readonly «size»", "variable.parameter"),
+            ("...«values»:", "variable.parameter"),
+            ("«useState»(false)", "function"),
+            // Properties, the constructor, and the odds and ends.
+            ("«#items»:", "property"),
+            ("«constructor»(private", "constructor"),
+            ("\"tab«\\t»here\"", "string.escape"),
+            ("«...»values", "operator"),
+            ("MAX_ITEMS «?» null", "operator"),
+            ("null «:» new", "operator"),
+            ("List«<»T>", "punctuation.bracket"),
+            ("List<unknown> «|» null", "punctuation.special"),
+        ],
+    );
+    // TypeScript proper: literal types and type-only imports.
+    check_captures(
+        "typescript",
+        "import { type Reader, read } from \"./io\";\nlet done: true | null | undefined = null;\n",
+        &[
+            ("type «Reader»", "type"),
+            ("«read» }", "variable"),
+            ("done: «true»", "type.builtin"),
+            ("| «null» |", "type.builtin"),
+            ("| «undefined» =", "type.builtin"),
+            ("= «null»;", "constant.builtin"),
+        ],
+    );
+    // JavaScript proper, where a class's name is an ordinary identifier.
+    check_captures(
+        "javascript",
+        "class Shape extends Base {}\nfunction area({ width, height = 2 }, _) { return width * height; }\n",
+        &[
+            ("class «Shape»", "type.class"),
+            ("extends «Base»", "type.class"),
+            ("{ «width»,", "variable.parameter"),
+            ("«height» = 2", "variable.parameter"),
+            ("}, «_»)", "constant"),
+            // The bundled locals do not follow a destructured parameter into the body.
+            ("return «width»", "variable"),
+        ],
+    );
+}
+
+#[test]
 fn python_follows_zed_where_the_bundled_query_does_not() {
     let text = r#"import abc
 import functools
@@ -296,10 +389,10 @@ fn javascript() {
             ("true", "boolean"),
             ("null", "constant.builtin"),
             ("undefined", "constant.builtin"),
-            ("class «Shape»", "constructor"),
-            ("extends «Base»", "constructor"),
-            ("new «Shape»", "constructor"),
-            ("constructor", "function.method"),
+            ("class «Shape»", "type.class"),
+            ("extends «Base»", "type.class"),
+            ("new «Shape»", "type.class"),
+            ("constructor", "constructor"),
             ("«area»(width, height = 2.5)", "function.method"),
             ("shape.«area»(", "function.method"),
             ("console.«log»", "function.method"),
@@ -314,12 +407,12 @@ fn javascript() {
             ("label.«length»", "property"),
             ("const «label»", "variable"),
             ("«${»width", "punctuation.special"),
-            ("${«width» * height}", "variable"),
+            ("${«width» * height}", "variable.parameter"),
             ("LIMIT «=» 10", "operator"),
             ("«!==» undefined", "operator"),
-            ("<«div» className", "tag"),
-            ("</«div»>", "tag"),
-            ("className", "attribute"),
+            ("<«div» className", "tag.jsx"),
+            ("</«div»>", "tag.jsx"),
+            ("className", "attribute.jsx"),
             ("\"app\"", "string"),
         ],
     );
@@ -332,7 +425,7 @@ fn javascript_regex_literals_are_highlighted_as_regex() {
         &[
             ("/«ab»+c/", "string"),
             ("/ab«+»c/", "operator"),
-            ("/ab+c/«gi»", "string.special"),
+            ("/ab+c/«gi»", "keyword.operator.regex"),
         ],
     );
 }
@@ -360,7 +453,7 @@ fn typescript() {
             ("«return» width", "keyword"),
             ("interface «Shape»", "type"),
             ("type «Id»", "type"),
-            ("enum «Color»", "type"),
+            ("enum «Color»", "variable"),
             ("class «Base»", "type"),
             ("{ «Reader» }", "type"),
             ("ids: «Id»[]", "type"),
@@ -372,7 +465,7 @@ fn typescript() {
             ("Red = «1»", "number"),
             ("2.5", "number"),
             ("true", "boolean"),
-            ("constructor", "function.method"),
+            ("constructor", "constructor"),
             ("«area»(width: number, scale", "function.method"),
             ("console.«log»", "function.method"),
             ("function «main»", "function"),
@@ -421,13 +514,13 @@ fn tsx() {
             // A component is a function, whatever its capital letter says.
             ("function «Card»", "function"),
             ("console.«log»", "function.method"),
-            ("<«section» className", "tag"),
-            ("</«section»>", "tag"),
-            ("<«h1»>", "tag"),
-            ("<«Badge» value", "type"),
-            ("className", "attribute"),
-            ("onClick", "attribute"),
-            ("«value»={count}", "attribute"),
+            ("<«section» className", "tag.jsx"),
+            ("</«section»>", "tag.jsx"),
+            ("<«h1»>", "tag.jsx"),
+            ("<«Badge» value", "tag.component.jsx"),
+            ("className", "attribute.jsx"),
+            ("onClick", "attribute.jsx"),
+            ("«value»={count}", "attribute.jsx"),
             ("<h1>{«label»}", "variable"),
         ],
     );
