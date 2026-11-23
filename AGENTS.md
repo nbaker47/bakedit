@@ -37,6 +37,48 @@ cargo run -p bakedit -- <path>    # run the IDE
 Worktrees share one build directory so dependencies compile once:
 `export CARGO_TARGET_DIR=/Users/user/Code/bakedit/target`.
 
+## The app (`crates/app`)
+
+A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
+
+- **Shell and views.** `view.rs` is the contract: a `View` draws into a `Canvas`, answers
+  `Action`s and unclaimed keys, and reports its key `Context`s. An `Item` is a view that lives
+  in a tab. Views never touch each other; they push an `Effect` (open a file, move the focus,
+  ask a question) and the shell applies it after the view returns.
+- **Model, no drawing:** `workspace.rs` (docks, focus, zoom: a port of Zed's rules, read its
+  header), `pane.rs` (tabs, preview tab, closed-tab stack, back/forward), `layout.rs`
+  (rectangles for docks, centre, dividers, status bar), `settings.rs` (Zed's settings.json
+  keys), `session.rs`, `ipc.rs` (one socket per running window), `cli.rs`.
+- **Drawing, pure functions of data:** `ui.rs` (clipped `Canvas`, `Style`, truncation),
+  `chrome.rs` (tab bar, status bar, prompt, toast), `picker.rs`, `line_input.rs`, `paint.rs`
+  (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
+  `minimap.rs`, `hints.rs` (which-key), `usage.rs` (the usage strip).
+- **Keymap.** `assets/keymaps/default.json` is Zed's format and semantics. Action names are
+  Zed's where Zed has the action; bakedit's own are `bakedit::*`, `herdr::*`,
+  `project_diff::*`, `terminal_panel::ToggleZoom`, `terminal::OpenLinks`,
+  `editor::SelectBetween`, `editor::MoveToNextWordStart`, `editor::MoveToFirstNonBlank`.
+- **Key context stacks** (root first), which the keymap's sections rely on:
+
+  | Focus | Stack |
+  |---|---|
+  | Editor | `Workspace > Pane > Editor{mode=full, vim_mode=normal\|insert, extension}` |
+  | Find bar | `Workspace > Pane > BufferSearchBar{in_replace} > Editor{mode=single_line}` |
+  | Project search | `Workspace > Pane > ProjectSearchView`, query: `... > ProjectSearchBar{in_replace} > Editor` |
+  | Project diff | `Workspace > Pane > ProjectDiff` |
+  | Terminal | `Workspace > Dock > Pane > Terminal` |
+  | File tree | `Workspace > Dock > ProjectPanel{not_editing\|editing}` (`> Editor` while renaming) |
+  | Git panel | `Workspace > Dock > GitPanel{ChangesList}` or `... > GitPanel{CommitEditor} > CommitEditor > Editor{mode=auto_height}` |
+  | Pickers | `Workspace > FileFinder\|CommandPalette\|TabSwitcher\|... > Picker > Editor{mode=single_line}` |
+  | Prompt | `Workspace > Prompt` |
+
+- **Looking at it.** A frame can be turned into a picture without a terminal:
+  `cargo run -p bakedit --example mock_frame -- frame.html 170 46 [--picker]`, then
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --screenshot=frame.png --window-size=1500,820 --force-device-scale-factor=2 --user-data-dir=<scratch dir> file://.../frame.html`.
+  `dump::to_text` gives the same frame as text for assertions. Check spacing, alignment and
+  empty states in the picture before calling UI work done.
+- Tests must never touch the user's clipboard (`BAKEDIT_CLIPBOARD=memory` or a
+  `MemoryBackend`), their herdr session, or their config files.
+
 ## Conventions
 
 - Rust 2021, stable toolchain. No `unsafe` unless a system call needs it, and then with a
