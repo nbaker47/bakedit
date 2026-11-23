@@ -185,6 +185,29 @@ fn a_symlinked_root_is_walked() {
     assert_eq!(index.root(), link);
 }
 
+#[cfg(unix)]
+#[test]
+fn names_that_are_not_utf8_keep_their_real_path() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let project = Project::with_files(&["plain.txt"]);
+    let name = OsStr::from_bytes(b"caf\xe9.txt");
+    if std::fs::write(project.root().join(name), "x").is_err() {
+        // This file system (APFS, for one) only takes names that are valid UTF-8.
+        return;
+    }
+    let index = ready_index(&project);
+    assert_eq!(files(&index), ["caf\u{fffd}.txt", "plain.txt"]);
+    let matches = index.search("caf", 10, &[]);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        matches[0].path,
+        Path::new(name),
+        "the match opens the real file"
+    );
+    assert_eq!(index.snapshot().path("plain.txt"), Path::new("plain.txt"));
+}
+
 #[test]
 fn a_missing_root_is_an_empty_index() {
     let project = Project::new();

@@ -53,3 +53,32 @@ pub use search::{
 };
 pub use tree::{Clipboard, FileTree, Row, RowKind};
 pub use watcher::{FsBatch, WatchError, Watcher};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_send<T: Send>() {}
+    fn is_send_and_sync<T: Send + Sync>() {}
+
+    /// The threading guarantees the documentation promises, checked by the compiler.
+    #[test]
+    fn handles_can_be_moved_and_shared_between_threads() {
+        // The tree is owned by one thread at a time (it can be moved, not shared).
+        is_send::<FileTree>();
+        // These may be called from any thread.
+        is_send_and_sync::<FileIndex>();
+        is_send_and_sync::<IndexSnapshot>();
+        is_send_and_sync::<Watcher>();
+        is_send_and_sync::<SearchHandle>();
+        // And the data they hand out can go anywhere.
+        is_send_and_sync::<Row>();
+        is_send_and_sync::<FsBatch>();
+        is_send_and_sync::<SearchEvent>();
+        is_send_and_sync::<FileMatch>();
+        is_send_and_sync::<SearchOptions>();
+        is_send_and_sync::<FileOpError>();
+        is_send_and_sync::<SearchError>();
+        is_send_and_sync::<WatchError>();
+    }
+}

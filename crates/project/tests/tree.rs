@@ -349,6 +349,54 @@ fn a_symlinked_root_works() {
     assert_eq!(tree.rows()[2].path, link.join("src/main.rs"));
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_stays_collapsed() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::with_files(&["locked/secret.txt", "open/file.txt"]);
+    let locked = project.path("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable = fs::read_dir(&locked).is_err();
+
+    let mut tree = FileTree::new(project.root());
+    let expanded = tree.expand(&locked);
+    let revealed = tree.reveal(&project.path("locked/secret.txt"));
+    let rows = outline(&tree);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if !unreadable {
+        // Running as a user who can read anything (root): nothing to check.
+        return;
+    }
+    assert!(!expanded);
+    assert_eq!(revealed, None);
+    assert_eq!(rows, ["v ROOT", "  > locked", "  > open"]);
+
+    // Once it can be read, it expands like any other.
+    assert!(tree.expand(&locked));
+    assert_eq!(tree.rows().len(), 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn names_that_are_not_utf8_are_shown_lossily_and_stay_usable() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let project = Project::new();
+    let path = project.root().join(OsStr::from_bytes(b"caf\xe9.txt"));
+    if fs::write(&path, "x").is_err() {
+        // This file system (APFS, for one) only takes names that are valid UTF-8.
+        return;
+    }
+    let mut tree = FileTree::new(project.root());
+    assert_eq!(names(&tree), ["caf\u{fffd}.txt"]);
+    assert_eq!(tree.rows()[1].path, path, "the real path is kept");
+    assert_eq!(tree.reveal(&path), Some(1));
+    let copy = tree.duplicate(&path).unwrap();
+    assert!(copy.exists());
+    tree.delete(&path).unwrap();
+    assert!(!path.exists());
+}
+
 #[test]
 fn an_unreadable_root_is_just_the_root_row() {
     let project = Project::new();
