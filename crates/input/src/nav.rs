@@ -169,6 +169,35 @@ struct Mapped {
 /// the kitty keyboard protocol with [`REQUIRED_KITTY_FLAGS`](NavLayer::REQUIRED_KITTY_FLAGS).
 /// Without releases the first press of the trigger would leave the layer on for good, so
 /// the app must keep the layer disabled until the terminal has confirmed those flags.
+///
+/// # Example
+///
+/// ```
+/// use std::time::Instant;
+///
+/// use bakedit_core::{Key, KeyEvent, KeyKind, Mods};
+/// use bakedit_input::{NavLayer, NavLayerConfig};
+///
+/// let mut nav = NavLayer::new(NavLayerConfig::default());
+/// let now = Instant::now();
+/// let release = |c| KeyEvent::new(Key::Char(c), Mods::empty()).with_kind(KeyKind::Release);
+///
+/// // Hold `;`, then `j` (shift) and `f` (Right): shift-right.
+/// assert!(nav.process(KeyEvent::typed(';'), now).is_empty());
+/// assert!(nav.process(KeyEvent::typed('j'), now).is_empty());
+/// let sent = nav.process(KeyEvent::typed('f'), now);
+/// assert_eq!(sent, [KeyEvent::new(Key::Right, Mods::SHIFT)]);
+///
+/// // Letting go of `;` releases what the layer still holds down, and types no `;`.
+/// let sent = nav.process(release(';'), now);
+/// assert_eq!(sent, [KeyEvent::new(Key::Right, Mods::SHIFT).with_kind(KeyKind::Release)]);
+///
+/// // Tapped on its own, `;` types itself when it comes up.
+/// assert!(nav.process(release('f'), now).is_empty());
+/// assert!(nav.process(release('j'), now).is_empty());
+/// assert!(nav.process(KeyEvent::typed(';'), now).is_empty());
+/// assert_eq!(nav.process(release(';'), now), [KeyEvent::typed(';'), release(';')]);
+/// ```
 #[derive(Debug, Clone)]
 pub struct NavLayer {
     config: NavLayerConfig,

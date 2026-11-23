@@ -24,6 +24,18 @@ const MOD_KEY_COUNT: u32 = 14;
 /// its own. A terminal that never does (anything without the kitty protocol's all-keys
 /// mode) does not report the releases either, so a modifier learned from one of its key
 /// events could never be cleared; with such a terminal the tracker reports nothing held.
+///
+/// ```
+/// use bakedit_core::{Key, KeyEvent, KeyKind, ModKey, Mods};
+/// use bakedit_input::HeldMods;
+///
+/// let mut held = HeldMods::new();
+/// let cmd = Key::Modifier(ModKey::LeftSuper);
+/// held.observe(&KeyEvent::new(cmd, Mods::SUPER));
+/// assert_eq!(held.mods(), Mods::SUPER); // a click now is a cmd-click
+/// held.observe(&KeyEvent::new(cmd, Mods::empty()).with_kind(KeyKind::Release));
+/// assert_eq!(held.mods(), Mods::empty());
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HeldMods {
     /// One bit per modifier key that is down, in kitty key code order.

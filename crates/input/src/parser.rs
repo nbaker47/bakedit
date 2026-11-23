@@ -140,6 +140,28 @@ enum State {
 /// Nothing the terminal sends makes the parser panic, loop or grow without bound: a CSI
 /// sequence is cut off at 4 KiB, a string sequence at [`MAX_STRING_LEN`] and a paste at
 /// [`MAX_PASTE_LEN`].
+///
+/// # Example
+///
+/// ```
+/// use bakedit_core::{InputEvent, Key, KeyEvent, Mods};
+/// use bakedit_input::Parser;
+///
+/// let mut parser = Parser::new();
+///
+/// // ctrl+Right, cut in two by a read boundary.
+/// assert!(parser.feed(b"\x1b[1;").is_empty());
+/// assert!(parser.has_pending());
+/// let events = parser.feed(b"5C");
+/// assert_eq!(events, [InputEvent::Key(KeyEvent::new(Key::Right, Mods::CTRL))]);
+///
+/// // A lone ESC is the Escape key once the timeout has passed.
+/// assert!(parser.feed(b"\x1b").is_empty());
+/// assert!(parser.has_pending());
+/// let events = parser.flush();
+/// assert_eq!(events, [InputEvent::Key(KeyEvent::new(Key::Escape, Mods::empty()))]);
+/// assert!(!parser.has_pending());
+/// ```
 #[derive(Debug, Clone)]
 pub struct Parser {
     state: State,

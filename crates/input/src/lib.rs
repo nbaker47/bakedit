@@ -14,6 +14,29 @@
 //! The order in the app's input loop is: bytes into the [`Parser`]; every key event it
 //! produces into [`HeldMods::observe`]; then through [`NavLayer::process`]; and what comes
 //! out of that is what the keymap sees.
+//!
+//! ```
+//! use std::time::Instant;
+//!
+//! use bakedit_core::InputEvent;
+//! use bakedit_input::{describe, HeldMods, NavLayer, NavLayerConfig, Parser};
+//!
+//! let mut parser = Parser::new();
+//! let mut held = HeldMods::new();
+//! let mut nav = NavLayer::new(NavLayerConfig::default());
+//!
+//! // `;` goes down and then `e`, as a terminal in kitty keyboard mode reports them.
+//! let mut keys = Vec::new();
+//! for event in parser.feed(b"\x1b[59;;59u\x1b[101;;101u") {
+//!     if let InputEvent::Key(ev) = event {
+//!         held.observe(&ev);
+//!         keys.extend(nav.process(ev, Instant::now()));
+//!     }
+//! }
+//! // The nav layer turned that into the Up arrow.
+//! let lines: Vec<String> = keys.into_iter().map(|ev| describe(&InputEvent::Key(ev))).collect();
+//! assert_eq!(lines, ["key press   up"]);
+//! ```
 
 #![warn(missing_docs)]
 

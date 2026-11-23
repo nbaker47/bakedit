@@ -300,6 +300,17 @@ pub fn query_sequence() -> String {
 /// Everything to write at startup, in order: alternate screen, hide the cursor, kitty
 /// keyboard flags (after the screen switch, because the flag stack is per screen), mouse,
 /// focus events, bracketed paste, colour scheme updates and finally the queries.
+///
+/// ```
+/// use bakedit_input::host::{self, HostOptions, MouseTracking};
+///
+/// let opts = HostOptions { mouse: MouseTracking::AnyMotion, ..HostOptions::default() };
+/// let enter = host::enter_sequence(&opts); // write this at startup
+/// let leave = host::leave_sequence(&opts); // and this at shutdown, or from a panic hook
+/// assert!(enter.starts_with(host::ALTERNATE_SCREEN_ON));
+/// assert!(enter.ends_with(host::DEVICE_ATTRIBUTES_QUERY));
+/// assert!(leave.ends_with(host::ALTERNATE_SCREEN_OFF));
+/// ```
 pub fn enter_sequence(opts: &HostOptions) -> String {
     let mut out = String::new();
     if opts.alternate_screen {
