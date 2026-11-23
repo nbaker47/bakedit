@@ -479,6 +479,15 @@ impl Project {
         &self.repos
     }
 
+    /// The deepest discovered git repository that contains `path`, if any.
+    pub fn repo_root_for_path(&self, path: &Path) -> Option<PathBuf> {
+        self.repos
+            .iter()
+            .filter(|r| path.starts_with(&r.top) || path.starts_with(r.repo.root()))
+            .max_by_key(|r| r.top.as_os_str().len().max(r.repo.root().as_os_str().len()))
+            .map(|r| r.repo.root().to_path_buf())
+    }
+
     /// Changes whenever [`Project::repos`] changes.
     pub fn repos_version(&self) -> u64 {
         self.repos_version
@@ -1214,6 +1223,9 @@ mod tests {
         assert_eq!(project.git_summary().branch.as_deref(), Some("beta / dev"));
         assert_eq!(project.git_summary().changes, 1);
         assert_eq!(project.abs_path(Path::new("b.txt")), Some(beta.join("b.txt")));
+        assert_eq!(project.repo_root_for_path(&alpha.join("a.txt")), Some(project.repos()[0].repo.root().to_path_buf()));
+        assert_eq!(project.repo_root_for_path(&beta.join("b.txt")), Some(beta_root));
+        assert_eq!(project.repo_root_for_path(parent.path()), None);
     }
 
     #[test]

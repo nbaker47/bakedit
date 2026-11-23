@@ -286,7 +286,19 @@ impl ProjectPanel {
         } else {
             cx.push(Effect::OpenFile { path: row.path, line: None, column: None, preview, focus: !preview });
         }
+        self.sync_git_repo(cx);
         true
+    }
+
+    /// Switch the active git repository when the selected file tree entry belongs to a
+    /// different discovered repository.
+    fn sync_git_repo(&self, cx: &mut Cx<'_>) {
+        let Some(row) = self.selected_row() else { return };
+        let Some(repo_root) = cx.project.repo_root_for_path(&row.path) else { return };
+        if cx.project.repo().map(|r| r.root()) == Some(repo_root.as_path()) {
+            return;
+        }
+        cx.push(Effect::SelectRepo(repo_root));
     }
 
     /// The tree row under screen row `y`: 0 is the header, then the list lines.
@@ -862,6 +874,7 @@ impl View for ProjectPanel {
         if self.reveal.is_none() {
             self.reveal = Some(false);
         }
+        self.sync_git_repo(cx);
         true
     }
 
@@ -876,7 +889,11 @@ impl View for ProjectPanel {
             return false;
         }
         let hide = Self::hides_ignored(cx);
-        self.type_ahead(text, cx.now, hide)
+        let moved = self.type_ahead(text, cx.now, hide);
+        if moved {
+            self.sync_git_repo(cx);
+        }
+        moved
     }
 
     fn handle_paste(&mut self, text: &str, _cx: &mut Cx<'_>) -> bool {
@@ -907,6 +924,7 @@ impl View for ProjectPanel {
                 // A click opens a folder or previews a file; a second click keeps the tab.
                 // Folders were already toggled by the first click of a double click.
                 if double && is_dir {
+                    self.sync_git_repo(cx);
                     return true;
                 }
                 return self.open_selected(!double, cx);
@@ -930,6 +948,7 @@ impl View for ProjectPanel {
                     if self.tree.reveal(path).is_some() {
                         self.watch_ignored(cx);
                         self.reveal = Some(false);
+                        self.sync_git_repo(cx);
                         dirty = true;
                     }
                 }
