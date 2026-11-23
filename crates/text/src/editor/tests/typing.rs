@@ -317,8 +317,11 @@ fn newline_between_a_bracket_pair_opens_a_block() {
 
 #[test]
 fn newline_inside_the_indentation_and_before_blanks() {
-    check("    ˇ    foo", Command::Newline, "    \n    ˇfoo");
-    check("ˇ    foo", Command::Newline, "\nˇfoo");
+    // Inside the indentation the line below keeps all of its indentation.
+    check("    ˇ    foo", Command::Newline, "    \n    ˇ    foo");
+    check("ˇ    foo", Command::Newline, "\nˇ    foo");
+    check("\tˇ\tfoo", Command::Newline, "\t\n\tˇ\tfoo");
+    check("    ˇ", Command::Newline, "    \n    ˇ");
     check("fooˇ   bar", Command::Newline, "foo\nˇbar");
     check("    fooˇ  \n", Command::Newline, "    foo\n    ˇ\n");
 }

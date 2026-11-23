@@ -364,17 +364,22 @@ impl Editor {
             text.push_str(unit);
         }
         let cursor = text.chars().count();
-        (start..after, text, cursor)
+        // With text before the cursor, the blanks after it would only push the rest of the
+        // line off the new indentation, so they go. Inside the line's own indentation they
+        // are that indentation and stay.
+        let replace_until = if previous.is_some() { after } else { end };
+        (start..replace_until, text, cursor)
     }
 
     /// `Newline`: break the line at every selection.
     ///
     /// With `auto_indent` the new line starts with the indentation of the line being
     /// broken (up to the cursor's column), one level deeper when the text before the
-    /// cursor ends in an `indent_after` character, and blanks right after the cursor are
-    /// dropped so the rest of the line starts at that indentation. Between a bracket pair
-    /// (`{|}`) the closing bracket goes on a line of its own and the cursor on an indented
-    /// line between. Without `auto_indent` only a line break is inserted.
+    /// cursor ends in an `indent_after` character. Blanks right after the cursor are
+    /// dropped so the rest of the line starts at that indentation; inside the line's own
+    /// leading whitespace nothing is dropped, so the line keeps its indentation. Between a
+    /// bracket pair (`{|}`) the closing bracket goes on a line of its own and the cursor
+    /// on an indented line between. Without `auto_indent` only a line break is inserted.
     pub(crate) fn newline(&mut self) -> EditSummary {
         let unit = self.indent_unit();
         let mut edits = Vec::new();
