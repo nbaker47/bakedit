@@ -206,7 +206,7 @@ fn action_json(action: &Action) -> Value {
 type Indexed<'a> = (usize, &'a Binding);
 
 /// A set of key bindings. Load one or more keymap files into it with [`Keymap::load`], then
-/// ask it what a key press does.
+/// ask it what a key press does, directly or through a [`crate::Matcher`].
 ///
 /// A keymap is plain data: once loaded it can be shared between threads and read freely.
 #[derive(Debug, Clone, Default)]
