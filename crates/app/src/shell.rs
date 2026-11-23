@@ -1469,6 +1469,12 @@ impl Shell {
             Effect::Ask(question) => self.ask(question.message, question.detail, question.answers),
             Effect::OpenExternally(target) => crate::external::open(&target),
             Effect::RefreshGit => self.project.refresh_git(),
+            Effect::Moved { from, to } => {
+                let mut cx = cx!(self);
+                for item in self.pane.items_mut() {
+                    item.moved(&from, &to, &mut cx);
+                }
+            }
             Effect::PathsChanged(paths) => {
                 // The view that made the change knows of it already; the index, the status
                 // and every other view hear of it now rather than when the watcher does.

@@ -132,6 +132,34 @@ fn pages_and_untitled_buffers() {
 }
 
 #[test]
+fn a_tab_follows_its_file_when_bakedit_moves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let old = dir.path().join("src/notes.txt");
+    std::fs::write(&old, "# Notes\n").unwrap();
+    let mut harness = Harness::new(dir.path());
+    let mut item = EditorItem::open(&old, &mut harness.cx()).unwrap();
+    // Renamed in the tree: the tab shows the new name and the new language, and the file
+    // is not taken for deleted.
+    let renamed = dir.path().join("src/notes.md");
+    std::fs::rename(&old, &renamed).unwrap();
+    item.moved(&old, &renamed, &mut harness.cx());
+    item.paths_changed(&FsChange::of(vec![old.clone(), renamed.clone()]), &mut harness.cx());
+    assert_eq!(item.path(), Some(renamed.as_path()));
+    assert_eq!(item.tab(&harness.render_cx(false)).title, "notes.md");
+    assert_eq!(item.status().language.as_deref(), Some("Markdown"));
+    assert!(harness.take_effects().is_empty(), "no word of a deleted file");
+    // Its folder moved: the path below it follows.
+    let moved = dir.path().join("docs");
+    std::fs::rename(dir.path().join("src"), &moved).unwrap();
+    item.moved(&dir.path().join("src"), &moved, &mut harness.cx());
+    assert_eq!(item.path(), Some(moved.join("notes.md").as_path()));
+    // Another file's move leaves it alone.
+    item.moved(&dir.path().join("elsewhere.txt"), &dir.path().join("x.txt"), &mut harness.cx());
+    assert_eq!(item.path(), Some(moved.join("notes.md").as_path()));
+}
+
+#[test]
 fn missing_files_and_folders_say_so_and_binaries_open_as_a_note() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();

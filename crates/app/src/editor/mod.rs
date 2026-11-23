@@ -467,6 +467,24 @@ impl Item for EditorItem {
         cx.project.forget_syntax(self.doc_id);
     }
 
+    fn moved(&mut self, from: &Path, to: &Path, cx: &mut Cx<'_>) {
+        if self.stand_in_for.is_some() || self.kind == "page" {
+            return;
+        }
+        let Some(rest) = self.editor.buffer().path().and_then(|path| path.strip_prefix(from).ok()).map(Path::to_path_buf) else { return };
+        let path = if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) };
+        self.title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        // A new extension can mean a new language (notes.txt renamed to notes.md).
+        let first_line = self.editor.buffer().line_text(0).into_owned();
+        let language = bakedit_syntax::detect(&path, Some(&first_line));
+        self.editor.follow_move(path);
+        if !std::ptr::eq(language, self.language) {
+            self.language = language;
+            self.highlighted = None;
+            self.request_highlights(cx.project);
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

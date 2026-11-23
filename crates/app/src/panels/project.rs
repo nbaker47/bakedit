@@ -402,6 +402,9 @@ impl ProjectPanel {
             Ok((path, changed)) => {
                 self.watch_ignored(cx);
                 self.reveal = Some(false);
+                if let EditKind::Rename { path: from } = &edit.kind {
+                    cx.push(Effect::Moved { from: from.clone(), to: path.clone() });
+                }
                 cx.push(Effect::PathsChanged(changed));
                 if matches!(edit.kind, EditKind::NewFile { .. }) && path.is_file() {
                     cx.push(Effect::open(path));
@@ -522,6 +525,12 @@ impl ProjectPanel {
         match self.tree.paste_at_selection() {
             Ok(pasted) if pasted.is_empty() => cx.status("Nothing to paste: copy or cut an entry first"),
             Ok(mut changed) => {
+                // Cut entries were moved, in order: the tabs showing them follow.
+                for (from, to) in sources.iter().zip(&changed) {
+                    if from != to {
+                        cx.push(Effect::Moved { from: from.clone(), to: to.clone() });
+                    }
+                }
                 changed.extend(sources);
                 self.watch_ignored(cx);
                 self.reveal = Some(false);
@@ -1466,7 +1475,10 @@ mod tests {
         act(&mut panel, &mut harness, "menu::Confirm");
         assert!(dir.path().join("CHANGES.md").is_file() && !readme.exists());
         let effects = harness.take_effects();
-        assert!(effects.contains(&Effect::PathsChanged(vec![readme, dir.path().join("CHANGES.md")])), "{effects:?}");
+        let moved = Effect::Moved { from: readme.clone(), to: dir.path().join("CHANGES.md") };
+        let changed = Effect::PathsChanged(vec![readme, dir.path().join("CHANGES.md")]);
+        let at = |wanted: &Effect| effects.iter().position(|effect| effect == wanted);
+        assert!(at(&moved).zip(at(&changed)).is_some_and(|(m, c)| m < c), "the tabs follow the file first: {effects:?}");
         assert_eq!(panel.selected_row().unwrap().name, "CHANGES.md");
         assert!(!effects.iter().any(|e| matches!(e, Effect::OpenFile { .. })), "renaming leaves the focus where it is");
     }

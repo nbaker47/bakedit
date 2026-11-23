@@ -33,7 +33,9 @@ key f2
 text renamed
 key enter
 exec test -f "$BAKEDIT_SCENARIO_PROJECT/src/renamed.rs" && test ! -e "$BAKEDIT_SCENARIO_PROJECT/src/extra.rs"
-expect renamed.rs
+# The open tab follows the file to its new name.
+expect src › renamed.rs
+expect-not deleted on disk
 snap renamed
 
 # cmd-alt-backspace deletes, after asking; left picks Delete over Cancel.
@@ -43,7 +45,8 @@ snap prompt
 key left
 key enter
 exec test ! -e "$BAKEDIT_SCENARIO_PROJECT/src/renamed.rs"
-expect Deleted renamed.rs
+# Its tab stays open with the text, and says the file is gone.
+expect src/renamed.rs was deleted on disk; saving will create it again
 
 # cmd-shift-e in the tree closes it.
 key cmd-shift-e

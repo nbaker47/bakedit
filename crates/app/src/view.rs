@@ -110,6 +110,10 @@ pub enum Effect {
     /// The file at this path was created, renamed or removed by a view: refresh the tree
     /// and any open tab for it.
     PathsChanged(Vec<PathBuf>),
+    /// A view moved or renamed a file or folder from `from` to `to`: the tabs showing it
+    /// (or a file inside it) follow it there. Sent before the `PathsChanged` for the same
+    /// move.
+    Moved { from: PathBuf, to: PathBuf },
     /// Close the tab this view lives in (sent by an item about itself).
     CloseItem,
     /// Leave this project and open another directory in this window. Unsaved files are
@@ -419,6 +423,12 @@ pub trait Item: View {
     /// item for it (an editor's colours in the project's syntax store).
     fn closed(&mut self, cx: &mut Cx<'_>) {
         let _ = cx;
+    }
+
+    /// bakedit moved or renamed `from` to `to` (a file, or a folder the file is in): show
+    /// and save the file at its new place.
+    fn moved(&mut self, from: &Path, to: &Path, cx: &mut Cx<'_>) {
+        let _ = (from, to, cx);
     }
 
     fn as_any(&self) -> &dyn Any;
