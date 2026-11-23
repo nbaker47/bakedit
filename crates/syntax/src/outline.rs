@@ -154,14 +154,24 @@ struct Found {
 /// Empty when the language has no grammar or no outline rules, and for text too large to
 /// parse. Symbols in the middle of a syntax error may be missing, but an error elsewhere in
 /// the file does not hide the rest. Lines are counted the default way
-/// ([`LineBreaks::Unicode`]); convert [`Symbol::byte`] yourself if the buffer counts
-/// otherwise.
+/// ([`LineBreaks::Unicode`]); see [`outline_with_line_breaks`] for the other.
 ///
 /// This parses the text, so it costs about as much as highlighting it: a few milliseconds
-/// for an ordinary file, tens for a very large one. On the rare input a grammar chokes on it
-/// gives up after two seconds (longer for a text of megabytes) and returns what it has,
-/// which may be nothing; call it off the UI thread if that matters.
+/// for an ordinary file, tens for a very large one. The first call for a language also
+/// compiles its outline rules, which takes up to a third of a second for the largest grammar
+/// (Swift) unless a [`SyntaxWorker`](crate::SyntaxWorker) has already highlighted a file in
+/// that language. On the rare input a grammar chokes on it gives up after two seconds
+/// (longer for a text of megabytes) and returns what it has, which may be nothing.
 pub fn outline(language: &Language, text: &str) -> Vec<Symbol> {
+    outline_with_line_breaks(language, text, LineBreaks::default())
+}
+
+/// As [`outline`], with [`Symbol::line`] counted the way `breaks` says.
+pub fn outline_with_line_breaks(
+    language: &Language,
+    text: &str,
+    breaks: LineBreaks,
+) -> Vec<Symbol> {
     let Some(spec) = language.grammar else {
         return Vec::new();
     };
@@ -244,7 +254,7 @@ pub fn outline(language: &Language, text: &str) -> Vec<Symbol> {
     let mut order: Vec<usize> = (0..found.len()).collect();
     order.sort_by_key(|&index| offsets[index]);
     let sorted_offsets: Vec<usize> = order.iter().map(|&index| offsets[index]).collect();
-    let sorted_lines = lines_of_offsets(text, &sorted_offsets, LineBreaks::default());
+    let sorted_lines = lines_of_offsets(text, &sorted_offsets, breaks);
     let mut lines = vec![0; found.len()];
     for (position, &index) in order.iter().enumerate() {
         lines[index] = sorted_lines[position];
@@ -1337,6 +1347,11 @@ Another one
         assert_eq!((symbols[0].name.as_str(), symbols[0].line), ("naïve", 1));
         // The form feed is a line break for a rope, so `second` is on the third line.
         assert_eq!((symbols[1].name.as_str(), symbols[1].line), ("second", 2));
+        // Counting line feeds only, it is on the second.
+        let symbols =
+            outline_with_line_breaks(language_by_id("rust").unwrap(), text, LineBreaks::Lf);
+        assert_eq!((symbols[1].name.as_str(), symbols[1].line), ("second", 1));
+        assert_eq!(symbols[0].line, 1);
         for symbol in &symbols {
             assert!(text[symbol.byte..].starts_with(&symbol.name));
         }

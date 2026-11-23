@@ -37,6 +37,8 @@
 //! [`Highlighter`] is not shared: keep one per thread. Grammars load lazily, so the first
 //! text of a language costs a few milliseconds more than the rest.
 
+#![warn(missing_docs)]
+
 mod brackets;
 mod capture;
 mod error;
@@ -58,5 +60,5 @@ pub use language::{
     Pair,
 };
 pub use lines::{LineBreaks, LineHighlights};
-pub use outline::{outline, Symbol, SymbolKind};
+pub use outline::{outline, outline_with_line_breaks, Symbol, SymbolKind};
 pub use worker::{SyntaxResult, SyntaxWorker};
