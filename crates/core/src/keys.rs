@@ -25,14 +25,14 @@ impl Mods {
     /// Alias so call sites can say what the user says.
     pub const CMD: Mods = Mods::SUPER;
 
-    /// `cmd-ctrl-alt-shift-` style prefix, in the order Zed prints it.
+    /// `ctrl-alt-cmd-shift-` style prefix, in the order Zed prints it.
     pub fn prefix(self) -> String {
         let mut out = String::new();
         for (flag, name) in [
             (Mods::CTRL, "ctrl-"),
             (Mods::ALT, "alt-"),
-            (Mods::SHIFT, "shift-"),
             (Mods::SUPER, "cmd-"),
+            (Mods::SHIFT, "shift-"),
             (Mods::HYPER, "hyper-"),
             (Mods::META, "meta-"),
         ] {
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn display_orders_modifiers_like_zed() {
         let ev = KeyEvent::new(Key::Char('p'), Mods::SUPER | Mods::SHIFT);
-        assert_eq!(ev.display(), "shift-cmd-p");
+        assert_eq!(ev.display(), "cmd-shift-p");
         let ev = KeyEvent::new(Key::Up, Mods::CTRL | Mods::ALT | Mods::SUPER);
         assert_eq!(ev.display(), "ctrl-alt-cmd-up");
     }
