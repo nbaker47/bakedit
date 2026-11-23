@@ -8,6 +8,7 @@ mod exec;
 mod index;
 mod line_diff;
 mod log;
+mod patch;
 mod paths;
 mod remote;
 mod repo;
@@ -24,6 +25,7 @@ pub use line_diff::{
     line_hunks, line_hunks_with_deadline, LineHunk, LineHunkKind, LINE_DIFF_TIMEOUT,
 };
 pub use log::Commit;
+pub use patch::HunkAction;
 pub use repo::{Repo, DEFAULT_NETWORK_TIMEOUT};
 pub use status::{
     parse_status, ConflictKind, DisplayStatus, FileState, RepoState, StageState, Status,
