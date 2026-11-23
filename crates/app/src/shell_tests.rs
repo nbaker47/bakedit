@@ -282,6 +282,11 @@ fn opening_files_previews_and_reveals() {
     assert!(act(&mut shell, "pane::RevealInProjectPanel"));
     assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Project));
     assert!(log.borrow().iter().any(|l| l.contains("project_panel::RevealPath") && l.contains("/project/c.rs")), "{:?}", log.borrow());
+    // The end of the git panel's arrow-key sequence: git_panel::FocusChanges from the tree
+    // brings the keyboard back to the git panel, which is handed the action.
+    assert!(act(&mut shell, "git_panel::FocusChanges"));
+    assert_eq!(shell.workspace.focus(), Focus::Panel(PanelId::Git));
+    assert!(log.borrow().iter().any(|l| l.starts_with("GitPanel action git_panel::FocusChanges")), "{:?}", log.borrow());
 }
 
 #[test]

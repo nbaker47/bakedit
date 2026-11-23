@@ -610,6 +610,16 @@ impl Shell {
         if let Some((prefix, verb)) = name.split_once("::") {
             if let Some(id) = panel_of(prefix) {
                 match verb {
+                    // Zed registers these on the workspace: they reach the git panel from
+                    // anywhere (the end of Nathan's arrow-key sequence runs while the tree
+                    // has the keyboard), showing and focusing it first.
+                    "FocusChanges" | "FocusEditor" if id == PanelId::Git => {
+                        self.set_focus(Focus::Panel(id));
+                        let mut cx = cx!(self);
+                        if let Some(view) = self.panels.get_mut(&id) {
+                            view.handle_action(action, &mut cx);
+                        }
+                    }
                     "Toggle" => self.with_workspace(|ws| ws.toggle_panel(id)),
                     "ToggleFocus" => {
                         let close = self.settings.close_panel_on_toggle;
