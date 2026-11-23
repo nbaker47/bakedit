@@ -49,6 +49,25 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   header), `pane.rs` (tabs, preview tab, closed-tab stack, back/forward), `layout.rs`
   (rectangles for docks, centre, dividers, status bar), `settings.rs` (Zed's settings.json
   keys), `session.rs`, `ipc.rs` (one socket per running window), `cli.rs`.
+- **Shared state and background work:** `project.rs` (`Project`, owned by the shell and lent
+  to every view as `cx.project`: the git repository and status, `git_job` for commands off
+  the UI thread, `git_base` for the gutter, the file index and watcher, recent files and
+  search history, the syntax thread), `background.rs` (`Waker`, `Task`). Nothing a view does
+  may block drawing: start work with `cx.project.spawn` or `git_job` and collect it in `tick`.
+- **The running app:** `app.rs` (the main loop: input wiring, timers, drawing, session
+  saves, config reloads), `host.rs` (terminal modes and their restore), `main.rs` (every
+  `cli.rs` mode), `window.rs` (`--window`, the dedicated Ghostty window), `themes.rs`,
+  `logging.rs` (`--log`).
+- **Views:** `editor/` (`EditorItem`), `panels/terminal.rs`, `panels/git.rs`,
+  `panels/project.rs`, `items/diff.rs`, `items/search.rs`; `factory.rs` makes the items and
+  fills the file finder, branch and recent-project pickers. Each module's header states the
+  constructor and methods the app calls; keep those signatures.
+- **Driving the real binary:** `crates/app/tests/scenarios/run.sh <out-dir>` builds a
+  throwaway project and runs the `.keys` scenarios through `scripts/ptyshot.py` (kitty and
+  legacy terminals, cmd+click on terminal paths, reloads, IPC, `--dump-input`, `--probe`),
+  writing text, HTML and PNG snapshots. Run bakedit by hand the same way: `--terminal shell`
+  (never the user's herdr session), `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in a scratch
+  folder, `ZDOTDIR` there too so the panel's shell reads none of the user's dotfiles.
 - **Drawing, pure functions of data:** `ui.rs` (clipped `Canvas`, `Style`, truncation),
   `chrome.rs` (tab bar, status bar, prompt, toast), `picker.rs`, `line_input.rs`, `paint.rs`
   (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
