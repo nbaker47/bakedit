@@ -460,6 +460,33 @@ fn typing_with_rollover_cancels_the_layer() {
 }
 
 #[test]
+fn a_key_pressed_after_the_tap_timeout_is_not_rollover_typing() {
+    // `;` held for a while and then Enter: nobody types that slowly. Enter is just Enter,
+    // no `;` appears, and the layer stays on.
+    let enter = sent(Key::Enter, NONE);
+    let mut rig = Rig::new();
+    rig.down(';');
+    rig.wait(1500);
+    assert_eq!(rig.send(enter.clone()), vec![enter.clone()]);
+    assert!(rig.layer.active());
+    assert_eq!(rig.down('e'), vec![sent(Key::Up, NONE)]);
+    assert_eq!(rig.up('e'), vec![sent_release(Key::Up, NONE)]);
+    assert_eq!(rig.up(';'), vec![]);
+
+    // Just inside the timeout it is still typing.
+    rig.down(';');
+    rig.wait(990);
+    assert_eq!(rig.send(enter.clone()), vec![press(';'), enter.clone()]);
+    assert_eq!(rig.up(';'), vec![release(';')]);
+
+    // Passing a key through late does not use the layer or type the trigger afterwards.
+    rig.down(';');
+    rig.wait(1500);
+    assert_eq!(rig.send(enter.clone()), vec![enter]);
+    assert_eq!(rig.up(';'), vec![]);
+}
+
+#[test]
 fn rollover_typing_keeps_the_order_of_the_characters() {
     // "x; y" typed fast: every key goes down before the previous one is up.
     let mut rig = Rig::new();

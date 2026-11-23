@@ -305,9 +305,10 @@ impl NavLayer {
     /// - **Layer modifier keys** send nothing.
     /// - **Any other key** with a layer modifier held is sent with the layer's modifiers
     ///   added and its text removed. With none held it passes through unchanged; and if no
-    ///   layer key has been used in this hold, the user was just typing fast, so the
-    ///   trigger's kept-back press is sent first and the layer stays off until the trigger
-    ///   is released (that release then passes through).
+    ///   layer key has been used in this hold and the hold is younger than `alone_timeout`,
+    ///   the user was just typing fast, so the trigger's kept-back press is sent first and
+    ///   the layer stays off until the trigger is released (that release then passes
+    ///   through).
     /// - **Repeats** of a key the layer sent repeat what was sent, with the modifiers held
     ///   now. **Releases** release what was sent, with the modifiers its press had.
     ///
@@ -342,7 +343,7 @@ impl NavLayer {
                 KeyKind::Release => self.end_hold(ev, now),
             },
             Phase::Held(_) => match ev.kind {
-                KeyKind::Press => self.press_in_layer(ev),
+                KeyKind::Press => self.press_in_layer(ev, now),
                 KeyKind::Repeat => self.repeat_in_layer(ev),
                 KeyKind::Release => self.release_in_layer(ev),
             },
@@ -360,9 +361,9 @@ impl NavLayer {
 
     fn end_hold(&mut self, release: KeyEvent, now: Instant) -> Vec<KeyEvent> {
         let mut out = self.release_all();
+        let tapped = self.trigger_may_still_type(now);
         if let Phase::Held(hold) = std::mem::replace(&mut self.phase, Phase::Idle) {
-            let held_for = now.saturating_duration_since(hold.since);
-            if !hold.used && held_for < self.config.alone_timeout {
+            if tapped {
                 out.push(hold.press);
                 out.push(release);
             }
@@ -370,7 +371,19 @@ impl NavLayer {
         out
     }
 
-    fn press_in_layer(&mut self, ev: KeyEvent) -> Vec<KeyEvent> {
+    /// True while the trigger's own press can still turn out to be typing: the layer has
+    /// not been used in this hold and the hold is younger than the tap timeout.
+    fn trigger_may_still_type(&self, now: Instant) -> bool {
+        match &self.phase {
+            Phase::Held(hold) => {
+                let held_for = now.saturating_duration_since(hold.since);
+                !hold.used && held_for < self.config.alone_timeout
+            }
+            _ => false,
+        }
+    }
+
+    fn press_in_layer(&mut self, ev: KeyEvent, now: Instant) -> Vec<KeyEvent> {
         let layer_mods = self.virtual_mods();
         match self.config.role(&ev) {
             Some(Role::Modifier(bit)) => {
@@ -387,7 +400,7 @@ impl NavLayer {
             }
             Some(Role::Tap(_)) => self.send_with_layer_mods(ev, layer_mods),
             None if !layer_mods.is_empty() => self.send_with_layer_mods(ev, layer_mods),
-            None => self.pass_or_cancel(ev),
+            None => self.pass_or_cancel(ev, now),
         }
     }
 
@@ -409,13 +422,12 @@ impl NavLayer {
     }
 
     /// A key the layer has nothing to say about, pressed with no layer modifier held.
-    fn pass_or_cancel(&mut self, ev: KeyEvent) -> Vec<KeyEvent> {
-        match &self.phase {
-            Phase::Held(hold) if !hold.used => {}
-            _ => return vec![ev],
+    fn pass_or_cancel(&mut self, ev: KeyEvent, now: Instant) -> Vec<KeyEvent> {
+        if !self.trigger_may_still_type(now) {
+            return vec![ev];
         }
-        // Nothing in this hold used the layer, so it was typing with rollover: the trigger
-        // went down, and the next key before it came back up.
+        // Nothing in this young hold used the layer, so it was typing with rollover: the
+        // trigger went down, and the next key before it came back up.
         match std::mem::replace(&mut self.phase, Phase::Cancelled) {
             Phase::Held(hold) => vec![hold.press, ev],
             _ => vec![ev],
