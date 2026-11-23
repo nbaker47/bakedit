@@ -320,6 +320,20 @@ impl FromStr for Keystroke {
     }
 }
 
+/// The keymap spelling of a sequence: `cmd-k cmd-s`.
+pub(crate) fn sequence_text(keystrokes: &[Keystroke]) -> String {
+    join(keystrokes.iter().map(Keystroke::to_string))
+}
+
+/// The Mac glyphs of a sequence: `⌘K ⌘S`.
+pub(crate) fn sequence_display_mac(keystrokes: &[Keystroke]) -> String {
+    join(keystrokes.iter().map(Keystroke::display_mac))
+}
+
+fn join(parts: impl Iterator<Item = String>) -> String {
+    parts.collect::<Vec<String>>().join(" ")
+}
+
 /// The only character of `text`, if it has exactly one.
 fn single_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
@@ -702,6 +716,14 @@ mod tests {
         ] {
             assert_eq!(ks(text).display_mac(), glyphs, "{text}");
         }
+    }
+
+    #[test]
+    fn sequences_are_shown_space_separated() {
+        let keys = Keystroke::parse_sequence("cmd-k cmd-S").unwrap();
+        assert_eq!(sequence_text(&keys), "cmd-k shift-cmd-s");
+        assert_eq!(sequence_display_mac(&keys), "⌘K ⇧⌘S");
+        assert_eq!(sequence_text(&[]), "");
     }
 
     #[test]
