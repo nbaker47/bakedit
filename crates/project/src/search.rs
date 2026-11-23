@@ -256,10 +256,7 @@ fn start_search(
             .visit(&mut builder);
             context.send(SearchEvent::Done {
                 files: context.files.load(Ordering::Relaxed),
-                matches: context
-                    .matches
-                    .load(Ordering::Relaxed)
-                    .min(context.max_results),
+                matches: context.matches.load(Ordering::Relaxed),
                 truncated: context.truncated.load(Ordering::Relaxed),
                 elapsed: started.elapsed(),
             });
@@ -386,7 +383,7 @@ struct SearchContext {
     filter: Arc<PathFilter>,
     cancel: Arc<AtomicBool>,
     max_results: usize,
-    /// Matches claimed so far; may run past `max_results` by the claims that were refused.
+    /// Matches reported so far. Never more than `max_results`.
     matches: AtomicUsize,
     files: AtomicUsize,
     truncated: AtomicBool,
@@ -403,15 +400,33 @@ impl SearchContext {
         self.cancelled() || self.truncated.load(Ordering::Relaxed)
     }
 
+    /// How many more matches fit under the limit right now.
+    fn room(&self) -> usize {
+        self.max_results
+            .saturating_sub(self.matches.load(Ordering::Relaxed))
+    }
+
     /// Claim room for `wanted` more matches. Returns how many fit under the limit; when
     /// that is fewer than asked for, the search is marked truncated.
     fn claim(&self, wanted: usize) -> usize {
-        let before = self.matches.fetch_add(wanted, Ordering::Relaxed);
-        let granted = wanted.min(self.max_results.saturating_sub(before));
-        if granted < wanted {
-            self.truncated.store(true, Ordering::Relaxed);
+        let mut current = self.matches.load(Ordering::Relaxed);
+        loop {
+            let granted = wanted.min(self.max_results.saturating_sub(current));
+            match self.matches.compare_exchange_weak(
+                current,
+                current + granted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if granted < wanted {
+                        self.truncated.store(true, Ordering::Relaxed);
+                    }
+                    return granted;
+                }
+                Err(now) => current = now,
+            }
         }
-        granted
     }
 
     fn send(&self, event: SearchEvent) {
@@ -453,6 +468,7 @@ impl ParallelVisitor for SearchVisitor<'_> {
         let mut sink = MatchSink {
             context,
             matches: Vec::new(),
+            found: 0,
             binary: false,
         };
         let path = context.root.join(&relative);
@@ -462,12 +478,18 @@ impl ParallelVisitor for SearchVisitor<'_> {
         {
             log::debug!("could not search {}: {error}", path.display());
         }
-        if !sink.binary && !sink.matches.is_empty() {
-            context.files.fetch_add(1, Ordering::Relaxed);
-            context.send(SearchEvent::File {
-                path: relative,
-                matches: sink.matches,
-            });
+        // Only now is it known that the file is text, so only now do its matches count
+        // against the limit.
+        if !sink.binary && sink.found > 0 {
+            let granted = context.claim(sink.found);
+            keep_first_matches(&mut sink.matches, granted);
+            if !sink.matches.is_empty() {
+                context.files.fetch_add(1, Ordering::Relaxed);
+                context.send(SearchEvent::File {
+                    path: relative,
+                    matches: sink.matches,
+                });
+            }
         }
         if context.stopping() {
             WalkState::Quit
@@ -495,6 +517,8 @@ fn searchable_file(
 struct MatchSink<'a> {
     context: &'a SearchContext,
     matches: Vec<LineMatch>,
+    /// The number of matches in `matches`.
+    found: usize,
     binary: bool,
 }
 
@@ -502,29 +526,38 @@ impl Sink for MatchSink<'_> {
     type Error = io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, found: &SinkMatch<'_>) -> Result<bool, io::Error> {
-        if self.context.cancelled() {
+        if self.context.stopping() {
             return Ok(false);
         }
         let line = strip_line_break(found.bytes());
         let line_number = u32::try_from(found.line_number().unwrap_or(0)).unwrap_or(u32::MAX);
-        for mut window in line_windows(line, &match_spans(&self.context.matcher, line), line_number)
-        {
-            let granted = self.context.claim(window.ranges.len());
-            window.ranges.truncate(granted);
-            if !window.ranges.is_empty() {
-                self.matches.push(window);
-            }
-            if self.context.stopping() {
-                return Ok(false);
-            }
+        for window in line_windows(line, &match_spans(&self.context.matcher, line), line_number) {
+            self.found += window.ranges.len();
+            self.matches.push(window);
         }
-        Ok(true)
+        // Once this file alone holds more than the search has room for, the rest of it
+        // could not be reported anyway.
+        Ok(self.found <= self.context.room())
     }
 
     fn binary_data(&mut self, _searcher: &Searcher, _offset: u64) -> Result<bool, io::Error> {
         self.binary = true;
         Ok(false)
     }
+}
+
+/// Cut a file's matches down to the first `keep`, dropping the lines left with none.
+fn keep_first_matches(matches: &mut Vec<LineMatch>, mut keep: usize) {
+    let mut lines = 0;
+    for line in matches.iter_mut() {
+        if keep == 0 {
+            break;
+        }
+        line.ranges.truncate(keep);
+        keep -= line.ranges.len();
+        lines += 1;
+    }
+    matches.truncate(lines);
 }
 
 /// `line` without its trailing `\n` or `\r\n`.
@@ -1325,14 +1358,166 @@ mod tests {
             events,
             wake: None,
         };
+        assert_eq!(context.room(), 5);
         assert_eq!(context.claim(3), 3);
         assert!(!context.stopping());
+        assert_eq!(context.room(), 2);
         assert_eq!(context.claim(2), 2);
         // Exactly at the limit is not truncated: nothing was turned away yet.
         assert!(!context.stopping());
+        assert_eq!(context.room(), 0);
         assert_eq!(context.claim(1), 0);
         assert!(context.stopping());
         assert_eq!(context.claim(4), 0);
+        assert_eq!(context.matches.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn a_partial_claim_is_split_fairly_between_racing_files() {
+        let (events, _receiver) = crossbeam_channel::unbounded();
+        let context = SearchContext {
+            root: PathBuf::new(),
+            matcher: build_matcher(&options("x")).unwrap(),
+            filter: Arc::new(filter(&[], &[])),
+            cancel: Arc::new(AtomicBool::new(false)),
+            max_results: 1_000,
+            matches: AtomicUsize::new(0),
+            files: AtomicUsize::new(0),
+            truncated: AtomicBool::new(false),
+            events,
+            wake: None,
+        };
+        // However the claims interleave, exactly `max_results` are granted in total.
+        let granted: usize = thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| (0..100).map(|_| context.claim(3)).sum::<usize>()))
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .sum()
+        });
+        assert_eq!(granted, 1_000);
+        assert_eq!(context.matches.load(Ordering::Relaxed), 1_000);
+        assert!(context.stopping());
+    }
+
+    #[test]
+    fn a_partial_claim_keeps_the_first_matches() {
+        // Each line is given as the start offsets of its one-character matches.
+        let line = |starts: &[usize]| LineMatch {
+            line_number: 1,
+            line: String::new(),
+            clamp_offset: 0,
+            ranges: starts.iter().map(|start| *start..start + 1).collect(),
+        };
+        let all = vec![line(&[0, 2]), line(&[4]), line(&[6, 8])];
+        let kept = |keep: usize| {
+            let mut matches = all.clone();
+            keep_first_matches(&mut matches, keep);
+            matches
+        };
+        assert_eq!(kept(4), [line(&[0, 2]), line(&[4]), line(&[6])]);
+        assert_eq!(kept(3), [line(&[0, 2]), line(&[4])]);
+        assert_eq!(kept(1), [line(&[0])]);
+        assert!(kept(0).is_empty());
+        assert_eq!(kept(99), all);
+    }
+
+    #[test]
+    fn a_file_that_changed_since_it_was_read_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.txt");
+        fs::write(&path, "port = 8080\n").unwrap();
+        let context = ReplaceContext {
+            root: dir.path().to_path_buf(),
+            matcher: build_matcher(&options("8080")).unwrap(),
+            filter: Arc::new(filter(&[], &[])),
+            replacement: b"9090".to_vec(),
+            interpolate: false,
+            results: Mutex::new(Vec::new()),
+        };
+        let Prepared::Rewrite(rewrite) = prepare_rewrite(&context, &path).unwrap() else {
+            panic!("the file has a match");
+        };
+        assert_eq!(rewrite.contents, b"port = 9090\n");
+        assert_eq!(rewrite.replacements, 1);
+
+        // Someone else saves the file between the read and the write.
+        fs::write(&path, "port = 8080\nhost = example.org\n").unwrap();
+        assert_eq!(
+            commit_rewrite(&path, &rewrite).unwrap(),
+            ReplaceOutcome::Skipped(SkipReason::Changed)
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "port = 8080\nhost = example.org\n",
+            "the other program's version is kept"
+        );
+        let left_behind: Vec<_> = fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(left_behind.len(), 1, "the temporary file is cleaned up");
+
+        // Even a change that keeps the size is noticed, through the modification time.
+        fs::write(&path, "port = 8080\n").unwrap();
+        let Prepared::Rewrite(rewrite) = prepare_rewrite(&context, &path).unwrap() else {
+            panic!("the file has a match");
+        };
+        let later = fs::metadata(&path).unwrap().modified().unwrap() + Duration::from_secs(2);
+        fs::write(&path, "port = 8081\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(
+            commit_rewrite(&path, &rewrite).unwrap(),
+            ReplaceOutcome::Skipped(SkipReason::Changed)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "port = 8081\n");
+
+        // Left alone, a rewrite goes through.
+        fs::write(&path, "port = 8080\n").unwrap();
+        let Prepared::Rewrite(rewrite) = prepare_rewrite(&context, &path).unwrap() else {
+            panic!("the file has a match");
+        };
+        assert_eq!(
+            commit_rewrite(&path, &rewrite).unwrap(),
+            ReplaceOutcome::Replaced { replacements: 1 }
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "port = 9090\n");
+    }
+
+    #[test]
+    fn files_that_turn_out_to_have_nothing_to_replace_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ReplaceContext {
+            root: dir.path().to_path_buf(),
+            matcher: build_matcher(&options("needle")).unwrap(),
+            filter: Arc::new(filter(&[], &[])),
+            replacement: b"pin".to_vec(),
+            interpolate: false,
+            results: Mutex::new(Vec::new()),
+        };
+        let plain = dir.path().join("plain.txt");
+        fs::write(&plain, "nothing here\n").unwrap();
+        assert!(matches!(
+            prepare_rewrite(&context, &plain).unwrap(),
+            Prepared::Nothing
+        ));
+        let binary = dir.path().join("binary.bin");
+        fs::write(&binary, b"needle\x00").unwrap();
+        assert!(matches!(
+            prepare_rewrite(&context, &binary).unwrap(),
+            Prepared::Nothing
+        ));
+        let wide = dir.path().join("wide.txt");
+        fs::write(&wide, b"\xfe\xff\x00n").unwrap();
+        assert!(matches!(
+            prepare_rewrite(&context, &wide).unwrap(),
+            Prepared::Skip(SkipReason::UnsupportedEncoding)
+        ));
+        assert!(prepare_rewrite(&context, &dir.path().join("missing.txt")).is_err());
     }
 
     fn replaced(options: &SearchOptions, replacement: &str, line: &str) -> (String, usize) {
