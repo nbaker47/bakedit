@@ -6,6 +6,7 @@ mod diff;
 mod error;
 mod exec;
 mod index;
+mod line_diff;
 mod log;
 mod paths;
 mod remote;
@@ -19,6 +20,9 @@ pub use diff::{
 };
 pub use error::{GitError, Result};
 pub use index::{CommitOptions, RestoreOutcome};
+pub use line_diff::{
+    line_hunks, line_hunks_with_deadline, LineHunk, LineHunkKind, LINE_DIFF_TIMEOUT,
+};
 pub use log::Commit;
 pub use repo::{Repo, DEFAULT_NETWORK_TIMEOUT};
 pub use status::{
