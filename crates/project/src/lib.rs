@@ -4,6 +4,7 @@ pub mod fileops;
 pub mod fuzzy;
 pub mod icons;
 pub mod index;
+pub mod search;
 pub mod tree;
 
 mod ignore_rules;
@@ -14,4 +15,8 @@ pub use fuzzy::{parse_query, FileMatch, FileQuery};
 pub use icons::{ascii_icon_for, icon_for, Icon};
 pub use ignore_rules::{is_always_hidden, ALWAYS_HIDDEN};
 pub use index::{FileIndex, IndexOptions, IndexSnapshot};
+pub use search::{
+    replace_all, search, search_with_wake, LineMatch, ReplaceOutcome, ReplaceResult, SearchError,
+    SearchEvent, SearchHandle, SearchOptions, SkipReason,
+};
 pub use tree::{Clipboard, FileTree, Row, RowKind};
