@@ -371,6 +371,11 @@ pub(crate) mod test_support {
         fn focus_changed(&mut self, focused: bool, _: &mut Cx<'_>) {
             self.seen.push(format!("focus {focused}"));
         }
+        fn paths_changed(&mut self, change: &crate::view::FsChange, _: &mut Cx<'_>) {
+            if self.path.as_deref().is_some_and(|path| change.touches(path)) {
+                self.seen.push("reload".to_string());
+            }
+        }
     }
 
     impl Item for FakeItem {

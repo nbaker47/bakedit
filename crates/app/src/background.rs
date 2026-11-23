@@ -148,6 +148,12 @@ impl<T: Send + 'static> Task<T> {
         Task { receiver, finished: false }
     }
 
+    /// A task whose value some existing worker will send on `receiver`. The worker must wake
+    /// the loop after sending, and drop its sender if it gives up, so the task finishes.
+    pub(crate) fn from_channel(receiver: Receiver<T>) -> Task<T> {
+        Task { receiver, finished: false }
+    }
+
     /// The value, the first time this is called after the work finished; `None` before
     /// that and ever after.
     pub fn poll(&mut self) -> Option<T> {

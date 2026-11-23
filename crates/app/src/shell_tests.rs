@@ -2,7 +2,7 @@
 //! prompt and picker flows as sequences of actions.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use bakedit_core::{Action, KeyEvent, MouseButton, MouseEvent, MouseKind, Theme};
@@ -13,10 +13,11 @@ use serde_json::json;
 use crate::clipboard::{Clipboard, MemoryBackend};
 use crate::pane::test_support::FakeItem;
 use crate::picker::PickerItem;
+use crate::project::Project;
 use crate::settings::Settings;
 use crate::shell::{Modal, Request, Shell};
 use crate::ui::{Canvas, Style};
-use crate::view::{Context, Cursor, Cx, Effect, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View};
+use crate::view::{Context, Cursor, Cx, Effect, FsChange, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View};
 use crate::workspace::{DockPosition, Focus, PanelId, Zoomed};
 
 pub(crate) type Log = Rc<RefCell<Vec<String>>>;
@@ -53,6 +54,42 @@ impl View for FakePanel {
     fn focus_changed(&mut self, focused: bool, _: &mut Cx<'_>) {
         self.log.borrow_mut().push(format!("{} focus {focused}", self.name));
     }
+    fn paths_changed(&mut self, change: &FsChange, _: &mut Cx<'_>) {
+        let paths: Vec<String> = change.paths.iter().map(|p| p.display().to_string()).collect();
+        self.log.borrow_mut().push(format!("{} paths {}", self.name, paths.join(",")));
+    }
+}
+
+/// A terminal stand-in that knows the links on its screen.
+struct LinkPanel {
+    log: Log,
+    links: Vec<&'static str>,
+}
+
+impl View for LinkPanel {
+    fn render(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
+        canvas.fill(area, cx.theme.panel_bg);
+        None
+    }
+    fn contexts(&self, out: &mut Vec<Context>) {
+        out.push(Context::new("Terminal"));
+    }
+    fn handle_action(&mut self, _: &Action, _: &mut Cx<'_>) -> bool {
+        false
+    }
+    fn handle_key(&mut self, _: &KeyEvent, _: &mut Cx<'_>) -> bool {
+        false
+    }
+    fn picker_rows(&mut self, kind: PickerKind, _: &mut Cx<'_>) -> Option<Vec<PickerItem>> {
+        (kind == PickerKind::Links).then(|| self.links.iter().map(|link| PickerItem::new(*link)).collect())
+    }
+    fn picker_preview(&mut self, _: PickerKind, row: Option<usize>, _: &mut Cx<'_>) {
+        self.log.borrow_mut().push(format!("preview {row:?}"));
+    }
+    fn picker_confirm(&mut self, _: PickerKind, row: usize, secondary: bool, cx: &mut Cx<'_>) {
+        self.log.borrow_mut().push(format!("confirm {row} {secondary}"));
+        cx.push(Effect::open(format!("/project/{}", self.links[row])));
+    }
 }
 
 struct Factory;
@@ -78,6 +115,11 @@ impl ItemFactory for Factory {
         item.kind = "project_search";
         item
     }
+    fn read_only(&mut self, title: &str, _: &str, _: Option<&str>, _: &mut Cx<'_>) -> Box<dyn Item> {
+        let mut item = FakeItem::untitled(title);
+        item.kind = "page";
+        item
+    }
 }
 
 struct Source {
@@ -101,7 +143,7 @@ pub(crate) fn shell() -> (Shell, Log) {
     let mut shell = Shell::new(
         Settings::default(),
         Theme::builtin(),
-        PathBuf::from("/project"),
+        Project::detached("/project"),
         Clipboard::with_backend(Box::new(MemoryBackend::default())),
         Box::new(Factory),
         Box::new(Source { files: vec!["src/main.rs", "src/lib.rs", "README.md"] }),
@@ -550,4 +592,166 @@ fn a_prompt_blocks_everything_else() {
     shell.handle_mouse(&MouseEvent::new(MouseKind::Press(MouseButton::Left), 0, 0));
     assert!(shell.modal.is_none());
     assert_eq!(shell.pane.len(), 1);
+}
+
+#[test]
+fn the_terminal_fills_the_link_picker_and_hears_the_choice() {
+    let (mut shell, log) = shell();
+    shell.set_panel(PanelId::Terminal, Box::new(LinkPanel { log: log.clone(), links: vec!["src/main.rs:12", "README.md", "src/lib.rs:3"] }));
+    act(&mut shell, "terminal::OpenLinks");
+    let text = frame(&mut shell, 120, 24);
+    assert!(text.contains("Open a path or link from the terminal"), "{text}");
+    assert!(text.contains("README.md") && text.contains("src/lib.rs:3"));
+    // The shell filters what the view gave it; the view hears the row it gave, not the
+    // position in the filtered list.
+    shell.handle_paste("lib");
+    assert!(log.borrow().contains(&"preview Some(2)".to_string()), "{:?}", log.borrow());
+    act(&mut shell, "menu::SecondaryConfirm");
+    assert!(shell.modal.is_none());
+    assert!(log.borrow().contains(&"confirm 2 true".to_string()), "{:?}", log.borrow());
+    assert_eq!(names(&shell), ["lib.rs:3"]);
+    // Moving through the rows previews each; escape tells the view nothing was chosen.
+    log.borrow_mut().clear();
+    act(&mut shell, "terminal::OpenLinks");
+    act(&mut shell, "menu::SelectNext");
+    act(&mut shell, "menu::Cancel");
+    assert_eq!(*log.borrow(), ["preview Some(0)", "preview Some(1)", "preview None"]);
+}
+
+#[test]
+fn a_picker_with_nobody_to_fill_it_says_why_instead() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "outline::Toggle");
+    assert!(shell.modal.is_none());
+    assert_eq!(shell.status_message(), Some(("No file open to list the symbols of", false)));
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    act(&mut shell, "outline::Toggle");
+    assert!(shell.modal.is_none());
+    assert_eq!(shell.status_message(), Some(("This tab has no outline", false)));
+    act(&mut shell, "terminal::OpenLinks");
+    assert_eq!(shell.status_message(), Some(("The terminal is not running", false)), "the stand-in terminal has no rows");
+}
+
+#[test]
+fn file_changes_reach_every_panel_and_tab() {
+    let (mut shell, logged) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.paths_changed(&FsChange::of(vec!["/project/a.rs".into()]));
+    let log = logged.borrow();
+    for panel in ["Terminal", "GitPanel", "ProjectPanel"] {
+        assert!(log.contains(&format!("{panel} paths /project/a.rs")), "{panel}: {log:?}");
+    }
+    let before = log.len();
+    drop(log);
+    assert!(fake(&shell, 0).seen.contains(&"reload".to_string()), "the open tab heard of its file");
+    // Nothing is sent for an empty change.
+    shell.paths_changed(&FsChange::default());
+    assert_eq!(logged.borrow().len(), before);
+}
+
+#[test]
+fn a_drag_stays_with_the_view_it_started_in() {
+    let (mut shell, log) = shell();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    act(&mut shell, "terminal_panel::Toggle");
+    frame(&mut shell, 200, 30);
+    let terminal = shell.layout().panel(PanelId::Terminal).unwrap();
+    let center = shell.layout().center.unwrap();
+    let at = |kind: MouseKind, col: u16| MouseEvent::new(kind, col, 5);
+    shell.handle_mouse(&at(MouseKind::Press(MouseButton::Left), terminal.x + 2));
+    // Dragged out over the editor and let go there: still the terminal's.
+    shell.handle_mouse(&at(MouseKind::Drag(MouseButton::Left), center.x + 10));
+    shell.handle_mouse(&at(MouseKind::Release(MouseButton::Left), center.x + 10));
+    let terminal_events: Vec<String> = log.borrow().iter().filter(|l| l.starts_with("Terminal mouse")).cloned().collect();
+    assert_eq!(terminal_events, ["Terminal mouse Press(Left)", "Terminal mouse Drag(Left)", "Terminal mouse Release(Left)"]);
+    // After the release, the next event goes by position again: the editor's, not the terminal's.
+    shell.handle_mouse(&at(MouseKind::ScrollDown, center.x + 10));
+    assert!(!log.borrow().iter().any(|l| l == "Terminal mouse ScrollDown"), "{:?}", log.borrow());
+    // And a press in the editor is not captured by the terminal either.
+    shell.handle_mouse(&at(MouseKind::Press(MouseButton::Left), center.x + 10));
+    shell.handle_mouse(&at(MouseKind::Drag(MouseButton::Left), terminal.x + 2));
+    assert_eq!(log.borrow().iter().filter(|l| l.starts_with("Terminal mouse")).count(), 3);
+}
+
+#[test]
+fn opening_another_project_asks_about_unsaved_files_first() {
+    let (mut shell, _) = shell();
+    shell.dispatch(&Action::with_args("bakedit::OpenProject", json!({ "path": "/elsewhere" })));
+    assert_eq!(shell.requests, vec![Request::OpenProject("/elsewhere".into())], "nothing unsaved: at once");
+    let (mut shell, _) = shell_with_dirty();
+    shell.dispatch(&Action::with_args("bakedit::OpenProject", json!({ "path": "/elsewhere" })));
+    assert!(shell.requests.is_empty());
+    let text = frame(&mut shell, 100, 24);
+    assert!(text.contains("1 file has unsaved changes") && text.contains("Save before opening elsewhere?"), "{text}");
+    // "Save All and Open" saves, then asks the app to switch.
+    act(&mut shell, "menu::SelectNext");
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(fake(&shell, 0).saves, 1);
+    assert_eq!(shell.requests, vec![Request::OpenProject("/elsewhere".into())]);
+}
+
+#[test]
+fn a_failed_git_job_shows_in_the_status_bar() {
+    let (mut shell, _) = shell();
+    let _task = shell.project.git_job("Commit", |_| Ok(String::new()));
+    assert!(shell.poll_project());
+    assert_eq!(shell.status_message(), Some(("Commit failed: this folder is not in a git repository", true)));
+    assert!(frame(&mut shell, 120, 12).contains("Commit failed: this folder is not in a git repository"));
+    assert!(!shell.poll_project(), "nothing more to collect");
+}
+
+/// A source whose answer changes while the picker is open, like a file index still walking.
+struct GrowingSource {
+    files: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl PickerSource for GrowingSource {
+    fn rows(&mut self, _: PickerKind, query: &str, _: &mut Cx<'_>) -> Vec<PickerItem> {
+        self.files.borrow().iter().filter(|f| f.contains(query)).map(|f| PickerItem::new(*f)).collect()
+    }
+    fn confirm(&mut self, _: PickerKind, _: Option<usize>, _: &str, _: bool, _: &mut Cx<'_>) {}
+    fn version(&mut self, _: PickerKind, _: &mut Cx<'_>) -> u64 {
+        self.files.borrow().len() as u64
+    }
+}
+
+#[test]
+fn an_open_finder_fills_in_as_the_index_grows_and_keeps_the_selection() {
+    let files: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(vec!["a.rs", "b.rs"]));
+    let mut shell = Shell::new(
+        Settings::default(),
+        Theme::builtin(),
+        Project::detached("/project"),
+        Clipboard::with_backend(Box::new(MemoryBackend::default())),
+        Box::new(Factory),
+        Box::new(GrowingSource { files: files.clone() }),
+    );
+    act(&mut shell, "file_finder::Toggle");
+    act(&mut shell, "menu::SelectNext");
+    assert!(!shell.tick(), "nothing new yet");
+    files.borrow_mut().push("c.rs");
+    assert!(shell.tick(), "the source moved: the picker is refilled");
+    let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder is open") };
+    assert_eq!(picker.items().len(), 3);
+    assert_eq!(picker.selected(), Some(1), "the selection stayed on b.rs");
+}
+
+#[test]
+fn pages_open_once_and_are_brought_back() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "zed::OpenDefaultKeymap");
+    act(&mut shell, "zed::OpenDefaultKeymap");
+    assert_eq!(names(&shell), ["Default Keymap"]);
+    assert_eq!(fake(&shell, 0).kind, "page");
+    assert_eq!(shell.workspace.focus(), Focus::Center);
+}
+
+#[test]
+fn a_status_message_fades_but_an_error_stays() {
+    let (mut shell, _) = shell();
+    shell.set_status("Saved a.rs", false);
+    let deadline = shell.message_deadline().expect("an ordinary message has a deadline");
+    assert!(deadline > std::time::Instant::now());
+    shell.set_status("Could not save", true);
+    assert_eq!(shell.message_deadline(), None, "errors stay until the next message");
 }

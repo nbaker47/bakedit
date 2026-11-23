@@ -24,14 +24,18 @@ use crate::layout::{self, Layout};
 use crate::line_input::{InputOutcome, LineInput};
 use crate::pane::{CloseSet, Location, Pane};
 use crate::picker::{Picker, PickerEvent, PickerItem};
+pub use crate::project::GitSummary;
+use crate::project::{Project, ProjectEvent};
 use crate::settings::Settings;
 use crate::ui::{Canvas, Style};
 use crate::usage::{self, Vendor};
-use crate::view::{Context, Cursor, CursorShape, Cx, Effect, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View};
+use crate::view::{
+    Context, Cursor, CursorShape, Cx, Effect, FsChange, Item, ItemFactory, PickerKind, PickerSource, RenderCx, View,
+};
 use crate::workspace::{DockPosition, Focus, PanelId, Workspace};
 
 /// How long an ordinary status message stays up.
-const MESSAGE_LIFETIME: Duration = Duration::from_secs(6);
+pub const MESSAGE_LIFETIME: Duration = Duration::from_secs(6);
 
 /// What the one-line input modal is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,23 +50,18 @@ pub enum Modal {
     Input { purpose: InputPurpose, input: LineInput, title: String },
 }
 
-/// Things only the app can do, collected for it to pick up after each event.
+/// Things only the app can do, collected for it to pick up after each event. (Git refreshes
+/// and file changes reported by views are handled here: the shell owns the project.)
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
-    RefreshGit,
-    PathsChanged(Vec<PathBuf>),
+    /// `bakedit::ToggleNavLayer`: switch the hold-`;` layer on or off.
     ToggleNavLayer,
+    /// `bakedit::ReloadConfig`: read settings.json and keymap.json again.
     ReloadConfig,
+    /// `bakedit::ShowKeybindings`: open a page listing every binding (the app has the keymap).
     ShowKeybindings,
-}
-
-/// Git facts for the status bar, supplied by the app.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct GitSummary {
-    pub branch: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub changes: usize,
+    /// Replace this project with another directory. Unsaved files have been dealt with.
+    OpenProject(PathBuf),
 }
 
 /// Looks up the keys bound to an action, for display.
@@ -71,7 +70,9 @@ pub type BindingHint = Box<dyn Fn(&Action) -> Option<String>>;
 pub struct Shell {
     pub settings: Settings,
     pub theme: Theme,
-    pub root: PathBuf,
+    /// What every view shares; see `project.rs`. The app calls [`Shell::poll_project`]
+    /// after each wake to collect what its background work produced.
+    pub project: Project,
     pub workspace: Workspace,
     pub pane: Pane,
     pub clipboard: Clipboard,
@@ -97,31 +98,51 @@ pub struct Shell {
     screen: Rect,
     tab_hits: Vec<TabHit>,
     dragging: Option<DockPosition>,
+    /// The view a mouse button went down in, and where it was drawn: it gets the drags and
+    /// the release that follow.
+    mouse_capture: Option<(Focus, Rect)>,
     palette: Vec<actions::Command>,
     /// For each picker row, the index into the list it was filtered from.
     picker_rows: Vec<usize>,
+    /// Every row of an open picker that a view filled ([`View::picker_rows`]), before the
+    /// query filtered them.
+    view_rows: Vec<PickerItem>,
+    /// The row last handed to [`View::picker_preview`], so it is only told about changes.
+    previewed: Option<usize>,
+    /// [`PickerSource::version`] when the open picker was last filled.
+    source_version: u64,
+    /// The path of the front tab, kept so a `Cx` can lend it while the pane is borrowed.
+    active_path: Option<PathBuf>,
 }
 
 /// Build a `Cx` from the shell's fields without borrowing the views.
 macro_rules! cx {
-    ($shell:expr) => {
+    ($shell:expr) => {{
+        $shell.active_path = $shell.pane.active().and_then(|item| item.path()).map(Path::to_path_buf);
         Cx {
             settings: &$shell.settings,
             theme: &$shell.theme,
             clipboard: &mut $shell.clipboard,
             effects: &mut $shell.effects,
-            root: &$shell.root,
+            project: &$shell.project,
+            root: $shell.project.root(),
+            active_path: $shell.active_path.as_deref(),
             now: Instant::now(),
             held_mods: $shell.held_mods,
         }
-    };
+    }};
+}
+
+/// Which view fills a picker's rows itself, rather than the [`PickerSource`].
+fn view_backed(kind: PickerKind) -> bool {
+    matches!(kind, PickerKind::Links | PickerKind::Outline)
 }
 
 impl Shell {
     pub fn new(
         settings: Settings,
         theme: Theme,
-        root: PathBuf,
+        project: Project,
         clipboard: Clipboard,
         factory: Box<dyn ItemFactory>,
         source: Box<dyn PickerSource>,
@@ -134,7 +155,7 @@ impl Shell {
         Shell {
             settings,
             theme,
-            root,
+            project,
             workspace,
             pane: Pane::new(),
             clipboard,
@@ -157,9 +178,19 @@ impl Shell {
             screen: Rect::default(),
             tab_hits: Vec::new(),
             dragging: None,
+            mouse_capture: None,
             palette: actions::palette(),
             picker_rows: Vec::new(),
+            view_rows: Vec::new(),
+            previewed: None,
+            source_version: 0,
+            active_path: None,
         }
+    }
+
+    /// The project directory.
+    pub fn root(&self) -> &Path {
+        self.project.root()
     }
 
     pub fn set_panel(&mut self, id: PanelId, view: Box<dyn View>) {
@@ -174,8 +205,40 @@ impl Shell {
         self.message = Some((text.into(), error, Instant::now()));
     }
 
+    /// The status bar's message, if one is showing: its text and whether it is an error.
+    pub fn status_message(&self) -> Option<(&str, bool)> {
+        self.message.as_ref().map(|(text, error, _)| (text.as_str(), *error))
+    }
+
+    /// When the status message goes away by itself. Errors stay until the next message.
+    pub fn message_deadline(&self) -> Option<Instant> {
+        match &self.message {
+            Some((_, false, at)) => Some(*at + MESSAGE_LIFETIME),
+            _ => None,
+        }
+    }
+
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// The view in a dock, for the app to inspect (the terminal panel's state, say).
+    pub fn panel(&self, id: PanelId) -> Option<&dyn View> {
+        self.panels.get(&id).map(|view| view.as_ref())
+    }
+
+    /// Run `f` with the view that has the keyboard focus (the front tab when the centre has
+    /// it) and a `Cx`, then apply the effects it pushed. Returns `None` when nothing has the
+    /// focus to run it on. For the app's own hooks into the focused view (focus in and out
+    /// of the whole window).
+    pub fn with_focused_view<R>(&mut self, f: impl FnOnce(&mut dyn View, &mut Cx<'_>) -> R) -> Option<R> {
+        let mut cx = cx!(self);
+        let result = match self.workspace.focus() {
+            Focus::Center => self.pane.active_mut().map(|item| f(item as &mut dyn View, &mut cx)),
+            Focus::Panel(id) => self.panels.get_mut(&id).map(|view| f(view.as_mut(), &mut cx)),
+        };
+        self.apply_effects();
+        result
     }
 
     // ---- focus -------------------------------------------------------------------------
@@ -338,7 +401,9 @@ impl Shell {
         handled
     }
 
-    /// Let every view poll its background work. Returns true if anything needs redrawing.
+    /// Let every view poll its background work, refill an open picker whose rows came in
+    /// late, and let an ordinary status message go once it has been up long enough.
+    /// Returns true if anything needs redrawing.
     pub fn tick(&mut self) -> bool {
         let mut dirty = false;
         let mut cx = cx!(self);
@@ -350,13 +415,62 @@ impl Shell {
         }
         dirty |= !self.effects.is_empty();
         self.apply_effects();
+        dirty |= self.refresh_source_picker();
         if let Some((_, error, at)) = &self.message {
-            if !error && at.elapsed() > MESSAGE_LIFETIME {
+            if !error && at.elapsed() >= MESSAGE_LIFETIME {
                 self.message = None;
                 dirty = true;
             }
         }
         dirty
+    }
+
+    /// Collect what the project's background work produced and act on it: file changes go
+    /// to every view, a new git status to the status bar, finished git jobs and notices to
+    /// the message line. Returns true if anything happened.
+    pub fn poll_project(&mut self) -> bool {
+        let events = self.project.poll();
+        let happened = !events.is_empty();
+        for event in events {
+            match event {
+                ProjectEvent::Fs(change) => self.paths_changed(&change),
+                ProjectEvent::Git => self.git = self.project.git_summary(),
+                ProjectEvent::JobFinished { label, result } => match result {
+                    Ok(message) if message.is_empty() => {}
+                    Ok(message) => self.set_status(message, false),
+                    Err(reason) => self.set_status(format!("{label} failed: {reason}"), true),
+                },
+                ProjectEvent::Notice { text, error } => self.set_status(text, error),
+            }
+        }
+        happened
+    }
+
+    /// While a picker whose rows come from the [`PickerSource`] is open, refill it when
+    /// the source says its answer changed (the file index grew, the branches arrived),
+    /// keeping the selection.
+    fn refresh_source_picker(&mut self) -> bool {
+        let Some(Modal::Picker { kind, .. }) = &self.modal else { return false };
+        let kind = *kind;
+        if view_backed(kind) || matches!(kind, PickerKind::CommandPalette | PickerKind::TabSwitcher) {
+            return false;
+        }
+        let mut cx = cx!(self);
+        let version = self.source.version(kind, &mut cx);
+        if version == self.source_version {
+            return false;
+        }
+        self.source_version = version;
+        let Some(Modal::Picker { picker, .. }) = &self.modal else { return false };
+        let query = picker.query().to_string();
+        let mut cx = cx!(self);
+        let items = self.source.rows(kind, &query, &mut cx);
+        self.picker_rows = (0..items.len()).collect();
+        if let Some(Modal::Picker { picker, .. }) = &mut self.modal {
+            picker.refresh_items(items);
+        }
+        self.apply_effects();
+        true
     }
 
     fn pane_action(&mut self, action: &Action) -> bool {
@@ -405,10 +519,21 @@ impl Shell {
             },
             "pane::DeploySearch" => {
                 let replace = action.arg_bool("replace_enabled").unwrap_or(false);
+                // What to look for first: the selection or the word at the cursor of the tab
+                // the search was started from (Zed's seed_search_query_from_cursor).
+                let seed = if self.settings.seed_search_query_from_cursor {
+                    self.pane.active().and_then(|item| item.query_suggestion())
+                } else {
+                    None
+                };
                 self.show_singleton("project_search", |factory, cx| factory.project_search(replace, cx));
+                let focus = match seed {
+                    Some(query) => Action::with_args("search::FocusSearch", json!({ "query": query })),
+                    None => Action::new("search::FocusSearch"),
+                };
+                let mut cx = cx!(self);
                 if let Some(item) = self.pane.active_mut() {
-                    let mut cx = cx!(self);
-                    item.handle_action(&Action::new("search::FocusSearch"), &mut cx);
+                    item.handle_action(&focus, &mut cx);
                 }
             }
             _ => return false,
@@ -480,7 +605,7 @@ impl Shell {
             }
             "workspace::SaveAs" => {
                 let current = self.pane.active().and_then(|i| i.path()).map(|p| p.to_string_lossy().into_owned());
-                let start = current.unwrap_or_else(|| format!("{}/", self.root.display()));
+                let start = current.unwrap_or_else(|| format!("{}/", self.project.root().display()));
                 self.modal = Some(Modal::Input {
                     purpose: InputPurpose::SaveAs,
                     input: LineInput::with_text(&start),
@@ -517,7 +642,7 @@ impl Shell {
             "workspace::CopyPath" | "editor::CopyPath" | "workspace::CopyRelativePath" => {
                 let Some(path) = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) else { return false };
                 let shown = if name == "workspace::CopyRelativePath" {
-                    path.strip_prefix(&self.root).unwrap_or(&path).to_path_buf()
+                    path.strip_prefix(self.project.root()).unwrap_or(&path).to_path_buf()
                 } else {
                     path
                 };
@@ -531,10 +656,26 @@ impl Shell {
             }
             "zed::OpenSettingsFile" | "zed::OpenSettings" => self.effects.push(Effect::open(crate::settings::settings_path())),
             "zed::OpenKeymap" => self.effects.push(Effect::open(crate::settings::keymap_path())),
+            "zed::OpenDefaultKeymap" => self.open_page("Default Keymap", crate::keys::DEFAULT_KEYMAP, Some("JSON")),
             "zed::Quit" => self.request_quit(action.arg_str("save_intent")),
+            // One terminal lives in the panel; a "new terminal" from outside it brings that up.
+            "workspace::NewTerminal" => self.set_focus(Focus::Panel(PanelId::Terminal)),
             "bakedit::ToggleNavLayer" => self.requests.push(Request::ToggleNavLayer),
             "bakedit::ReloadConfig" => self.requests.push(Request::ReloadConfig),
             "bakedit::ShowKeybindings" => self.requests.push(Request::ShowKeybindings),
+            "bakedit::ToggleEditMode" => {
+                self.settings.vim_mode = !self.settings.vim_mode;
+                let text = if self.settings.vim_mode {
+                    "Nav and edit modes on: files open in nav mode, i to edit, escape to go back"
+                } else {
+                    "Nav and edit modes off: keys type everywhere"
+                };
+                self.set_status(text, false);
+            }
+            "bakedit::OpenProject" => {
+                let Some(path) = action.arg_str("path").map(PathBuf::from) else { return false };
+                self.request_open_project(path, action.arg_str("save_intent"));
+            }
             _ => return false,
         }
         true
@@ -597,6 +738,8 @@ impl Shell {
         if let (Some(line), Some(item)) = (line, self.pane.active_mut()) {
             item.go_to(line, column);
         }
+        // The file finder lists what was opened lately first.
+        self.project.touch_recent(path);
         if focus {
             if was_center {
                 self.notify_focus(Focus::Center, true);
@@ -737,6 +880,34 @@ impl Shell {
         }
     }
 
+    /// Leave this project for `root`, asking about unsaved files first as quitting does.
+    fn request_open_project(&mut self, root: PathBuf, intent: Option<&str>) {
+        let dirty = self.pane.slots().iter().filter(|slot| slot.item.is_dirty()).count();
+        let open = |shell: &mut Shell, root: PathBuf| shell.requests.push(Request::OpenProject(root));
+        match intent {
+            _ if dirty == 0 => open(self, root),
+            Some("skip") => open(self, root),
+            Some("save") => {
+                if self.save_all() {
+                    open(self, root);
+                }
+            }
+            _ => {
+                let again = |intent: &str| {
+                    let args = json!({ "path": root.to_string_lossy(), "save_intent": intent });
+                    vec![Effect::Dispatch(Action::with_args("bakedit::OpenProject", args))]
+                };
+                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
+                let what = format!("{dirty} file{} unsaved changes", if dirty == 1 { " has" } else { "s have" });
+                self.ask(what, Some(format!("Save before opening {name}?")), vec![
+                    ("Save All and Open".into(), again("save")),
+                    ("Open Without Saving".into(), again("skip")),
+                    ("Cancel".into(), Vec::new()),
+                ]);
+            }
+        }
+    }
+
     // ---- modals ------------------------------------------------------------------------
 
     fn ask(&mut self, message: String, detail: Option<String>, answers: Vec<(String, Vec<Effect>)>) {
@@ -756,8 +927,32 @@ impl Shell {
 
     fn toggle_picker(&mut self, kind: PickerKind) {
         if matches!(&self.modal, Some(Modal::Picker { kind: open, .. }) if *open == kind) {
-            self.modal = None;
+            self.close_picker(false);
             return;
+        }
+        if self.modal.is_some() {
+            self.close_picker(false);
+        }
+        if view_backed(kind) {
+            // These rows come from one view and do not depend on what is typed: ask once.
+            let mut cx = cx!(self);
+            let rows = match kind {
+                PickerKind::Links => self.panels.get_mut(&PanelId::Terminal).and_then(|view| view.picker_rows(kind, &mut cx)),
+                _ => self.pane.active_mut().and_then(|item| item.picker_rows(kind, &mut cx)),
+            };
+            self.apply_effects();
+            let Some(rows) = rows else {
+                let why = match kind {
+                    PickerKind::Links => "The terminal is not running",
+                    _ if self.pane.is_empty() => "No file open to list the symbols of",
+                    _ => "This tab has no outline",
+                };
+                self.set_status(why, false);
+                return;
+            };
+            self.view_rows = rows;
+        } else {
+            self.view_rows.clear();
         }
         let placeholder = match kind {
             PickerKind::FileFinder => "Search project files",
@@ -773,19 +968,72 @@ impl Shell {
             PickerKind::FileFinder => "No matching files",
             PickerKind::CommandPalette => "No matching commands",
             PickerKind::TabSwitcher => "No other tabs",
-            PickerKind::Outline => "No symbols in this file",
+            PickerKind::Outline if self.view_rows.is_empty() => "No symbols in this file",
+            PickerKind::Outline => "No matching symbols",
             PickerKind::Branches => "No matching branches",
-            PickerKind::Links => "No paths or links on screen",
+            PickerKind::Links if self.view_rows.is_empty() => "No paths or links on screen: they appear here when a program prints one",
+            PickerKind::Links => "No matching paths or links",
             PickerKind::RecentProjects => "No recent projects",
         }
         .to_string();
         self.modal = Some(Modal::Picker { kind, picker });
+        self.previewed = None;
+        if !view_backed(kind) && !matches!(kind, PickerKind::CommandPalette | PickerKind::TabSwitcher) {
+            let mut cx = cx!(self);
+            self.source_version = self.source.version(kind, &mut cx);
+            self.apply_effects();
+        }
         self.refill_picker();
         // The tab switcher starts on the tab used before this one, so a quick tap flips
         // between the last two tabs.
         if let (PickerKind::TabSwitcher, Some(Modal::Picker { picker, .. })) = (kind, &mut self.modal) {
             picker.select(1);
         }
+    }
+
+    /// Close the open picker. A picker a view fills is told when nothing was chosen, so it
+    /// can put back what its preview moved.
+    fn close_picker(&mut self, chose: bool) {
+        let Some(Modal::Picker { kind, .. }) = self.modal.take() else { return };
+        if view_backed(kind) && !chose && self.previewed.is_some() {
+            self.with_picker_view(kind, |view, cx| view.picker_preview(kind, None, cx));
+        }
+        self.view_rows.clear();
+        self.picker_rows.clear();
+        self.previewed = None;
+    }
+
+    /// Run `f` on the view that fills a picker of this kind.
+    fn with_picker_view(&mut self, kind: PickerKind, f: impl FnOnce(&mut dyn View, &mut Cx<'_>)) {
+        let mut cx = cx!(self);
+        match kind {
+            PickerKind::Links => {
+                if let Some(view) = self.panels.get_mut(&PanelId::Terminal) {
+                    f(view.as_mut(), &mut cx);
+                }
+            }
+            _ => {
+                if let Some(item) = self.pane.active_mut() {
+                    f(item as &mut dyn View, &mut cx);
+                }
+            }
+        }
+        self.apply_effects();
+    }
+
+    /// Tell the view behind an open picker which row is highlighted now, if that changed.
+    fn preview_selection(&mut self) {
+        let Some(Modal::Picker { kind, picker }) = &self.modal else { return };
+        let kind = *kind;
+        if !view_backed(kind) {
+            return;
+        }
+        let row = picker.selected().and_then(|selected| self.picker_rows.get(selected).copied());
+        if row.is_none() || row == self.previewed {
+            return;
+        }
+        self.previewed = row;
+        self.with_picker_view(kind, |view, cx| view.picker_preview(kind, row, cx));
     }
 
     fn refill_picker(&mut self) {
@@ -806,19 +1054,13 @@ impl Shell {
             }
             PickerKind::TabSwitcher => {
                 let order = self.pane.by_recency();
-                let cx = RenderCx {
-                    settings: &self.settings,
-                    theme: &self.theme,
-                    root: &self.root,
-                    now: Instant::now(),
-                    focused: false,
-                    held_mods: self.held_mods,
-                };
+                let cx = self.render_cx(false);
+                let root = self.project.root();
                 let tabs: Vec<(usize, chrome::Tab, Option<String>)> = order
                     .iter()
                     .filter_map(|&index| {
                         let item = self.pane.item(index)?;
-                        let dir = item.path().and_then(|p| p.parent()).map(|d| d.strip_prefix(&self.root).unwrap_or(d).to_string_lossy().into_owned());
+                        let dir = item.path().and_then(|p| p.parent()).map(|d| d.strip_prefix(root).unwrap_or(d).to_string_lossy().into_owned());
                         Some((index, item.tab(&cx), dir))
                     })
                     .collect();
@@ -835,6 +1077,19 @@ impl Shell {
                     })
                     .unzip()
             }
+            kind if view_backed(kind) => {
+                let labels: Vec<&str> = self.view_rows.iter().map(|row| row.label.as_str()).collect();
+                fuzzy::filter(labels, &query)
+                    .into_iter()
+                    .map(|m| {
+                        let mut item = self.view_rows[m.index].clone();
+                        if !query.trim().is_empty() {
+                            item.matched = m.positions;
+                        }
+                        (item, m.index)
+                    })
+                    .unzip()
+            }
             _ => {
                 let mut cx = cx!(self);
                 let items = self.source.rows(kind, &query, &mut cx);
@@ -846,13 +1101,15 @@ impl Shell {
         if let Some(Modal::Picker { picker, .. }) = &mut self.modal {
             picker.set_items(items);
         }
+        self.apply_effects();
+        self.preview_selection();
     }
 
     fn picker_event(&mut self, event: PickerEvent) {
         match event {
-            PickerEvent::Handled => {}
+            PickerEvent::Handled => self.preview_selection(),
             PickerEvent::QueryChanged => self.refill_picker(),
-            PickerEvent::Cancelled => self.modal = None,
+            PickerEvent::Cancelled => self.close_picker(false),
             PickerEvent::Copy => {
                 if let Some(Modal::Picker { picker, .. }) = &mut self.modal {
                     let text = picker.take_copied();
@@ -866,20 +1123,33 @@ impl Shell {
                 }
             }
             PickerEvent::Confirmed { secondary } => {
-                let Some(Modal::Picker { kind, picker }) = self.modal.take() else { return };
+                let Some(Modal::Picker { kind, picker }) = &self.modal else { return };
+                let kind = *kind;
+                let query = picker.query().to_string();
                 let row = picker.selected().and_then(|selected| self.picker_rows.get(selected).copied());
                 match (kind, row) {
                     (PickerKind::CommandPalette, Some(index)) => {
+                        self.close_picker(true);
                         let action = self.palette[index].action.clone();
                         self.effects.push(Effect::Dispatch(action));
                     }
-                    (PickerKind::TabSwitcher, Some(index)) => self.switch_tab(|pane| {
-                        pane.activate(index);
-                    }),
-                    (PickerKind::CommandPalette | PickerKind::TabSwitcher, None) => {}
+                    (PickerKind::TabSwitcher, Some(index)) => {
+                        self.close_picker(true);
+                        self.switch_tab(|pane| {
+                            pane.activate(index);
+                        });
+                    }
+                    (PickerKind::CommandPalette | PickerKind::TabSwitcher, None) => self.close_picker(true),
+                    (kind, Some(row)) if view_backed(kind) => {
+                        self.close_picker(true);
+                        self.with_picker_view(kind, |view, cx| view.picker_confirm(kind, row, secondary, cx));
+                    }
+                    // Nothing chosen from a view's list: as if it were dismissed.
+                    (kind, None) if view_backed(kind) => self.close_picker(false),
                     (kind, row) => {
+                        self.close_picker(true);
                         let mut cx = cx!(self);
-                        self.source.confirm(kind, row, picker.query(), secondary, &mut cx);
+                        self.source.confirm(kind, row, &query, secondary, &mut cx);
                     }
                 }
             }
@@ -971,7 +1241,7 @@ impl Shell {
                 if text.is_empty() {
                     return;
                 }
-                let path = crate::cli::parse_path_spec(text, &self.root).path;
+                let path = crate::cli::parse_path_spec(text, self.project.root()).path;
                 let mut cx = cx!(self);
                 let action = Action::with_args("workspace::SaveAsPath", json!({ "path": path.to_string_lossy() }));
                 let handled = self.pane.active_mut().is_some_and(|item| item.handle_action(&action, &mut cx));
@@ -1031,24 +1301,82 @@ impl Shell {
             Effect::Status { text, error } => self.set_status(text, error),
             Effect::Ask(question) => self.ask(question.message, question.detail, question.answers),
             Effect::OpenExternally(target) => open_externally(&target),
-            Effect::RefreshGit => self.requests.push(Request::RefreshGit),
-            Effect::PathsChanged(paths) => self.requests.push(Request::PathsChanged(paths)),
+            Effect::RefreshGit => self.project.refresh_git(),
+            Effect::PathsChanged(paths) => {
+                // The view that made the change knows of it already; the index, the status
+                // and every other view hear of it now rather than when the watcher does.
+                self.project.paths_changed(&paths);
+                self.paths_changed(&FsChange::of(paths));
+            }
             Effect::CloseItem => {
                 if let Some(index) = self.pane.active_index() {
+                    let was_center = self.workspace.focus() == Focus::Center;
+                    if was_center {
+                        self.notify_focus(Focus::Center, false);
+                    }
                     self.pane.close(index);
+                    if was_center {
+                        self.notify_focus(Focus::Center, true);
+                    }
                 }
             }
+            Effect::OpenProject(root) => self.request_open_project(root, None),
             Effect::Quit => self.request_quit(None),
         }
     }
 
-    /// Tell every open item that files changed on disk.
-    pub fn paths_changed(&mut self, paths: &[PathBuf]) {
+    /// Tell every view (the panels and every open tab) that files changed on disk.
+    pub fn paths_changed(&mut self, change: &FsChange) {
+        if change.is_empty() {
+            return;
+        }
         let mut cx = cx!(self);
+        for view in self.panels.values_mut() {
+            view.paths_changed(change, &mut cx);
+        }
         for item in self.pane.items_mut() {
-            item.paths_changed(paths, &mut cx);
+            item.paths_changed(change, &mut cx);
         }
         self.apply_effects();
+    }
+
+    /// Open a page of text nobody edits (the key bindings, the built-in keymap), or bring
+    /// back the one with the same title.
+    pub fn open_page(&mut self, title: &str, text: &str, language: Option<&str>) {
+        let cx = self.render_cx(false);
+        let existing = self
+            .pane
+            .slots()
+            .iter()
+            .position(|slot| slot.item.kind() == "page" && slot.item.tab(&cx).title == title);
+        match existing {
+            Some(index) => self.switch_tab(|pane| {
+                pane.activate(index);
+            }),
+            None => {
+                let mut cx = cx!(self);
+                let item = self.factory.read_only(title, text, language, &mut cx);
+                self.switch_tab(|pane| {
+                    pane.add(item, false);
+                });
+            }
+        }
+        self.set_focus(Focus::Center);
+        self.apply_effects();
+    }
+
+    /// A `RenderCx` for asking items how they look outside of drawing (tab titles).
+    fn render_cx(&self, focused: bool) -> RenderCx<'_> {
+        RenderCx {
+            settings: &self.settings,
+            theme: &self.theme,
+            project: &self.project,
+            root: self.project.root(),
+            active_path: self.pane.active().and_then(|item| item.path()),
+            now: Instant::now(),
+            focused,
+            held_mods: self.held_mods,
+        }
     }
 
     // ---- mouse -------------------------------------------------------------------------
@@ -1063,8 +1391,14 @@ impl Shell {
                         let outcome = picker.click(col, row);
                         self.picker_event(outcome);
                     }
-                    MouseKind::ScrollDown => picker.scroll_by(1),
-                    MouseKind::ScrollUp => picker.scroll_by(-1),
+                    MouseKind::ScrollDown => {
+                        picker.scroll_by(1);
+                        self.preview_selection();
+                    }
+                    MouseKind::ScrollUp => {
+                        picker.scroll_by(-1);
+                        self.preview_selection();
+                    }
                     _ => {}
                 }
                 true
@@ -1103,6 +1437,18 @@ impl Shell {
                         _ => {}
                     }
                 }
+                // Once a button went down in a view, its drags and release go there too,
+                // wherever the pointer is now.
+                if let Some((target, area)) = self.mouse_capture {
+                    if matches!(event.kind, MouseKind::Drag(_) | MouseKind::Release(_)) {
+                        if matches!(event.kind, MouseKind::Release(_)) {
+                            self.mouse_capture = None;
+                        }
+                        let handled = self.mouse_to(target, area, event);
+                        self.apply_effects();
+                        return handled;
+                    }
+                }
                 if event.kind == MouseKind::Press(MouseButton::Left) {
                     if let Some(divider) = self.layout.dividers.iter().find(|d| inside(d.rect)) {
                         self.dragging = Some(divider.position);
@@ -1131,24 +1477,35 @@ impl Shell {
                     .iter()
                     .find(|dock| inside(dock.rect))
                     .map(|dock| (Focus::Panel(dock.panel), dock.rect))
-                    .or_else(|| self.layout.center.filter(|rect| inside(*rect)).map(|rect| (Focus::Center, rect)));
+                    .or_else(|| {
+                        // The item draws below the tab bar (all of the centre when no tab is open).
+                        self.layout.center.filter(|rect| inside(*rect)).map(|rect| {
+                            let tabs = u16::from(!self.pane.is_empty()).min(rect.height);
+                            (Focus::Center, Rect::new(rect.x, rect.y + tabs, rect.width, rect.height - tabs))
+                        })
+                    });
                 let Some((target, area)) = target else { return false };
-                // A click moves the focus to what was clicked; wheel and hover do not.
-                if matches!(event.kind, MouseKind::Press(_)) && self.workspace.focus() != target {
-                    self.set_focus(target);
-                }
-                let mut cx = cx!(self);
-                match target {
-                    Focus::Center => {
-                        let below_tabs = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
-                        self.pane.active_mut().is_some_and(|item| item.handle_mouse(event, below_tabs, &mut cx))
+                if let MouseKind::Press(_) = event.kind {
+                    // A click moves the focus to what was clicked; wheel and hover do not.
+                    if self.workspace.focus() != target {
+                        self.set_focus(target);
                     }
-                    Focus::Panel(id) => self.panels.get_mut(&id).is_some_and(|view| view.handle_mouse(event, area, &mut cx)),
+                    self.mouse_capture = Some((target, area));
                 }
+                self.mouse_to(target, area, event)
             }
         };
         self.apply_effects();
         handled
+    }
+
+    /// Hand a mouse event to the view at `target`, drawn in `area`.
+    fn mouse_to(&mut self, target: Focus, area: Rect, event: &MouseEvent) -> bool {
+        let mut cx = cx!(self);
+        match target {
+            Focus::Center => self.pane.active_mut().is_some_and(|item| item.handle_mouse(event, area, &mut cx)),
+            Focus::Panel(id) => self.panels.get_mut(&id).is_some_and(|view| view.handle_mouse(event, area, &mut cx)),
+        }
     }
 
     fn drag_divider(&mut self, position: DockPosition, col: u16, row: u16) {
@@ -1167,6 +1524,7 @@ impl Shell {
     pub fn render(&mut self, buf: &mut Buffer) -> Option<Cursor> {
         let screen = *buf.area();
         self.screen = screen;
+        self.active_path = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf);
         let default_width = |panel: PanelId| match panel {
             PanelId::Terminal => self.settings.terminal.default_width,
             PanelId::Git => self.settings.git_panel.default_width,
@@ -1194,7 +1552,16 @@ impl Shell {
 
         for dock in &layout.docks {
             let focused = focus == Focus::Panel(dock.panel) && !modal_open;
-            let cx = RenderCx { settings: &self.settings, theme: &self.theme, root: &self.root, now, focused, held_mods: self.held_mods };
+            let cx = RenderCx {
+                settings: &self.settings,
+                theme: &self.theme,
+                project: &self.project,
+                root: self.project.root(),
+                active_path: self.active_path.as_deref(),
+                now,
+                focused,
+                held_mods: self.held_mods,
+            };
             let mut sub = canvas.sub(dock.rect);
             match self.panels.get_mut(&dock.panel) {
                 Some(view) => {
@@ -1210,7 +1577,16 @@ impl Shell {
         self.tab_hits.clear();
         if let Some(center) = layout.center {
             let focused = focus == Focus::Center && !modal_open;
-            let cx = RenderCx { settings: &self.settings, theme: &self.theme, root: &self.root, now, focused, held_mods: self.held_mods };
+            let cx = RenderCx {
+                settings: &self.settings,
+                theme: &self.theme,
+                project: &self.project,
+                root: self.project.root(),
+                active_path: self.active_path.as_deref(),
+                now,
+                focused,
+                held_mods: self.held_mods,
+            };
             if self.pane.is_empty() {
                 draw_empty_center(&mut canvas, center, &self.theme);
             } else {
@@ -1249,7 +1625,12 @@ impl Shell {
             ahead: self.git.ahead,
             behind: self.git.behind,
             changes: self.git.changes,
-            message: self.message.as_ref().map(|(text, error, _)| (text.clone(), *error)),
+            // A git job that is still running says so when nothing else is being said.
+            message: self
+                .message
+                .as_ref()
+                .map(|(text, error, _)| (text.clone(), *error))
+                .or_else(|| self.project.busy().map(|label| (format!("{label}…"), false))),
             pending_keys: self.pending_keys.clone(),
             position: item_status.position,
             cursors: item_status.cursors.max(1),

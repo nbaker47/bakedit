@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bakedit_git::{Branch, GitError, Repo, Status, StatusEntry};
+use bakedit_git::{Branch, GitError, Repo, RepoState, Status, StatusEntry};
 use bakedit_project::{FileIndex, FileMatch, IndexOptions, Watcher};
 use bakedit_syntax::{Language, LineBreaks, SyntaxResult, SyntaxWorker};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -243,7 +243,13 @@ fn status_thread(root: PathBuf, requests: Receiver<()>, events: Sender<GitMsg>, 
 
 fn jobs_thread(jobs: Receiver<Job>, events: Sender<GitMsg>, status_requests: Sender<()>, progress: Arc<StatusProgress>, waker: Waker) {
     for job in jobs {
-        let result = (job.work)(&job.repo).map_err(|error| describe(&error));
+        // A view's closure that panics must not take the queue down with it: every later
+        // job would fail and this one would show as running for ever.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (job.work)(&job.repo)));
+        let result = match outcome {
+            Ok(result) => result.map_err(|error| describe(&error)),
+            Err(_) => Err("the git command stopped unexpectedly (see the log)".to_string()),
+        };
         let _ = job.reply.send(result.clone());
         if events.send(GitMsg::JobFinished { label: job.label, result }).is_err() {
             return;
@@ -386,7 +392,13 @@ impl Project {
     pub fn git_summary(&self) -> GitSummary {
         let Some(status) = &self.status else { return GitSummary::default() };
         let name = status.branch.clone().or_else(|| status.head.clone());
-        let state = status.state.map(|state| format!("{state:?}").to_lowercase());
+        let state = status.state.map(|state| match state {
+            RepoState::Merging => "merging",
+            RepoState::Rebasing => "rebasing",
+            RepoState::CherryPicking => "cherry-picking",
+            RepoState::Reverting => "reverting",
+            RepoState::Bisecting => "bisecting",
+        });
         let branch = match (name, state) {
             (Some(name), Some(state)) => Some(format!("{name} ({state})")),
             (name, _) => name,
@@ -469,11 +481,11 @@ impl Project {
             self.running_jobs.borrow_mut().pop_back();
             let result = Err("the git worker is not running".to_string());
             self.notices.borrow_mut().push(ProjectEvent::JobFinished { label, result: result.clone() });
+            self.waker.wake();
             return Task::ready(result);
         }
-        // The worker answers on `outcome`; a small relay turns that into a task and wakes.
-        let waker = self.waker.clone();
-        Task::spawn(&waker, move || outcome.recv().unwrap_or_else(|_| Err("the git worker stopped".to_string())))
+        // The worker answers on `outcome` and wakes the loop right after.
+        Task::from_channel(outcome)
     }
 
     /// The label of the git job that is running (or next in line), for "label…" in the
@@ -973,7 +985,7 @@ mod tests {
         assert!(project.status().unwrap().staged().is_empty());
 
         let mut staged = project.git_job("Stage a.txt", |repo| repo.stage(&["a.txt"]).map(|()| "Staged a.txt".to_string()));
-        let mut committed = project.git_job("Commit", |repo| {
+        let committed = project.git_job("Commit", |repo| {
             repo.commit("second", bakedit_git::CommitOptions::default()).map(|sha| format!("Committed {}", &sha[..7]))
         });
         assert_eq!(project.busy().as_deref(), Some("Stage a.txt"));
