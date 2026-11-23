@@ -741,6 +741,55 @@ mod tests {
     }
 
     #[test]
+    fn errors_read_well_as_messages() {
+        let socket = PathBuf::from("/run/herdr.sock");
+        let not_running = HerdrError::NotRunning {
+            socket: socket.clone(),
+        };
+        assert_eq!(
+            not_running.to_string(),
+            "herdr is not running (no server at /run/herdr.sock)"
+        );
+        let timeout = HerdrError::Timeout {
+            method: "pane.focus".into(),
+            timeout: Duration::from_secs(2),
+        };
+        assert_eq!(
+            timeout.to_string(),
+            "herdr did not answer `pane.focus` within 2s"
+        );
+        let refused = HerdrError::MutationRefused {
+            method: "pane.close".into(),
+            socket,
+        };
+        assert_eq!(
+            refused.to_string(),
+            "refusing to send `pane.close` to the live herdr session at /run/herdr.sock"
+        );
+        let protocol = HerdrError::protocol("ping", "the reply is not JSON");
+        assert_eq!(
+            protocol.to_string(),
+            "unexpected reply to `ping` from herdr: the reply is not JSON"
+        );
+        let io = HerdrError::io("writing /x/state.json", io::Error::other("disk full"));
+        assert_eq!(io.to_string(), "writing /x/state.json: disk full");
+        assert_eq!(
+            HerdrError::NoStateFile.to_string(),
+            "this herdr client has no collapse state file"
+        );
+        for err in [
+            not_running,
+            timeout,
+            refused,
+            protocol,
+            io,
+            HerdrError::NoStateFile,
+        ] {
+            assert_eq!(err.code(), None);
+        }
+    }
+
+    #[test]
     fn odd_error_bodies_still_become_server_errors() {
         let server = MockServer::start();
         server.expect(
