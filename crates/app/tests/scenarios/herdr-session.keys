@@ -24,6 +24,16 @@ key cmd-alt-z
 exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" zoomed no
 snap navigated
 
+# A path an agent in a herdr pane prints is relative to that pane's folder: cmd+click opens
+# it from there (herdr says which pane is under the click and where it is).
+text-env cd $BAKEDIT_SCENARIO_PROJECT/src && echo lib.rs:2
+key enter
+wait 1.5
+click-on cmd lib.rs:2
+expect src › lib.rs
+expect  2:1  Rust
+snap link
+
 key cmd-e
 key cmd-q
 expect-exit

@@ -20,6 +20,8 @@ Script lines (blank lines and lines starting with # are skipped):
     up ;                let a held key go
     send \\x1b[I         raw bytes, with Python escapes
     click 10 5 [cmd]    left click at column 10, row 5 (0-based); "cmd" holds the command key
+    click-on [cmd] txt  the same on the first character of the last place the screen shows txt
+    text-env text       type text after expanding $NAME from the scenario's environment
     resize 100x30       change the window size (the program gets SIGWINCH)
     snap name           write <out>-name.txt and <out>-name.html
     expect some text    wait (up to --timeout seconds) until the screen shows the text; the
@@ -355,7 +357,9 @@ def main() -> int:
                 print(f"child exited before: {line}", file=sys.stderr)
                 failure = f"the program exited before: {line}"
                 break
-            elif verb == "text":
+            elif verb in ("text", "text-env"):
+                if verb == "text-env":
+                    rest = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", lambda m: env.get(m.group(1), ""), rest)
                 if args.legacy:
                     os.write(fd, rest.encode())
                 else:
@@ -381,6 +385,14 @@ def main() -> int:
                 parts = rest.split()
                 # A legacy terminal says nothing about the cmd key.
                 os.write(fd, click(int(parts[0]), int(parts[1]), "cmd" in parts[2:] and not args.legacy))
+            elif verb == "click-on":
+                held = rest.startswith("cmd ")
+                wanted = rest[4:] if held else rest
+                spot = next(((line.rfind(wanted), y) for y, line in reversed(list(enumerate(screen.display))) if wanted in line), None)
+                if spot is None:
+                    failure = f"nothing on the screen to click: {wanted!r}"
+                    break
+                os.write(fd, click(spot[0], spot[1], held and not args.legacy))
             else:
                 raise SystemExit(f"unknown script line: {line}")
             if verb not in ("wait", "snap"):
