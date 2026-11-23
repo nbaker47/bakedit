@@ -609,6 +609,23 @@ fn real_modifier_keys_pass_through_and_count_for_nothing() {
 }
 
 #[test]
+fn text_that_belongs_to_no_key_passes_through_and_counts_for_nothing() {
+    // An input method commits text while the trigger is held: it is not a key press.
+    let text = KeyEvent::new(Key::Other(0), NONE).with_text("日本; e");
+    let mut rig = Rig::new();
+    rig.down(';');
+    assert_eq!(rig.send(text.clone()), vec![text.clone()]);
+    assert!(rig.layer.active(), "text is not typing with rollover");
+    assert_eq!(rig.up(';'), vec![press(';'), release(';')]);
+    // With a layer modifier held it is still just text.
+    rig.down(';');
+    rig.down('k');
+    assert_eq!(rig.send(text.clone()), vec![text]);
+    rig.up('k');
+    assert_eq!(rig.up(';'), vec![]);
+}
+
+#[test]
 fn keypad_keys_are_never_layer_keys() {
     let mut rig = Rig::with(NavLayerConfig {
         trigger: '/',

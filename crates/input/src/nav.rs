@@ -259,8 +259,9 @@ impl NavLayer {
     /// none, the event itself, or what the layer made of it. `now` is when the event
     /// arrived; it only matters for the trigger's tap timeout.
     ///
-    /// Disabled, everything passes through. Modifier keys on their own always pass through
-    /// and never count as "another key". Otherwise:
+    /// Disabled, everything passes through. Modifier keys on their own, and text that
+    /// belongs to no key (`Key::Other(0)`), always pass through and never count as
+    /// "another key". Otherwise:
     ///
     /// - **Trigger down** turns the layer on and sends nothing. Its repeats are swallowed,
     ///   and so is a second press with no release in between: some terminals report
@@ -285,7 +286,7 @@ impl NavLayer {
     /// until it comes up: its repeats and its release produce nothing, so letting go of the
     /// trigger a moment before the other key never types a stray character.
     pub fn process(&mut self, ev: KeyEvent, now: Instant) -> Vec<KeyEvent> {
-        if !self.config.enabled || matches!(ev.key, Key::Modifier(_)) {
+        if !self.config.enabled || matches!(ev.key, Key::Modifier(_) | Key::Other(0)) {
             return vec![ev];
         }
         if let Some(index) = self.ghosts.iter().position(|key| *key == ev.key) {
