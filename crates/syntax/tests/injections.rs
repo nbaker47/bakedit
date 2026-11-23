@@ -54,9 +54,9 @@ key: [1, true]
             ("\"k\"", "property.json_key"),
             ("null", "constant.builtin"),
             // The fence itself is still Markdown.
-            ("«```»rust", "punctuation.delimiter"),
-            ("```«rust»", "string"),
-            ("«#» Title", "punctuation.special"),
+            ("«```»rust", "punctuation.embedded.markup"),
+            ("```«rust»", "punctuation.embedded.markup"),
+            ("«#» Title", "title.markup"),
             ("Title", "title"),
         ],
     );

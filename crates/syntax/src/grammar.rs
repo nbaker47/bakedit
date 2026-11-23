@@ -775,6 +775,46 @@ const BASH_EXTRA: &str = r###"
 /// `suspend fun`) is not recognised. A declaration has only one identifier of its own.
 const KOTLIN_EXTRA: &str = "(function_declaration (simple_identifier) @function)\n";
 
+/// tree-sitter-md's block query, where Zed draws a Markdown file differently:
+///
+/// * The `#` of a heading, the underline of a setext heading and a thematic break are part
+///   of the title, not punctuation.
+/// * The fence of a code block and the language named after it are punctuation, not part of
+///   a string.
+/// * An indented code block is plain text, as the body of a fenced one in an unknown language
+///   is.
+const MARKDOWN_EXTRA: &str = r#"
+[
+  (atx_h1_marker)
+  (atx_h2_marker)
+  (atx_h3_marker)
+  (atx_h4_marker)
+  (atx_h5_marker)
+  (atx_h6_marker)
+  (setext_h1_underline)
+  (setext_h2_underline)
+  (thematic_break)
+] @title.markup
+[(fenced_code_block_delimiter) (info_string)] @punctuation.embedded.markup
+(indented_code_block) @none
+"#;
+
+/// tree-sitter-md's inline query, likewise:
+///
+/// * The asterisks of emphasis and the backticks of a code span are drawn with what they
+///   enclose, and the parentheses of a link with its address.
+/// * A backslash escape is not highlighted, and an e-mail address in angle brackets is a
+///   link like a URL is.
+const MARKDOWN_INLINE_EXTRA: &str = r#"
+(emphasis (emphasis_delimiter) @text.emphasis)
+(strong_emphasis (emphasis_delimiter) @text.strong)
+(code_span (code_span_delimiter) @text.literal)
+(inline_link ["(" ")"] @text.uri)
+(image ["(" ")"] @text.uri)
+(email_autolink) @text.uri
+[(backslash_escape) (hard_line_break)] @none
+"#;
+
 /// tree-sitter-md injects each piece of HTML on its own, so a closing tag is parsed without
 /// the tag it closes and gets no highlight. Neovim's copy of these queries combines the
 /// pieces into one HTML document: the tags of one paragraph, and the HTML blocks of one
@@ -945,7 +985,7 @@ pub(crate) static YAML: GrammarSpec = GrammarSpec {
 pub(crate) static MARKDOWN: GrammarSpec = GrammarSpec {
     name: "markdown",
     language: || tree_sitter_md::LANGUAGE.into(),
-    highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+    highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK, MARKDOWN_EXTRA],
     injections: &[
         tree_sitter_md::INJECTION_QUERY_BLOCK,
         MARKDOWN_BLOCK_INJECTIONS,
@@ -961,7 +1001,10 @@ pub(crate) static MARKDOWN: GrammarSpec = GrammarSpec {
 pub(crate) static MARKDOWN_INLINE: GrammarSpec = GrammarSpec {
     name: "markdown_inline",
     language: || tree_sitter_md::INLINE_LANGUAGE.into(),
-    highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
+    highlights: &[
+        tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+        MARKDOWN_INLINE_EXTRA,
+    ],
     injections: &[
         tree_sitter_md::INJECTION_QUERY_INLINE,
         MARKDOWN_INLINE_HTML_INJECTION,
