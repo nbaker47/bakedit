@@ -225,8 +225,13 @@ fn token_end(chars: &[char], start: usize) -> usize {
 fn path_in_token(chars: &[char], start: usize, end: usize) -> Option<LinkSpan> {
     let mut start = start;
     let mut end = end;
-    // A full stop after the reference ends the sentence, not the file name.
-    while end > start && chars[end - 1] == '.' && !(end - start >= 2 && chars[end - 2] == '/') {
+    // A full stop after the reference ends the sentence, not the file name, and the `$`,
+    // `%` or `#` after a directory is the end of a shell prompt.
+    while end > start {
+        let relative_dots = chars[end - 1] == '.' && end - start >= 2 && chars[end - 2] == '/';
+        if !matches!(chars[end - 1], '.' | '$' | '%' | '#') || relative_dots {
+            break;
+        }
         end -= 1;
     }
     // `--flag=path` and `KEY=path`: the path is the value.
@@ -1339,6 +1344,22 @@ mod tests {
             path("main.rs", None, None),
         );
         one("./src/term:", "./src/term", path("./src/term", None, None));
+        // The directory in a shell prompt, without the prompt character.
+        one(
+            "me@host:~/Code/bakedit$ ls",
+            "~/Code/bakedit",
+            path("~/Code/bakedit", None, None),
+        );
+        one(
+            "root@host:/etc/nginx# ",
+            "/etc/nginx",
+            path("/etc/nginx", None, None),
+        );
+        one(
+            "~/Code/bakedit% ",
+            "~/Code/bakedit",
+            path("~/Code/bakedit", None, None),
+        );
         one(
             "edit README.md, then",
             "README.md",
