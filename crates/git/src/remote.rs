@@ -33,9 +33,10 @@ impl Repo {
     /// Pushes the current branch and returns what git printed.
     ///
     /// A branch that has no upstream yet is published: pushed to the branch of the same
-    /// name on the remote (`remote.pushDefault` if set, else `origin`, else the only
-    /// remote there is) with upstream tracking set up, so the next push and pull need no
-    /// arguments. A branch with an upstream is pushed with a plain `git push`.
+    /// name on the remote (`branch.<name>.pushRemote` or `remote.pushDefault` if set,
+    /// else `origin`, else the only remote there is) with upstream tracking set up, so
+    /// the next push and pull need no arguments. A branch with an upstream is pushed with
+    /// a plain `git push`.
     ///
     /// `force_with_lease` overwrites the remote branch, but only if it still is where the
     /// last fetch saw it. A rejected push, a detached `HEAD` and a failing pre-push hook
@@ -49,7 +50,7 @@ impl Repo {
         if let Some(branch) = self.current_branch()? {
             if self.config(&format!("branch.{branch}.remote"))?.is_none() {
                 args.push("--set-upstream".to_string());
-                args.push(self.publish_remote()?);
+                args.push(self.publish_remote(&branch)?);
                 args.push(format!("refs/heads/{branch}:refs/heads/{branch}"));
             }
         }
@@ -67,9 +68,14 @@ impl Repo {
             .collect())
     }
 
-    /// The remote a branch without an upstream is published to.
-    fn publish_remote(&self) -> Result<String> {
-        let remote = match self.config("remote.pushDefault")? {
+    /// The remote `branch`, which has no upstream, is published to: the one the user
+    /// configured for pushing this branch or for pushing in general, else the fallback.
+    fn publish_remote(&self, branch: &str) -> Result<String> {
+        let configured = match self.config(&format!("branch.{branch}.pushRemote"))? {
+            Some(remote) => Some(remote),
+            None => self.config("remote.pushDefault")?,
+        };
+        let remote = match configured {
             Some(remote) => remote,
             None => self.fallback_remote()?,
         };

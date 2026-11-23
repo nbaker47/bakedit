@@ -312,6 +312,16 @@ fn publishing_picks_the_push_default_then_origin_then_the_only_remote() {
         test.repo.status().unwrap().upstream.as_deref(),
         Some("fork/second")
     );
+
+    // A remote configured for one branch wins over the general default.
+    test.repo.create_branch("third", true).unwrap();
+    test.git(&["config", "branch.third.pushRemote", "company"]);
+    test.repo.push(false).unwrap();
+    assert_eq!(remote_head(&company, "third"), test.head());
+    assert_eq!(
+        test.repo.status().unwrap().upstream.as_deref(),
+        Some("company/third")
+    );
 }
 
 #[test]
