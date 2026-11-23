@@ -224,6 +224,15 @@ impl Client {
         client
     }
 
+    /// The same client talking to a different socket, keeping its timeout, state file and
+    /// guard settings. For a herdr session other than the default one:
+    /// `Client::from_env_or_default().with_socket_path(session.socket_path(&config_dir))`,
+    /// with [`crate::launch::Session`].
+    pub fn with_socket_path(mut self, socket_path: impl Into<PathBuf>) -> Client {
+        self.socket_path = socket_path.into();
+        self
+    }
+
     /// The same client with a different timeout for each call. A timeout above
     /// [`MAX_TIMEOUT`] is cut down to it; a zero timeout makes every call fail with
     /// [`HerdrError::Timeout`].
@@ -1090,6 +1099,53 @@ mod tests {
         let client = client.with_state_file("/tmp/x/state.json");
         assert_eq!(client.state_file(), Some(Path::new("/tmp/x/state.json")));
         assert_eq!(client.socket_path(), Path::new("/nowhere/herdr.sock"));
+    }
+
+    #[test]
+    fn the_socket_can_be_swapped_while_everything_else_stays() {
+        let client = Client::new("/nowhere/a.sock")
+            .with_state_file("/tmp/x/state.json")
+            .with_timeout(Duration::from_millis(250))
+            .with_socket_path("/nowhere/b.sock");
+        assert_eq!(client.socket_path(), Path::new("/nowhere/b.sock"));
+        assert_eq!(client.state_file(), Some(Path::new("/tmp/x/state.json")));
+        assert_eq!(client.timeout(), Duration::from_millis(250));
+        assert!(!client.is_live_session());
+    }
+
+    #[test]
+    fn swapping_in_the_live_socket_turns_the_guard_on() {
+        let server = MockServer::start();
+        let client = Client::new("/nowhere/a.sock")
+            .with_protected_socket(server.socket_path())
+            .with_socket_path(server.socket_path());
+        assert!(client.is_live_session());
+        assert!(matches!(
+            client
+                .call("pane.focus", json!({"pane_id": "w1:p1"}))
+                .unwrap_err(),
+            HerdrError::MutationRefused { .. }
+        ));
+        assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn many_threads_can_share_one_client() {
+        let server =
+            MockServer::with_handler(|request| Some(Reply::Result(request.params.clone())));
+        let client = server.client();
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let client = &client;
+                scope.spawn(move || {
+                    for round in 0..20 {
+                        let sent = json!({"worker": worker, "round": round});
+                        assert_eq!(client.call("echo", sent.clone()).unwrap(), sent);
+                    }
+                });
+            }
+        });
+        assert_eq!(server.requests().len(), 160);
     }
 
     #[test]

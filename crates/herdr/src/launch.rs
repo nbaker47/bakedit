@@ -2,8 +2,9 @@
 //!
 //! The IDE's terminal runs herdr unless the user configured something else. Whether and how
 //! is the application's decision; this module only answers the questions about herdr itself:
-//! where its executable is, whether the IDE is already running inside a herdr pane, and which
-//! environment variables belong to that outer pane.
+//! where its executable is, whether the IDE is already running inside a herdr pane, which
+//! environment variables belong to that outer pane, and which session, and so which API
+//! socket, a command such as `herdr --session work` attaches to.
 
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
@@ -63,6 +64,82 @@ pub fn find_binary(path_var: Option<&OsStr>, home: Option<&Path>) -> Option<Path
 /// session the IDE is being shown in.
 pub fn running_inside_herdr(herdr_env: Option<&OsStr>) -> bool {
     herdr_env == Some(OsStr::new("1"))
+}
+
+/// herdr's own directory, where its config, its default session's socket and its named
+/// sessions live: `herdr` under `xdg_config_home` when that is set and not empty, else
+/// `<home>/.config/herdr`. `None` when neither is known.
+pub fn config_dir(xdg_config_home: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    match xdg_config_home.filter(|value| !value.is_empty()) {
+        Some(base) => Some(Path::new(base).join(BINARY_NAME)),
+        None => home.map(|home| home.join(".config").join(BINARY_NAME)),
+    }
+}
+
+/// One of herdr's persistent sessions. Each has a server and an API socket of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Session {
+    /// The session a bare `herdr` attaches to.
+    Default,
+    /// A session started with `herdr --session <name>`.
+    Named(String),
+}
+
+impl Session {
+    /// The session called `name`. herdr's name for its default session is `default`; any
+    /// other name has to be made of ASCII letters, digits, `.`, `_` and `-`, else there is
+    /// no such session and the result is `None`.
+    pub fn named(name: &str) -> Option<Session> {
+        let allowed = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-');
+        match name {
+            "" => None,
+            "default" => Some(Session::Default),
+            _ if name.chars().all(allowed) => Some(Session::Named(name.to_string())),
+            _ => None,
+        }
+    }
+
+    /// The session's API socket for a herdr whose directory is `config_dir` (see
+    /// [`config_dir`]): `herdr.sock` in it for the default session,
+    /// `sessions/<name>/herdr.sock` for a named one.
+    pub fn socket_path(&self, config_dir: &Path) -> PathBuf {
+        match self {
+            Session::Default => config_dir.join("herdr.sock"),
+            Session::Named(name) => config_dir.join("sessions").join(name).join("herdr.sock"),
+        }
+    }
+}
+
+/// The local session a terminal command attaches to, when the command starts herdr's
+/// interface: `herdr`, `herdr --session work`, `herdr --session=work` or
+/// `herdr session attach work`. `command` is the program followed by its arguments; the
+/// program may be a path.
+///
+/// `None` for anything else: another program, a herdr subcommand such as `herdr server`, a
+/// session name herdr would reject, and `herdr --remote ...`, whose session lives on another
+/// machine and has no socket here.
+pub fn session_of_command<S: AsRef<str>>(command: &[S]) -> Option<Session> {
+    let (program, arguments) = command.split_first()?;
+    if Path::new(program.as_ref()).file_name() != Some(OsStr::new(BINARY_NAME)) {
+        return None;
+    }
+    let arguments: Vec<&str> = arguments.iter().map(AsRef::as_ref).collect();
+    if let ["session", "attach", name] = arguments.as_slice() {
+        return Session::named(name);
+    }
+    let mut session = Session::Default;
+    let mut words = arguments.iter();
+    while let Some(word) = words.next() {
+        if *word == "--session" {
+            session = Session::named(words.next()?)?;
+        } else if let Some(name) = word.strip_prefix("--session=") {
+            session = Session::named(name)?;
+        } else {
+            // A subcommand, `--remote`, or an option this crate does not know.
+            return None;
+        }
+    }
+    Some(session)
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -202,5 +279,118 @@ mod tests {
         assert!(PANE_ENV_VARS.contains(&INSIDE_ENV_VAR));
         assert!(PANE_ENV_VARS.contains(&crate::client::SOCKET_ENV_VAR));
         assert!(PANE_ENV_VARS.iter().all(|name| name.starts_with("HERDR_")));
+    }
+
+    #[test]
+    fn the_config_directory_follows_xdg_then_home() {
+        let home = Path::new("/home/nat");
+        assert_eq!(
+            config_dir(None, Some(home)),
+            Some(PathBuf::from("/home/nat/.config/herdr"))
+        );
+        assert_eq!(
+            config_dir(Some(OsStr::new("")), Some(home)),
+            Some(PathBuf::from("/home/nat/.config/herdr"))
+        );
+        assert_eq!(
+            config_dir(Some(OsStr::new("/x/config")), Some(home)),
+            Some(PathBuf::from("/x/config/herdr"))
+        );
+        assert_eq!(
+            config_dir(Some(OsStr::new("/x/config")), None),
+            Some(PathBuf::from("/x/config/herdr"))
+        );
+        assert_eq!(config_dir(None, None), None);
+    }
+
+    #[test]
+    fn session_sockets_live_where_herdr_puts_them() {
+        let dir = Path::new("/home/nat/.config/herdr");
+        assert_eq!(
+            Session::Default.socket_path(dir),
+            Path::new("/home/nat/.config/herdr/herdr.sock")
+        );
+        assert_eq!(
+            Session::Named("work".into()).socket_path(dir),
+            Path::new("/home/nat/.config/herdr/sessions/work/herdr.sock")
+        );
+    }
+
+    #[test]
+    fn session_names_follow_herdrs_rules() {
+        assert_eq!(Session::named("default"), Some(Session::Default));
+        assert_eq!(Session::named("work"), Some(Session::Named("work".into())));
+        assert_eq!(
+            Session::named("bkt-45279"),
+            Some(Session::Named("bkt-45279".into()))
+        );
+        assert_eq!(
+            Session::named("a.b_c-1"),
+            Some(Session::Named("a.b_c-1".into()))
+        );
+        for bad in ["", "a/b", "a b", "../x", "caf\u{e9}", "x;y"] {
+            assert_eq!(Session::named(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn commands_that_start_herdr_name_their_session() {
+        let session = |words: &[&str]| session_of_command(words);
+        assert_eq!(session(&["herdr"]), Some(Session::Default));
+        assert_eq!(
+            session(&["/Users/nat/.local/bin/herdr"]),
+            Some(Session::Default)
+        );
+        assert_eq!(
+            session(&["herdr", "--session", "work"]),
+            Some(Session::Named("work".into()))
+        );
+        assert_eq!(
+            session(&["herdr", "--session=work"]),
+            Some(Session::Named("work".into()))
+        );
+        assert_eq!(
+            session(&["herdr", "session", "attach", "work"]),
+            Some(Session::Named("work".into()))
+        );
+        assert_eq!(
+            session(&["herdr", "--session", "default"]),
+            Some(Session::Default)
+        );
+        // The last one wins, as it does in herdr.
+        assert_eq!(
+            session(&["herdr", "--session", "a", "--session=b"]),
+            Some(Session::Named("b".into()))
+        );
+    }
+
+    #[test]
+    fn other_commands_name_no_session() {
+        let session = |words: &[&str]| session_of_command(words);
+        assert_eq!(session(&[]), None);
+        assert_eq!(session(&["zsh"]), None);
+        assert_eq!(session(&["tmux", "--session", "work"]), None);
+        assert_eq!(session(&["/opt/herdr/bin/not-herdr"]), None);
+        assert_eq!(session(&["herdr", "server"]), None);
+        assert_eq!(session(&["herdr", "pane", "list"]), None);
+        assert_eq!(
+            session(&["herdr", "--remote", "host", "--session", "work"]),
+            None
+        );
+        assert_eq!(session(&["herdr", "--session"]), None);
+        assert_eq!(session(&["herdr", "--session", "a/b"]), None);
+        assert_eq!(session(&["herdr", "--session=a b"]), None);
+        assert_eq!(session(&["herdr", "session", "attach"]), None);
+        assert_eq!(session(&["herdr", "session", "attach", "a", "b"]), None);
+        assert_eq!(session(&["herdr", "session", "list"]), None);
+    }
+
+    #[test]
+    fn owned_strings_work_as_a_command_too() {
+        let words: Vec<String> = vec!["herdr".into(), "--session".into(), "work".into()];
+        assert_eq!(
+            session_of_command(&words),
+            Some(Session::Named("work".into()))
+        );
     }
 }
