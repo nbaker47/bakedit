@@ -459,6 +459,10 @@ impl Item for EditorItem {
         self
     }
 
+    fn closed(&mut self, cx: &mut Cx<'_>) {
+        cx.project.forget_syntax(self.doc_id);
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

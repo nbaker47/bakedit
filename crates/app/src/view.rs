@@ -409,6 +409,18 @@ pub trait Item: View {
         None
     }
 
+    /// The file `pane::RevealInProjectPanel` shows in the tree: the one this tab shows, or
+    /// for a view of many files (the project diff) the one at its cursor.
+    fn reveal_path(&self) -> Option<std::path::PathBuf> {
+        self.path().map(Path::to_path_buf)
+    }
+
+    /// The tab is closed, or a preview took its place: let go of what is kept outside the
+    /// item for it (an editor's colours in the project's syntax store).
+    fn closed(&mut self, cx: &mut Cx<'_>) {
+        let _ = cx;
+    }
+
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }

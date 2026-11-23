@@ -420,6 +420,22 @@ fn the_tab_switcher_flips_to_the_previous_tab() {
 }
 
 #[test]
+fn closing_a_tab_tells_its_item() {
+    use crate::pane::test_support::take_closed;
+    let (mut shell, _) = shell();
+    take_closed();
+    shell.open_file(Path::new("/project/a.rs"), None, None, false, true);
+    shell.open_file(Path::new("/project/b.rs"), None, None, true, true);
+    // A preview replaced by the next preview is closed too.
+    shell.open_file(Path::new("/project/c.rs"), None, None, true, true);
+    assert_eq!(take_closed(), ["b.rs"]);
+    act(&mut shell, "pane::CloseActiveItem");
+    assert_eq!(take_closed(), ["c.rs"]);
+    act(&mut shell, "pane::CloseAllItems");
+    assert_eq!(take_closed(), ["a.rs"]);
+}
+
+#[test]
 fn go_to_line_and_back() {
     let (mut shell, _) = shell();
     shell.open_file(Path::new("/project/a.rs"), None, None, false, true);

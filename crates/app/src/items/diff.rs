@@ -123,6 +123,8 @@ pub struct ProjectDiff {
     discards: Vec<DiscardJob>,
     styles: StyleCache,
     styles_theme: String,
+    /// The top of the repository (git's paths are relative to it), as the project spells it.
+    top: Option<PathBuf>,
 }
 
 fn status_letter(status: DiffStatus) -> &'static str {
@@ -262,6 +264,7 @@ impl ProjectDiff {
             discards: Vec::new(),
             styles: StyleCache::new(),
             styles_theme: String::new(),
+            top: None,
         };
         diff.reload(cx);
         diff
@@ -269,6 +272,9 @@ impl ProjectDiff {
 
     /// Start reading the diff again if git or the files changed since it was read.
     fn reload(&mut self, cx: &Cx<'_>) {
+        if let Some(top) = cx.project.abs_path(Path::new("")) {
+            self.top = Some(top);
+        }
         let generation = cx.project.git_generation();
         if self.task.is_some() || (!self.stale && self.generation == Some(generation)) {
             return;
@@ -823,6 +829,13 @@ impl Item for ProjectDiff {
         "project_diff"
     }
 
+    /// The file under the cursor, so that the git panel's arrow keys (and cmd-shift-e) show
+    /// it in the tree as they show its diff. A deleted file is not in the tree to show.
+    fn reveal_path(&self) -> Option<PathBuf> {
+        let file = self.file_under_cursor().filter(|file| file.status != DiffStatus::Deleted)?;
+        Some(self.top.as_ref()?.join(&file.path))
+    }
+
     fn tab(&self, cx: &RenderCx<'_>) -> Tab {
         let icon = match cx.settings.icons {
             Icons::Nerd => Some(("\u{f1d3}".to_string(), cx.theme.modified)),
@@ -937,6 +950,10 @@ mod tests {
             harness.take_effects(),
             vec![Effect::OpenFile { path: dir.path().join("a.txt"), line: Some(1), column: None, preview: false, focus: true }]
         );
+        // The file under the cursor is the one the tree reveals (the git panel's arrows).
+        assert_eq!(diff.reveal_path(), Some(dir.path().join("a.txt")));
+        assert!(act(&mut harness, &mut diff, "project_diff::NextFile"));
+        assert_eq!(diff.reveal_path(), Some(dir.path().join("src/lib.rs")));
     }
 
     #[test]

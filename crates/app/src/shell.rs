@@ -553,7 +553,7 @@ impl Shell {
                     self.open_file_no_history(&target.path, Some(target.line), Some(target.column), false, true);
                 }
             }
-            "pane::RevealInProjectPanel" => match self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) {
+            "pane::RevealInProjectPanel" => match self.pane.active().and_then(|item| item.reveal_path()) {
                 Some(path) => self.effects.push(Effect::RevealInProjectPanel(path)),
                 None => return false,
             },
@@ -662,7 +662,7 @@ impl Shell {
             "workspace::NewFile" => {
                 let mut cx = cx!(self);
                 let item = self.factory.untitled(&mut cx);
-                self.pane.add(item, false);
+                self.add_item(item, false);
                 self.set_focus(Focus::Center);
             }
             "workspace::Open" | "file_finder::Toggle" => self.toggle_picker(PickerKind::FileFinder),
@@ -766,6 +766,23 @@ impl Shell {
         Some(Location { path: item.path()?.to_path_buf(), line, column })
     }
 
+    /// Add a tab, telling a preview it replaced that it is gone.
+    fn add_item(&mut self, item: Box<dyn Item>, preview: bool) {
+        let (_, replaced) = self.pane.add(item, preview);
+        if let Some(mut replaced) = replaced {
+            let mut cx = cx!(self);
+            replaced.closed(&mut cx);
+        }
+    }
+
+    /// Close tab `index` and tell its item.
+    fn close_item(&mut self, index: usize) {
+        if let Some(mut item) = self.pane.close(index) {
+            let mut cx = cx!(self);
+            item.closed(&mut cx);
+        }
+    }
+
     /// Open a file in the centre (1-based position), remembering where the jump started.
     pub fn open_file(&mut self, path: &Path, line: Option<u32>, column: Option<u32>, preview: bool, focus: bool) {
         if let Some(from) = self.current_location() {
@@ -790,7 +807,8 @@ impl Shell {
                 let mut cx = cx!(self);
                 match self.factory.open_path(path, &mut cx) {
                     Ok(item) => {
-                        self.pane.add(item, preview && self.settings.preview_tabs);
+                        let preview = preview && self.settings.preview_tabs;
+                        self.add_item(item, preview);
                     }
                     Err(message) => {
                         self.set_status(message, true);
@@ -828,7 +846,7 @@ impl Shell {
             None => {
                 let mut cx = cx!(self);
                 let item = make(self.factory.as_mut(), &mut cx);
-                self.pane.add(item, false);
+                self.add_item(item, false);
             }
         }
         self.set_focus(Focus::Center);
@@ -918,7 +936,7 @@ impl Shell {
             self.notify_focus(Focus::Center, false);
         }
         for index in indices {
-            self.pane.close(index);
+            self.close_item(index);
         }
         if was_center {
             self.notify_focus(Focus::Center, true);
@@ -1284,7 +1302,7 @@ impl Shell {
         let Some(Modal::Picker { kind: PickerKind::TabSwitcher, picker }) = &self.modal else { return false };
         let Some(index) = picker.selected().and_then(|selected| self.picker_rows.get(selected).copied()) else { return true };
         if !self.pane.item(index).is_some_and(|item| item.is_dirty()) {
-            self.pane.close(index);
+            self.close_item(index);
             self.refill_picker();
         }
         true
@@ -1381,7 +1399,7 @@ impl Shell {
                     if was_center {
                         self.notify_focus(Focus::Center, false);
                     }
-                    self.pane.close(index);
+                    self.close_item(index);
                     if was_center {
                         self.notify_focus(Focus::Center, true);
                     }

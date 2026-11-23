@@ -311,6 +311,16 @@ pub(crate) mod test_support {
     use ratatui::layout::Rect;
     use std::any::Any;
 
+    thread_local! {
+        /// The names of the stand-in items told they were closed, on this thread.
+        pub static CLOSED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// The names of the stand-in items closed on this thread so far, taken out.
+    pub fn take_closed() -> Vec<String> {
+        CLOSED.with(|closed| std::mem::take(&mut *closed.borrow_mut()))
+    }
+
     /// A stand-in item: a name, optionally a path, and a dirty flag.
     pub struct FakeItem {
         pub name: String,
@@ -411,6 +421,9 @@ pub(crate) mod test_support {
         }
         fn go_to(&mut self, line: u32, _: Option<u32>) {
             self.line = line;
+        }
+        fn closed(&mut self, _: &mut Cx<'_>) {
+            CLOSED.with(|closed| closed.borrow_mut().push(self.name.clone()));
         }
         fn as_any(&self) -> &dyn Any {
             self
