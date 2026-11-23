@@ -227,6 +227,22 @@ impl Shell {
         self.panels.get(&id).map(|view| view.as_ref())
     }
 
+    /// What each panel wants kept in the session file, by panel title.
+    pub fn panel_states(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        self.panels.iter().filter_map(|(id, view)| Some((id.title().to_string(), view.session_state()?))).collect()
+    }
+
+    /// Hand each panel what it saved in the session file.
+    pub fn restore_panel_states(&mut self, states: &std::collections::BTreeMap<String, serde_json::Value>) {
+        let mut cx = cx!(self);
+        for (id, view) in self.panels.iter_mut() {
+            if let Some(state) = states.get(id.title()) {
+                view.restore_session_state(state, &mut cx);
+            }
+        }
+        self.apply_effects();
+    }
+
     /// Run `f` with the view that has the keyboard focus (the front tab when the centre has
     /// it) and a `Cx`, then apply the effects it pushed. Returns `None` when nothing has the
     /// focus to run it on. For the app's own hooks into the focused view (focus in and out

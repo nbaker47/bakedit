@@ -277,6 +277,19 @@ pub trait View {
     fn picker_confirm(&mut self, kind: PickerKind, row: usize, secondary: bool, cx: &mut Cx<'_>) {
         let _ = (kind, row, secondary, cx);
     }
+
+    /// What a panel wants back after a restart (the folders open in the tree, say), kept in
+    /// the session file. `None` keeps nothing. Asked of the panels only; tabs are saved by
+    /// path and position.
+    fn session_state(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Put back what [`View::session_state`] gave when the session was saved. The value
+    /// may come from an older bakedit: ignore what is not understood.
+    fn restore_session_state(&mut self, state: &serde_json::Value, cx: &mut Cx<'_>) {
+        let _ = (state, cx);
+    }
 }
 
 /// What the status bar shows about the item in front.
@@ -396,6 +409,94 @@ pub trait Item: View {
 
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// What a view's own tests need to drive it without a shell: the things a `Cx` borrows.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use bakedit_core::{Mods, Theme};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use super::{Cursor, Cx, Effect, RenderCx, View};
+    use crate::clipboard::{Clipboard, MemoryBackend};
+    use crate::project::Project;
+    use crate::settings::Settings;
+    use crate::ui::Canvas;
+
+    pub struct Harness {
+        pub settings: Settings,
+        pub theme: Theme,
+        pub clipboard: Clipboard,
+        pub effects: Vec<Effect>,
+        pub project: Project,
+        pub held_mods: Mods,
+    }
+
+    impl Harness {
+        /// A harness over a project that touches nothing on disk.
+        pub fn new(root: impl Into<PathBuf>) -> Harness {
+            Harness::with_project(Project::detached(root))
+        }
+
+        pub fn with_project(project: Project) -> Harness {
+            Harness {
+                settings: Settings::default(),
+                theme: Theme::builtin(),
+                clipboard: Clipboard::with_backend(Box::new(MemoryBackend::default())),
+                effects: Vec::new(),
+                project,
+                held_mods: Mods::empty(),
+            }
+        }
+
+        pub fn cx(&mut self) -> Cx<'_> {
+            Cx {
+                settings: &self.settings,
+                theme: &self.theme,
+                clipboard: &mut self.clipboard,
+                effects: &mut self.effects,
+                project: &self.project,
+                root: self.project.root(),
+                active_path: None,
+                now: Instant::now(),
+                held_mods: self.held_mods,
+            }
+        }
+
+        pub fn render_cx(&self, focused: bool) -> RenderCx<'_> {
+            RenderCx {
+                settings: &self.settings,
+                theme: &self.theme,
+                project: &self.project,
+                root: self.project.root(),
+                active_path: None,
+                now: Instant::now(),
+                focused,
+                held_mods: self.held_mods,
+            }
+        }
+
+        /// Draw `view` focused on a `width` x `height` screen: the frame as text (one line
+        /// per row, trailing blanks dropped), the cursor it asked for, and the cells.
+        pub fn draw(&self, view: &mut dyn View, width: u16, height: u16) -> (String, Option<Cursor>, Buffer) {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            let cursor = {
+                let mut canvas = Canvas::new(&mut buf, area);
+                view.render(&mut canvas, area, &self.render_cx(true))
+            };
+            (crate::dump::to_text(&buf), cursor, buf)
+        }
+
+        /// The effects pushed so far, taken out.
+        pub fn take_effects(&mut self) -> Vec<Effect> {
+            std::mem::take(&mut self.effects)
+        }
+    }
 }
 
 #[cfg(test)]

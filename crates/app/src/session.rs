@@ -1,19 +1,27 @@
 //! What bakedit remembers about a project between runs: open tabs and where the cursor was
 //! in each, the dock layout, recently opened files and search history. One JSON file per
-//! project directory under `~/.local/state/bakedit/sessions/`.
+//! project directory under `~/.local/state/bakedit/sessions/`, and one list of the projects
+//! opened lately (`recent-projects.json` in the same state directory).
+//!
+//! [`capture`] and [`restore`] turn a [`Shell`] into a [`Session`] and back.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::workspace::WorkspaceSnapshot;
+use crate::project::SearchKind;
+use crate::shell::Shell;
+use crate::workspace::{Focus, WorkspaceSnapshot};
 
 /// Bumped when the file format changes in a way old code cannot read.
 const VERSION: u32 = 1;
 /// How many recent files and search queries are kept.
 const HISTORY_LIMIT: usize = 100;
+/// How many recent projects are kept.
+const PROJECTS_LIMIT: usize = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabState {
@@ -46,6 +54,9 @@ pub struct Session {
     pub search_history: Vec<String>,
     #[serde(default)]
     pub project_search_history: Vec<String>,
+    /// What each panel asked to keep ([`crate::view::View::session_state`]), by panel title.
+    #[serde(default)]
+    pub panels: BTreeMap<String, serde_json::Value>,
 }
 
 impl Session {
@@ -120,6 +131,95 @@ pub fn save(sessions_dir: &Path, root: &Path, session: &Session) -> io::Result<(
     fs::rename(&tmp, &path)
 }
 
+/// The session of what the shell shows now: the tabs that show files (pages, the diff and
+/// the search are not kept), the docks, the history and what the panels keep.
+pub fn capture(shell: &Shell) -> Session {
+    let mut tabs = Vec::new();
+    let mut active_tab = None;
+    for (index, slot) in shell.pane.slots().iter().enumerate() {
+        let item = &slot.item;
+        let (Some(path), "editor") = (item.path(), item.kind()) else { continue };
+        let (line, column) = item.position().unwrap_or((1, 1));
+        if shell.pane.active_index() == Some(index) {
+            active_tab = Some(tabs.len());
+        }
+        tabs.push(TabState {
+            path: path.to_path_buf(),
+            line: line.saturating_sub(1),
+            column: column.saturating_sub(1),
+            scroll_top: item.scroll_top().unwrap_or(0),
+        });
+    }
+    Session {
+        version: VERSION,
+        tabs,
+        active_tab,
+        workspace: shell.workspace.snapshot(),
+        recent_files: shell.project.recent_files(),
+        search_history: shell.project.search_history(SearchKind::Buffer),
+        project_search_history: shell.project.search_history(SearchKind::Project),
+        panels: shell.panel_states(),
+    }
+}
+
+/// Put a saved session back: the docks as they were, every tab whose file still exists at
+/// its position and scroll, the front tab in front, the history, the panels' own state.
+/// The keyboard ends up in the centre.
+pub fn restore(shell: &mut Shell, session: &Session) {
+    shell.workspace.restore(&session.workspace);
+    shell.project.set_search_history(SearchKind::Buffer, session.search_history.clone());
+    shell.project.set_search_history(SearchKind::Project, session.project_search_history.clone());
+    let mut opened = Vec::new();
+    for (index, tab) in session.tabs.iter().enumerate() {
+        if !tab.path.is_file() {
+            continue;
+        }
+        shell.open_file(&tab.path, Some(tab.line + 1), Some(tab.column + 1), false, false);
+        if let Some(item) = shell.pane.active_mut() {
+            if item.path() == Some(tab.path.as_path()) {
+                item.set_scroll_top(tab.scroll_top);
+                opened.push((index, shell.pane.active_index()));
+            }
+        }
+    }
+    if let Some(front) = session.active_tab.and_then(|active| opened.iter().find(|(index, _)| *index == active)) {
+        if let Some(slot) = front.1 {
+            shell.pane.activate(slot);
+        }
+    }
+    shell.restore_panel_states(&session.panels);
+    // Reopening the saved tabs is neither navigating nor opening files lately: the history
+    // and the recent files stay as they were saved.
+    shell.pane.clear_history();
+    shell.project.set_recent_files(session.recent_files.clone());
+    shell.set_focus(Focus::Center);
+}
+
+/// The file listing the projects opened lately.
+pub fn recent_projects_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("recent-projects.json")
+}
+
+/// The projects opened lately, most recent first, leaving out folders that are gone.
+pub fn recent_projects(state_dir: &Path) -> Vec<PathBuf> {
+    let Ok(bytes) = fs::read(recent_projects_path(state_dir)) else { return Vec::new() };
+    let list: Vec<PathBuf> = serde_json::from_slice(&bytes).unwrap_or_default();
+    list.into_iter().filter(|path| path.is_dir()).collect()
+}
+
+/// Put `root` at the front of the recent projects.
+pub fn remember_project(state_dir: &Path, root: &Path) -> io::Result<()> {
+    let mut list = recent_projects(state_dir);
+    list.retain(|existing| existing != root);
+    list.insert(0, root.to_path_buf());
+    list.truncate(PROJECTS_LIMIT);
+    fs::create_dir_all(state_dir)?;
+    let path = recent_projects_path(state_dir);
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&list)?)?;
+    fs::rename(&tmp, &path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +286,58 @@ mod tests {
         // Unknown fields and missing fields are fine.
         fs::write(session_path(dir.path(), root), br#"{"version": 1, "future_field": true}"#).unwrap();
         assert_eq!(load(dir.path(), root).unwrap().tabs, Vec::new());
+    }
+
+    #[test]
+    fn recent_projects_are_most_recent_first_and_skip_missing_folders() {
+        let state = tempfile::tempdir().unwrap();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        assert_eq!(recent_projects(state.path()), Vec::<PathBuf>::new());
+        remember_project(state.path(), a.path()).unwrap();
+        remember_project(state.path(), b.path()).unwrap();
+        remember_project(state.path(), a.path()).unwrap();
+        assert_eq!(recent_projects(state.path()), vec![a.path().to_path_buf(), b.path().to_path_buf()]);
+        let gone = b.path().to_path_buf();
+        drop(b);
+        assert_eq!(recent_projects(state.path()), vec![a.path().to_path_buf()], "{gone:?} is gone");
+        fs::write(recent_projects_path(state.path()), b"not json").unwrap();
+        assert_eq!(recent_projects(state.path()), Vec::<PathBuf>::new(), "a damaged list is an empty one");
+    }
+
+    #[test]
+    fn a_shell_is_captured_and_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<PathBuf> = ["a.rs", "b.rs"].iter().map(|n| dir.path().join(n)).collect();
+        for file in &files {
+            fs::write(file, "x\n").unwrap();
+        }
+        let (mut shell, _) = crate::shell_tests::shell();
+        shell.open_file(&files[0], Some(12), Some(3), false, true);
+        shell.open_file(&files[1], None, None, false, true);
+        shell.dispatch(&bakedit_core::Action::new("terminal_panel::Toggle"));
+        shell.project.touch_recent(&files[0]);
+        let session = capture(&shell);
+        assert_eq!(session.tabs.len(), 2);
+        // Kept 0-based; the stand-in tab knows only its line (its column is always 1).
+        assert_eq!((session.tabs[0].line, session.tabs[0].column), (11, 0));
+        assert_eq!(session.active_tab, Some(1));
+        assert!(session.workspace.left.as_ref().is_some_and(|dock| dock.open));
+
+        let (mut fresh, _) = crate::shell_tests::shell();
+        restore(&mut fresh, &session);
+        let names: Vec<_> = fresh.pane.slots().iter().map(|s| s.item.path().unwrap().to_path_buf()).collect();
+        assert_eq!(names, files);
+        assert_eq!(fresh.pane.active_index(), Some(1));
+        assert_eq!(crate::shell_tests::fake(&fresh, 0).line, 12);
+        assert_eq!(fresh.workspace.focus(), Focus::Center);
+        assert_eq!(fresh.workspace.visible_panel(crate::workspace::DockPosition::Left), Some(crate::workspace::PanelId::Terminal));
+        assert_eq!(fresh.project.recent_files().first(), Some(&files[0]));
+        // A file that is gone by the next start is skipped.
+        fs::remove_file(&files[0]).unwrap();
+        let (mut later, _) = crate::shell_tests::shell();
+        restore(&mut later, &session);
+        assert_eq!(later.pane.len(), 1);
+        assert_eq!(later.pane.active_index(), Some(0));
     }
 }

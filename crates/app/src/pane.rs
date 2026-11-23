@@ -275,6 +275,13 @@ impl Pane {
         Some(target)
     }
 
+    /// Forget the back and forward history (after a session was restored: opening the saved
+    /// tabs one after another is not a trail of jumps).
+    pub fn clear_history(&mut self) {
+        self.back.clear();
+        self.forward.clear();
+    }
+
     pub fn go_forward(&mut self, current: Option<Location>) -> Option<Location> {
         let target = self.forward.pop()?;
         if let Some(current) = current {
