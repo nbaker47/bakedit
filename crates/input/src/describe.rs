@@ -189,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             key(KeyEvent::new(Key::Char('p'), Mods::SUPER | Mods::SHIFT)),
-            "key press   shift-cmd-p"
+            "key press   cmd-shift-p"
         );
         assert_eq!(
             key(KeyEvent::new(Key::Up, Mods::CTRL | Mods::ALT).with_kind(KeyKind::Release)),

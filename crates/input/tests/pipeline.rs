@@ -344,13 +344,13 @@ fn losing_focus_in_the_middle_of_a_hold_lets_go_of_everything() {
     assert_eq!(app.nav.virtual_mods(), Mods::SHIFT);
     assert_eq!(
         app.shortcuts(),
-        ["press cmd-leftsuper", "press shift-cmd-right"]
+        ["press cmd-leftsuper", "press cmd-shift-right"]
     );
     // The window loses focus; none of the releases will ever arrive.
     app.read(b"\x1b[O");
     assert_eq!(
         app.shortcuts().last().map(String::as_str),
-        Some("release shift-cmd-right")
+        Some("release cmd-shift-right")
     );
     assert_eq!(app.log, ["focus lost"]);
     assert!(!app.nav.active());
