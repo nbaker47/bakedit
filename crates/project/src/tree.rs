@@ -167,8 +167,15 @@ impl FileTree {
 
     /// The row index of `path` (absolute, or relative to the root) if it is visible.
     pub fn index_of(&self, path: &Path) -> Option<usize> {
-        let path = resolve(&self.root, path);
-        self.rows.iter().position(|row| row.path == path)
+        self.position(&resolve(&self.root, path))
+    }
+
+    /// The row index of an absolute, normalised path. Row paths are all built the same
+    /// way, so comparing them as text is exact (and much cheaper than by component).
+    fn position(&self, path: &Path) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|row| row.path.as_os_str() == path.as_os_str())
     }
 
     /// Select the row at `index`. An index past the end selects the last row.
@@ -303,8 +310,8 @@ impl FileTree {
         if !path.starts_with(&self.root) {
             return false;
         }
-        let is_dir = match self.rows.iter().find(|row| row.path == path) {
-            Some(row) => row.is_dir(),
+        let is_dir = match self.position(&path) {
+            Some(index) => self.rows[index].is_dir(),
             None => fs::metadata(&path).is_ok_and(|meta| meta.is_dir()),
         };
         if !is_dir {
@@ -361,7 +368,7 @@ impl FileTree {
     /// [`EXPAND_ALL_LIMIT`] directories are opened per call.
     pub fn expand_all(&mut self, path: &Path) -> bool {
         let path = resolve(&self.root, path);
-        let Some(start) = self.rows.iter().find(|row| row.path == path).cloned() else {
+        let Some(start) = self.position(&path).map(|index| self.rows[index].clone()) else {
             return false;
         };
         if !start.is_dir() || !self.expand(&start.path) {
@@ -407,9 +414,10 @@ impl FileTree {
     /// Make `path` (absolute, or relative to the root) visible by expanding the
     /// directories above it, select it, and return its row index.
     ///
-    /// The directories need not be loaded yet. Returns `None`, changing nothing, when the
-    /// path does not exist, is outside the root or is always hidden (inside `.git`, for
-    /// instance).
+    /// The directories need not be loaded yet, and a path that appeared on disk after its
+    /// directory was last read is found all the same. Returns `None`, changing nothing,
+    /// when the path does not exist, is outside the root, is always hidden (inside
+    /// `.git`, for instance) or sits below a directory that cannot be opened.
     pub fn reveal(&mut self, path: &Path) -> Option<usize> {
         let path = resolve(&self.root, path);
         let relative = path.strip_prefix(&self.root).ok()?.to_path_buf();
@@ -417,6 +425,8 @@ impl FileTree {
             return None;
         }
         fs::symlink_metadata(&path).ok()?;
+
+        let expanded_before = self.expanded.clone();
         let mut dir = self.root.clone();
         self.expanded.insert(dir.clone());
         if let Some(parent) = relative.parent() {
@@ -426,9 +436,24 @@ impl FileTree {
             }
         }
         self.sync();
-        let index = self.rows.iter().position(|row| row.path == path)?;
-        self.selected = Some(index);
-        Some(index)
+        let mut index = self.position(&path);
+        if index.is_none() {
+            // The path exists but its directory was read before it did: read it again.
+            let stale = path
+                .parent()
+                .is_some_and(|parent| self.listings.remove(parent).is_some());
+            if stale {
+                self.sync();
+                index = self.position(&path);
+            }
+        }
+        if index.is_none() {
+            self.expanded = expanded_before;
+            self.sync();
+            return None;
+        }
+        self.selected = index;
+        index
     }
 
     /// Re-read the directories affected by a change to each of `paths` (absolute, or
@@ -906,6 +931,8 @@ impl FileTree {
             .and_then(|index| self.rows.get(index).cloned());
 
         let mut visible = HashSet::new();
+        // The expanded directories that a visible parent still lists as a directory.
+        let mut listed = HashSet::new();
         let mut pending = vec![(self.root.clone(), false)];
         while let Some((dir, through_link)) = pending.pop() {
             if !self.expanded.contains(&dir) {
@@ -931,6 +958,7 @@ impl FileTree {
                 if entry.is_dir {
                     let child = dir.join(&entry.name);
                     if self.expanded.contains(&child) {
+                        listed.insert(child.clone());
                         pending.push((child, inherited || entry.symlink));
                     }
                 }
@@ -938,7 +966,7 @@ impl FileTree {
             visible.insert(dir);
         }
         self.listings.retain(|dir, _| visible.contains(dir));
-        self.forget_vanished();
+        self.forget_vanished(&visible, &listed);
 
         let mut rows = Vec::with_capacity(self.rows.len().max(16));
         rows.push(Row {
@@ -961,9 +989,7 @@ impl FileTree {
         self.rows = rows;
 
         self.selected = previous.and_then(|old| {
-            self.rows
-                .iter()
-                .position(|row| row.path == old.path)
+            self.position(&old.path)
                 .or_else(|| self.nearest_surviving(&old))
         });
     }
@@ -996,23 +1022,14 @@ impl FileTree {
     }
 
     /// Drop the expansion state of directories that a visible parent no longer lists,
-    /// together with everything remembered below them.
-    fn forget_vanished(&mut self) {
+    /// together with everything remembered below them. `visible` holds the directories
+    /// whose listing is shown, `listed` the expanded ones those listings still contain.
+    fn forget_vanished(&mut self, visible: &HashSet<PathBuf>, listed: &HashSet<PathBuf>) {
         let gone: Vec<PathBuf> = self
             .expanded
             .iter()
-            .filter(|dir| **dir != self.root)
-            .filter(|dir| {
-                let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
-                    return false;
-                };
-                self.listings.get(parent).is_some_and(|listing| {
-                    !listing
-                        .entries
-                        .iter()
-                        .any(|entry| entry.is_dir && entry.name == name)
-                })
-            })
+            .filter(|dir| **dir != self.root && !listed.contains(*dir))
+            .filter(|dir| dir.parent().is_some_and(|parent| visible.contains(parent)))
             .cloned()
             .collect();
         if !gone.is_empty() {
@@ -1033,7 +1050,7 @@ impl FileTree {
             if !parent.starts_with(&self.root) {
                 return Some(0);
             }
-            if let Some(parent_index) = self.rows.iter().position(|row| row.path == parent) {
+            if let Some(parent_index) = self.position(&parent) {
                 let parent_depth = self.rows[parent_index].depth;
                 let mut last_child = None;
                 for (index, row) in self.rows.iter().enumerate().skip(parent_index + 1) {

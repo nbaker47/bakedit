@@ -677,6 +677,17 @@ fn reveal_opens_the_way_to_a_path_and_selects_it() {
 }
 
 #[test]
+fn reveal_finds_a_file_created_after_its_directory_was_read() {
+    let project = Project::with_files(&["src/old.rs"]);
+    let mut tree = FileTree::new(project.root());
+    tree.expand(&project.path("src"));
+    let new = project.write("src/new.rs", "");
+    assert_eq!(tree.index_of(&new), None, "the tree has not been told yet");
+    assert_eq!(tree.reveal(&new), Some(2));
+    assert_eq!(selected_name(&tree).as_deref(), Some("new.rs"));
+}
+
+#[test]
 fn reveal_refuses_what_cannot_be_shown() {
     let project = Project::with_files(&["a/file.rs", ".git/HEAD"]);
     let mut tree = FileTree::new(project.root());
