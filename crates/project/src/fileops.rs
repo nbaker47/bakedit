@@ -439,9 +439,15 @@ fn temp_path(dir: &Path) -> PathBuf {
     }
 }
 
+/// Remove a partial copy or a leftover temporary entry, whatever it is. Failure is only
+/// logged: this runs while another error is already on its way to the caller.
 fn remove_any(path: &Path) {
     let removed = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path).or_else(|_| {
+            // A read-only directory that was already copied blocks its own removal.
+            make_dirs_writable(path);
+            fs::remove_dir_all(path)
+        }),
         Ok(_) => fs::remove_file(path),
         Err(_) => return,
     };
@@ -449,6 +455,29 @@ fn remove_any(path: &Path) {
         log::warn!("could not clean up {}: {error}", path.display());
     }
 }
+
+/// Give the owner write access to `dir` and every directory below it.
+#[cfg(unix)]
+fn make_dirs_writable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mut permissions = meta.permissions();
+    permissions.set_mode(permissions.mode() | 0o700);
+    let _ = fs::set_permissions(dir, permissions);
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            make_dirs_writable(&entry.path());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn make_dirs_writable(_dir: &Path) {}
 
 #[cfg(unix)]
 fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
@@ -697,6 +726,31 @@ mod tests {
             fs::read_to_string(to.join("nested/file.txt")).unwrap(),
             "contents"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_gets_past_read_only_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("partial");
+        fs::create_dir_all(partial.join("locked/deeper")).unwrap();
+        fs::write(partial.join("locked/deeper/file.txt"), "x").unwrap();
+        fs::set_permissions(
+            partial.join("locked/deeper"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+        fs::set_permissions(partial.join("locked"), fs::Permissions::from_mode(0o555)).unwrap();
+
+        remove_any(&partial);
+        assert!(!partial.exists());
+        // Files, links and missing paths are handled too.
+        let file = dir.path().join("file");
+        fs::write(&file, "x").unwrap();
+        remove_any(&file);
+        remove_any(&file);
+        assert!(!file.exists());
     }
 
     #[test]
