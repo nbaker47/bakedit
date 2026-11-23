@@ -401,3 +401,35 @@ fn input_cut_at_awkward_places_still_makes_sense() {
     app.read(&snowman[1..]);
     assert_eq!(app.typed(), "a☃");
 }
+
+#[test]
+fn the_types_can_be_handed_to_an_input_thread() {
+    fn movable<T: Send + Sync + Clone + std::fmt::Debug + 'static>() {}
+    movable::<Parser>();
+    movable::<NavLayer>();
+    movable::<NavLayerConfig>();
+    movable::<HeldMods>();
+    movable::<host::HostOptions>();
+
+    // And really used from one: bytes in on a reader thread, events out over a channel.
+    let (events, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut parser = Parser::new();
+        for chunk in [&b"\x1b[1;"[..], &b"5C\x1b[<0;1;1M"[..], &b"ok"[..]] {
+            for event in parser.feed(chunk) {
+                events.send(event).unwrap();
+            }
+        }
+    });
+    reader.join().unwrap();
+    let lines: Vec<String> = received.iter().map(|event| describe(&event)).collect();
+    assert_eq!(
+        lines,
+        [
+            "key press   ctrl-right",
+            "mouse press left at 0,0",
+            "key press   o text=\"o\"",
+            "key press   k text=\"k\"",
+        ]
+    );
+}
