@@ -117,10 +117,12 @@ pub(crate) fn hunk_patch(file: &FileDiff, hunk_index: usize, reverse: bool) -> R
         )));
     }
 
-    // The file the patch is applied to: the diff's new file when a change is taken back
-    // out of it, else the file the change was made to.
-    let target = match (&file.old_path, reverse) {
-        (Some(old_path), false) => old_path,
+    // The file the patch is applied to. A change is taken back out of the diff's new
+    // file. Applied forward, the change to a renamed file goes to the file under its old
+    // name, which is the one the old side still has. (Never to the original of a copy:
+    // that is another file, which the change must not touch.)
+    let target = match (&file.old_path, file.status, reverse) {
+        (Some(old_path), DiffStatus::Renamed, false) => old_path,
         _ => &file.path,
     };
     let old_name = prefixed_name(b"a/", target);
@@ -468,6 +470,26 @@ mod tests {
         // Applied to the side that still has the old one.
         assert!(patch_text(&file, 0, false)
             .starts_with("diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n@@"));
+    }
+
+    #[test]
+    fn a_copy_is_always_patched_under_its_own_name() {
+        let file = parse_one(concat!(
+            "diff --git a/original.txt b/copy.txt\n",
+            "similarity index 90%\n",
+            "copy from original.txt\n",
+            "copy to copy.txt\n",
+            "--- a/original.txt\n",
+            "+++ b/copy.txt\n",
+            "@@ -1 +1,2 @@\n",
+            " shared\n",
+            "+only in the copy\n",
+        ));
+        for reverse in [false, true] {
+            assert!(patch_text(&file, 0, reverse).starts_with(
+                "diff --git a/copy.txt b/copy.txt\n--- a/copy.txt\n+++ b/copy.txt\n@@"
+            ));
+        }
     }
 
     #[test]
