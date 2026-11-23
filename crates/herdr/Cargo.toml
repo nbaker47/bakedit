@@ -5,11 +5,17 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# A scripted stand-in for the herdr server, for tests of code that drives herdr.
+mock = ["dep:tempfile"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
+socket2 = "0.6.5"
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
