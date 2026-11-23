@@ -1,0 +1,12 @@
+[package]
+name = "bakedit-input"
+description = "Host terminal input: escape sequence parser (kitty keyboard protocol, mouse, paste) and the built-in nav layer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bakedit-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

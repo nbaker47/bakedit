@@ -1,0 +1,15 @@
+[package]
+name = "bakedit-herdr"
+description = "Client for herdr's socket API and native pane navigation"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

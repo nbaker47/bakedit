@@ -1,0 +1,15 @@
+[package]
+name = "bakedit-syntax"
+description = "Languages and syntax highlighting (tree-sitter)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bakedit-core.workspace = true
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

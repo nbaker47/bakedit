@@ -1,0 +1,23 @@
+[package]
+name = "bakedit-project"
+description = "Project model: file tree, file index and fuzzy finder, project search, file watching, icons"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ignore.workspace = true
+globset.workspace = true
+nucleo-matcher.workspace = true
+grep-matcher.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+notify.workspace = true
+regex.workspace = true
+crossbeam-channel.workspace = true
+trash.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

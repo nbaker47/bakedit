@@ -1,0 +1,18 @@
+[package]
+name = "bakedit-term"
+description = "Embedded terminal: pty, VT emulation, key and mouse encoding, link detection"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bakedit-core.workspace = true
+alacritty_terminal.workspace = true
+regex.workspace = true
+unicode-width.workspace = true
+libc.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
