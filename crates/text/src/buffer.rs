@@ -1355,6 +1355,17 @@ mod tests {
         assert_eq!(text(&buffer), "abc");
         assert_eq!(step.selections, Some(before));
         assert_eq!(step.edits.batches().len(), 2);
+        // The batches come in the order they were applied: first the Y goes, then the X,
+        // each described in the text as it was at that moment.
+        let replay: Vec<(usize, usize, usize)> = step
+            .edits
+            .input_edits()
+            .iter()
+            .map(|edit| (edit.start_byte, edit.old_end_byte, edit.new_end_byte))
+            .collect();
+        assert_eq!(replay, vec![(0, 1, 0), (1, 2, 1)]);
+        assert_eq!(step.edits.map_offset(5, Bias::Left), 3);
+        assert_eq!(step.edits.map_offset(2, Bias::Left), 1);
         let step = buffer.redo().unwrap();
         assert_eq!(text(&buffer), "YaXbc");
         assert_eq!(step.selections, Some(after));

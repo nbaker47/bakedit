@@ -462,6 +462,21 @@ fn check_outcome(
         0,
         "the start does not map to the start {context}"
     );
+    // Mapping keeps positions in order and inside the text, whatever the number of batches.
+    let mut previous = (0, 0);
+    for position in 0..=old_len {
+        let left = outcome.edits.map_offset(position, Bias::Left);
+        let right = outcome.edits.map_offset(position, Bias::Right);
+        assert!(
+            left <= right && right <= new_len,
+            "position {position} maps out of order {context}"
+        );
+        assert!(
+            previous.0 <= left && previous.1 <= right,
+            "mapping is not monotonic at {position} {context}"
+        );
+        previous = (left, right);
+    }
     if let [changes] = outcome.edits.batches() {
         check_single_batch(before_text, &after_text, changes, &outcome.edits);
     }
