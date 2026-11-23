@@ -3,6 +3,7 @@
     herdr-check.py split           split the focused pane in two, side by side; the new pane
                                    is on the right and the focus stays on the left one
     herdr-check.py focused left    exit 1 unless the focused pane is the left (or right) one
+    herdr-check.py workspace NAME focus|keep   create a workspace (screenshots only)
     herdr-check.py zoomed yes|no   exit 1 unless the focused tab is (or is not) zoomed
 
 The socket is $BAKEDIT_SCENARIO_HERDR_SOCKET, which run.sh sets only for the herdr-session
@@ -51,6 +52,10 @@ if command == "split":
     call("pane.split", {"target_pane_id": pane["pane_id"], "direction": "right", "ratio": 0.5, "focus": False})
     time.sleep(0.3)
     print(f"split {pane['pane_id']}")
+elif command == "workspace":
+    result = call("workspace.create", {"label": sys.argv[2], "focus": sys.argv[3] == "focus"})
+    time.sleep(0.3)
+    print(f"workspace {sys.argv[2]}: {result}")
 elif command == "focused":
     want = sys.argv[2]
     panes = panes_left_to_right()

@@ -31,13 +31,16 @@ native actions in the editor: `cmd-alt-arrows` moves focus between herdr panes (
 next tab or workspace at an edge), `cmd-alt-1` to `9` jumps workspaces, and
 `ctrl-]` gives a prefix that works even where the terminal cannot pass `cmd` through.
 
+The panel above is a real herdr session: its workspace list on the left, two panes split
+inside it, and the editor and file tree beside it, all in one window.
+
 It is a single Rust binary. Everything runs in your terminal, so it works over SSH, in
 Ghostty, cmux, kitty or anything that speaks the kitty keyboard protocol, and it falls back
 gracefully where one does not.
 
 ![The window: terminal and git on the left, editor in the middle, file tree on the right](docs/img/layout.svg)
 
-![Terminal panel, editor and file tree side by side](docs/img/panels-three-columns.png)
+![herdr running in bakedit's terminal panel, with its workspaces and split panes, next to the editor and file tree](docs/img/herdr.png)
 
 ## The nav layer
 

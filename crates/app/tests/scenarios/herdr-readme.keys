@@ -1,0 +1,35 @@
+# The README picture: herdr running in the terminal panel beside an open file, against the
+# same throwaway herdr server as herdr-session (never Nathan's session). Not a test of
+# anything beyond "it draws": the checks only make sure the shot shows what the README says.
+
+# A file open in the editor first, so the middle of the window is not empty.
+key cmd-p
+text main
+wait 0.5
+key enter
+expect src › main.rs
+
+# herdr in the panel, with a tidy prompt and title (no host name on the screen).
+key cmd-t
+expect spaces
+wait 1
+text-env cd $BAKEDIT_SCENARIO_PROJECT; PS1='demo % '; clear
+key enter
+wait 0.5
+text git log --oneline; git status -sb
+key enter
+wait 0.8
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" split
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" workspace notes keep
+exec python3 "$BAKEDIT_SCENARIO_HERE/herdr-check.py" workspace api keep
+key cmd-alt-right
+text-env cd $BAKEDIT_SCENARIO_PROJECT/src; PS1='demo/src % '; clear
+key enter
+wait 0.5
+text ls
+key enter
+wait 1
+snap hero
+key cmd-e
+key cmd-q
+expect-exit

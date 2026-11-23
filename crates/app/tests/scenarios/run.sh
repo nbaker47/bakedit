@@ -27,7 +27,7 @@ out="$(cd "$out" && pwd)"
 bin="${2:-${CARGO_TARGET_DIR:-$repo/target}/debug/bakedit}"
 [ -x "$bin" ] || { echo "no bakedit binary at $bin (cargo build -p bakedit)" >&2; exit 1; }
 shift $(( $# >= 2 ? 2 : $# ))
-all=(kitty restore panels editing search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe herdr-session)
+all=(kitty restore panels editing search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe herdr-session herdr-readme)
 wanted=("$@")
 [ ${#wanted[@]} -eq 0 ] && wanted=("${all[@]}")
 
@@ -152,14 +152,14 @@ for scenario in "${all[@]}"; do
         # The tools: --dump-input and --probe.
         dump) run dump 110x24 -- --terminal shell --dump-input ;;
         probe) run probe 110x24 -- --terminal shell --probe ;;
-        herdr-session)
+        herdr-session|herdr-readme)
             if ! command -v herdr > /dev/null; then
-                echo "SKIP herdr-session: herdr is not installed"
+                echo "SKIP $scenario: herdr is not installed"
                 continue
             fi
             make_project
             # A herdr server of our own: fresh config, home and socket, nothing inherited.
-            exports="$("$repo/crates/herdr/tests/isolated-session.sh" start)" || { echo "FAIL herdr-session: no test server"; failed+=(herdr-session); continue; }
+            exports="$("$repo/crates/herdr/tests/isolated-session.sh" start)" || { echo "FAIL $scenario: no test server"; failed+=("$scenario"); continue; }
             eval "$exports"
             session="$(cat "$BAKEDIT_TEST_HERDR_DIR/session-name")"
             saved_env=("${env_args[@]}")
@@ -171,7 +171,7 @@ for scenario in "${all[@]}"; do
             mkdir -p "$BAKEDIT_TEST_HERDR_DIR/bakedit"
             printf '{ "terminal": { "dock": "left", "command": "herdr --session %s" }, "project_panel": { "dock": "right" } }\n' \
                 "$session" > "$BAKEDIT_TEST_HERDR_DIR/bakedit/settings.json"
-            run herdr-session 200x52 -- --new --no-restore "$project"
+            run "$scenario" 200x52 -- --new --no-restore "$project"
             env_args=("${saved_env[@]}")
             "$repo/crates/herdr/tests/isolated-session.sh" stop "$BAKEDIT_TEST_HERDR_DIR" > /dev/null ;;
     esac
