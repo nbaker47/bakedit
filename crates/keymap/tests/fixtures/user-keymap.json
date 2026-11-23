@@ -1,0 +1,144 @@
+// Zed keymap
+//
+// For information on binding keys, see the Zed
+// documentation: https://zed.dev/docs/key-bindings
+//
+// To see the default key bindings run `zed: open default keymap`
+// from the command palette.
+[
+  {
+    "context": "Workspace",
+    "bindings": {
+      // "shift shift": "file_finder::Toggle"
+      "cmd-t": "terminal_panel::Toggle",
+      "cmd-alt-t": "workspace::ToggleZoom",
+      "cmd-g": "git_panel::Toggle",
+      // GitPanel itself doesn't implement Panel::set_zoomed in Zed, so open Project Diff and zoom it fullscreen.
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      // cmd-alt-f: fullscreen the focused pane (editor: hide all docks; terminal: zoom it). cmd-alt-e: jump to the editor and hide all docks.
+      // cmd-e: just focus the code editor
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleAllDocks",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
+    },
+  },
+  {
+    // Editor/Pane are more specific than Workspace and Zed binds cmd-g / cmd-shift-e / cmd-alt-f there, so repeat them.
+    "context": "Editor || Pane",
+    "bindings": {
+      "cmd-g": "git_panel::Toggle",
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": "pane::RevealInProjectPanel",
+      // cmd-e: just focus the code editor
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleAllDocks",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
+    },
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "cmd-alt-t": "workspace::ToggleZoom",
+      "cmd-g": "git_panel::Toggle",
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleZoom",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
+      // Forward to herdr running in the terminal as prefix chords (ctrl+b = \u0002, then a plain key). Alt chords get
+      // mangled on the way in, plain bytes do not. See home/dot_config/herdr/config.toml.
+      "cmd-alt-left": ["terminal::SendText", "\u0002h"],
+      "cmd-alt-right": ["terminal::SendText", "\u0002l"],
+      "cmd-alt-up": ["terminal::SendText", "\u0002k"],
+      "cmd-alt-down": ["terminal::SendText", "\u0002j"],
+      "cmd-alt-shift-left": ["terminal::SendText", "\u0002\u0008"],
+      "cmd-alt-shift-right": ["terminal::SendText", "\u0002\u000c"],
+      "cmd-alt-shift-up": ["terminal::SendText", "\u0002\u000b"],
+      "cmd-alt-shift-down": ["terminal::SendText", "\u0002\u000a"],
+      "ctrl-alt-cmd-up": ["terminal::SendText", "\u0002u"],
+      "ctrl-alt-cmd-down": ["terminal::SendText", "\u0002d"],
+      "cmd-alt-1": ["terminal::SendText", "\u0002!"],
+      "cmd-alt-2": ["terminal::SendText", "\u0002@"],
+      "cmd-alt-3": ["terminal::SendText", "\u0002#"],
+      "cmd-alt-4": ["terminal::SendText", "\u0002$"],
+      "cmd-alt-5": ["terminal::SendText", "\u0002%"],
+      "cmd-alt-6": ["terminal::SendText", "\u0002^"],
+      "cmd-alt-7": ["terminal::SendText", "\u0002&"],
+      "cmd-alt-8": ["terminal::SendText", "\u0002*"],
+      "cmd-alt-9": ["terminal::SendText", "\u0002("],
+      "cmd-alt-z": ["terminal::SendText", "\u0002z"],
+      "cmd-alt-c": ["terminal::SendText", "\u0002m"],
+      "cmd-alt-a": ["terminal::SendText", "\u0002e"],
+      "shift-up": ["terminal::SendText", "\u0002\u0015"],
+      "shift-down": ["terminal::SendText", "\u0002\u0004"],
+      "cmd-shift-up": ["terminal::SendText", "\u0002\u0019"],
+      "cmd-shift-down": ["terminal::SendText", "\u0002\u0005"],
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      // Copy a GitHub permalink to the current line (or selection); moved from cmd-alt-g so cmd-alt-g zooms Git Diff.
+      "ctrl-alt-g": "editor::CopyPermalinkToLine",
+      // cmd-up/down jump 5 lines instead of going to the start/end of the file (shift extends the selection).
+      "cmd-up": ["editor::MoveUpByLines", {"lines": 5}],
+      "cmd-down": ["editor::MoveDownByLines", {"lines": 5}],
+      "cmd-shift-up": ["editor::SelectUpByLines", {"lines": 5}],
+      "cmd-shift-down": ["editor::SelectDownByLines", {"lines": 5}],
+      // cmd-k + delimiter: select text inside enclosing pair, or snap cursor inside the first pair on the page.
+      "cmd-k (": ["task::Spawn", {"task_name": "select-between-paren"}],
+      "cmd-k )": ["task::Spawn", {"task_name": "select-between-paren"}],
+      "cmd-k [": ["task::Spawn", {"task_name": "select-between-bracket"}],
+      "cmd-k ]": ["task::Spawn", {"task_name": "select-between-bracket"}],
+      "cmd-k {": ["task::Spawn", {"task_name": "select-between-brace"}],
+      "cmd-k }": ["task::Spawn", {"task_name": "select-between-brace"}],
+      "cmd-k \"": ["task::Spawn", {"task_name": "select-between-dquote"}],
+      "cmd-k '": ["task::Spawn", {"task_name": "select-between-squote"}],
+      "cmd-k `": ["task::Spawn", {"task_name": "select-between-backtick"}],
+      "cmd-k <": ["task::Spawn", {"task_name": "select-between-angle"}],
+      "cmd-k >": ["task::Spawn", {"task_name": "select-between-angle"}],
+    },
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "cmd-shift-e": "workspace::CloseActiveDock",
+      "cmd-k 0": "project_panel::CollapseAllEntries",
+      "cmd-k cmd-0": "project_panel::CollapseAllEntries",
+      "space": "project_panel::Open",
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "enter": "project_panel::OpenPermanent",
+    },
+  },
+  {
+    "context": "GitPanel && ChangesList",
+    "bindings": {
+      "down": [
+        "action::Sequence",
+        [
+          "menu::SelectNext",
+          "menu::Confirm",
+          "pane::RevealInProjectPanel",
+          "git_panel::FocusChanges",
+        ],
+      ],
+      "up": [
+        "action::Sequence",
+        [
+          "menu::SelectPrevious",
+          "menu::Confirm",
+          "pane::RevealInProjectPanel",
+          "git_panel::FocusChanges",
+        ],
+      ],
+    },
+  },
+  {
+    "context": "Editor && vim_mode == insert",
+    "bindings": {
+      // "j k": "vim::NormalBefore"
+    },
+  }
+]
