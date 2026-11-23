@@ -9,29 +9,55 @@
 //! The shell sends `project_diff::ShowFile {"path"}` to scroll to a file (the git panel's
 //! arrow keys do that). The rest is the keymap's `ProjectDiff` section: moving by line,
 //! page, hunk and file, `project_diff::OpenFile` to open the file at the line under the
-//! cursor, and staging the file under the cursor (`git::ToggleStaged`, `git::StageFile`,
-//! `git::UnstageFile`, `git::StageAll`, `git::UnstageAll`).
+//! cursor, staging the file under the cursor (`git::ToggleStaged`, `git::StageFile`,
+//! `git::UnstageFile`, `git::StageAll`, `git::UnstageAll`), discarding it
+//! (`git::RestoreAndNext`, which asks first and then shows the next file) and the commit
+//! keys, which take you to the git panel's message box.
 //!
-//! The diff is read on a background thread and read again when git or the files change.
+//! # How it is built
+//!
+//! The diff against HEAD (untracked files as new ones) is read on a worker thread together
+//! with the syntax colours of every line (each hunk is coloured as a snippet of its file:
+//! the new side for added and context lines, the old side for removed ones). It is read
+//! again when git or the files change; the cursor stays on the same line and at the same
+//! height on screen. A file that is binary, too large for git's reader or over
+//! [`MAX_FILE_ROWS`] lines is summarised in one row instead of dumped.
 
 use std::any::Any;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use bakedit_core::{Action, KeyEvent, MouseButton, MouseEvent, MouseKind, Rgb, Theme};
-use bakedit_git::{DiffLineKind, DiffStatus, DiffTarget, FileDiff};
+use bakedit_git::{DiffLineKind, DiffStatus, DiffTarget, FileDiff, StageState};
+use bakedit_syntax::{CaptureId, Highlighter, LineBreaks, LineHighlights, StyleCache};
 use ratatui::layout::Rect;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::background::Task;
 use crate::chrome::Tab;
 use crate::icons::file_icon;
+use crate::paint::{self, ScrollMarks};
+use crate::panels::git::{request_discard, Discarding};
 use crate::settings::Icons;
-use crate::ui::{Canvas, Style};
+use crate::ui::{self, Canvas, Style};
 use crate::view::{Context, Cursor, Cx, Effect, FsChange, Item, RenderCx, View};
+use crate::workspace::{Focus, PanelId};
 
 /// Lines a wheel step scrolls.
 const WHEEL_ROWS: usize = 3;
-/// Columns of each line-number column.
-const NUMBER_WIDTH: u16 = 5;
+/// Columns a sideways wheel step scrolls.
+const WHEEL_COLUMNS: usize = 6;
+/// A file with more changed lines than this is summarised, not shown.
+const MAX_FILE_ROWS: usize = 4000;
+/// After this many rows the remaining files are only listed.
+const MAX_ROWS: usize = 120_000;
+/// Files longer than this are not coloured.
+const MAX_HIGHLIGHT_LINES: usize = 6000;
+const TAB: usize = 4;
+
+type Spans = Vec<(Range<usize>, CaptureId)>;
+/// A running discard and the paths it touches.
+type DiscardJob = (Task<Result<String, String>>, Vec<PathBuf>);
 
 /// One row of the drawn diff.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +66,7 @@ enum DiffRow {
     File(usize),
     /// A hunk's `@@ ... @@` line.
     Hunk { file: usize, header: String },
-    Line { file: usize, kind: DiffLineKind, old: Option<u32>, new: Option<u32>, text: String },
+    Line { file: usize, kind: DiffLineKind, old: Option<u32>, new: Option<u32>, text: String, spans: Spans },
     /// Why a file has no lines to show (binary, too large).
     Note { file: usize, text: String },
     /// The blank row after a file.
@@ -56,11 +82,30 @@ impl DiffRow {
     }
 }
 
+/// What the worker thread hands over.
+struct Loaded {
+    files: Vec<FileDiff>,
+    rows: Vec<DiffRow>,
+    /// Columns of a line number: as wide as the longest in the diff (at least 3).
+    number_width: u16,
+}
+
+/// Where the cursor was when the diff was read again, to put it back.
+struct Anchor {
+    path: PathBuf,
+    kind: Option<DiffLineKind>,
+    old: Option<u32>,
+    new: Option<u32>,
+    /// Rows between the top of the view and the cursor.
+    offset: usize,
+}
+
 /// The project diff.
 pub struct ProjectDiff {
     files: Vec<FileDiff>,
     rows: Vec<DiffRow>,
-    task: Option<Task<Result<Vec<FileDiff>, String>>>,
+    number_width: u16,
+    task: Option<Task<Result<Loaded, String>>>,
     /// The git generation the diff was last read at.
     generation: Option<u64>,
     /// Files changed on disk since the diff was read.
@@ -68,10 +113,16 @@ pub struct ProjectDiff {
     error: Option<String>,
     cursor: usize,
     scroll: usize,
+    left: usize,
     height: usize,
     area: Rect,
     /// A file to scroll to once the diff has arrived.
     wanted: Option<PathBuf>,
+    /// A discard that was confirmed: the file index to land on when its file is gone.
+    after_discard: Option<(usize, PathBuf)>,
+    discards: Vec<DiscardJob>,
+    styles: StyleCache,
+    styles_theme: String,
 }
 
 fn status_letter(status: DiffStatus) -> &'static str {
@@ -95,26 +146,99 @@ fn status_color(status: DiffStatus, theme: &Theme) -> Rgb {
     }
 }
 
-fn build_rows(files: &[FileDiff]) -> Vec<DiffRow> {
+fn checkbox_width(icons: Icons) -> u16 {
+    match icons {
+        Icons::Nerd => 1,
+        Icons::Ascii => 3,
+    }
+}
+
+/// The colours of each line of `text`, as spans of byte columns.
+fn highlight_lines(highlighter: &mut Highlighter, language: &'static bakedit_syntax::Language, text: &str) -> Option<LineHighlights> {
+    let spans = highlighter.highlight(language, text, None).ok()?;
+    Some(LineHighlights::with_line_breaks(text, &spans, LineBreaks::Lf))
+}
+
+fn spans_of(lines: &Option<LineHighlights>, index: usize) -> Spans {
+    lines.as_ref().map(|lines| lines.spans_for_line(index).to_vec()).unwrap_or_default()
+}
+
+fn note_for(file: &FileDiff) -> Option<String> {
+    let changed: usize = file.hunks.iter().map(|hunk| hunk.lines.len()).sum();
+    if file.binary {
+        Some("Binary file: not shown".to_string())
+    } else if file.too_large {
+        Some("Too large to show here: open the file to read it".to_string())
+    } else if changed > MAX_FILE_ROWS {
+        Some(format!("{changed} lines: too long to show here, open the file to read it"))
+    } else if file.hunks.is_empty() {
+        Some(match (file.old_mode, file.new_mode, file.status) {
+            (Some(old), Some(new), _) if old != new => format!("File mode changed from {old:o} to {new:o}"),
+            (_, _, DiffStatus::Renamed) => "Renamed without changes".to_string(),
+            (_, _, DiffStatus::Deleted) => "Empty file deleted".to_string(),
+            (_, _, DiffStatus::Added | DiffStatus::Untracked) => "Empty file".to_string(),
+            _ => "No changes to show".to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+/// The rows of every file, coloured. Runs on a worker thread.
+fn build(files: Vec<FileDiff>) -> Loaded {
     let mut rows = Vec::new();
+    let mut highlighter = Highlighter::new();
+    let mut widest = 0u32;
     for (index, file) in files.iter().enumerate() {
         rows.push(DiffRow::File(index));
-        if file.binary {
-            rows.push(DiffRow::Note { file: index, text: "Binary file".to_string() });
-        } else if file.too_large {
-            rows.push(DiffRow::Note { file: index, text: "Too large to show".to_string() });
+        if rows.len() > MAX_ROWS {
+            rows.push(DiffRow::Note { file: index, text: "Not shown: the diff is too long. Commit some of it first".to_string() });
+            rows.push(DiffRow::Gap);
+            continue;
         }
+        if let Some(text) = note_for(file) {
+            rows.push(DiffRow::Note { file: index, text });
+            rows.push(DiffRow::Gap);
+            continue;
+        }
+        let language = bakedit_syntax::language_for_path(&file.path, None).filter(|language| language.has_grammar());
+        let total: usize = file.hunks.iter().map(|hunk| hunk.lines.len()).sum();
+        let colour = language.filter(|_| total <= MAX_HIGHLIGHT_LINES);
         for hunk in &file.hunks {
             let header = format!("@@ -{},{} +{},{} @@ {}", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header.trim());
             rows.push(DiffRow::Hunk { file: index, header: header.trim_end().to_string() });
+            let text_of = |line: &bakedit_git::DiffLine| line.text.trim_end_matches(['\r', '\n']).to_string();
+            // Each hunk is coloured as a snippet: the new side and the old side apart.
+            let side = |keep: DiffLineKind| -> String {
+                let lines: Vec<String> = hunk.lines.iter().filter(|l| l.kind == DiffLineKind::Context || l.kind == keep).map(text_of).collect();
+                lines.join("\n")
+            };
+            let new_lines = colour.and_then(|language| highlight_lines(&mut highlighter, language, &side(DiffLineKind::Added)));
+            let old_lines = colour.and_then(|language| highlight_lines(&mut highlighter, language, &side(DiffLineKind::Removed)));
+            let (mut new_index, mut old_index) = (0, 0);
             for line in &hunk.lines {
-                let text = line.text.trim_end_matches(['\r', '\n']).to_string();
-                rows.push(DiffRow::Line { file: index, kind: line.kind, old: line.old_no, new: line.new_no, text });
+                widest = widest.max(line.old_no.unwrap_or(0)).max(line.new_no.unwrap_or(0));
+                let spans = match line.kind {
+                    DiffLineKind::Context => {
+                        new_index += 1;
+                        old_index += 1;
+                        spans_of(&new_lines, new_index - 1)
+                    }
+                    DiffLineKind::Added => {
+                        new_index += 1;
+                        spans_of(&new_lines, new_index - 1)
+                    }
+                    DiffLineKind::Removed => {
+                        old_index += 1;
+                        spans_of(&old_lines, old_index - 1)
+                    }
+                };
+                rows.push(DiffRow::Line { file: index, kind: line.kind, old: line.old_no, new: line.new_no, text: text_of(line), spans });
             }
         }
         rows.push(DiffRow::Gap);
     }
-    rows
+    Loaded { files, rows, number_width: (widest.to_string().len() as u16).max(3) }
 }
 
 impl ProjectDiff {
@@ -123,15 +247,21 @@ impl ProjectDiff {
         let mut diff = ProjectDiff {
             files: Vec::new(),
             rows: Vec::new(),
+            number_width: 3,
             task: None,
             generation: None,
             stale: true,
             error: None,
             cursor: 0,
             scroll: 0,
+            left: 0,
             height: 0,
             area: Rect::default(),
             wanted: None,
+            after_discard: None,
+            discards: Vec::new(),
+            styles: StyleCache::new(),
+            styles_theme: String::new(),
         };
         diff.reload(cx);
         diff
@@ -150,24 +280,74 @@ impl ProjectDiff {
         };
         self.generation = Some(generation);
         self.stale = false;
-        self.task = Some(cx.project.spawn(move || repo.diff_files(DiffTarget::HeadToWorktree).map_err(|error| error.to_string())));
+        self.task = Some(cx.project.spawn(move || repo.diff_files(DiffTarget::HeadToWorktree).map(build).map_err(|error| error.to_string())));
     }
 
-    fn take_result(&mut self, files: Result<Vec<FileDiff>, String>) {
-        let at = self.rows.get(self.cursor).and_then(DiffRow::file).and_then(|file| self.files.get(file)).map(|f| f.path.clone());
-        match files {
-            Ok(files) => {
-                self.files = files;
+    fn anchor(&self) -> Option<Anchor> {
+        let row = self.rows.get(self.cursor)?;
+        let file = self.files.get(row.file()?)?;
+        let (kind, old, new) = match row {
+            DiffRow::Line { kind, old, new, .. } => (Some(*kind), *old, *new),
+            _ => (None, None, None),
+        };
+        Some(Anchor { path: file.path.clone(), kind, old, new, offset: self.cursor.saturating_sub(self.scroll) })
+    }
+
+    /// The row to put the cursor on after a re-read: the same line of the same file, else
+    /// the same file's header.
+    fn row_for(&self, anchor: &Anchor) -> Option<usize> {
+        let file = self.files.iter().position(|file| file.path == anchor.path)?;
+        let header = self.rows.iter().position(|row| matches!(row, DiffRow::File(f) if *f == file))?;
+        if anchor.kind.is_none() {
+            return Some(header);
+        }
+        let same = |row: &DiffRow| matches!(row, DiffRow::Line { file: f, kind, old, new, .. } if *f == file && Some(*kind) == anchor.kind && *old == anchor.old && *new == anchor.new);
+        // Lines above a change keep their numbers; below it only one side may still match.
+        let near = |row: &DiffRow| matches!(row, DiffRow::Line { file: f, kind, old, new, .. } if *f == file && Some(*kind) == anchor.kind && (anchor.new.is_some() && *new == anchor.new || anchor.new.is_none() && *old == anchor.old));
+        Some(self.rows.iter().position(same).or_else(|| self.rows.iter().position(near)).unwrap_or(header))
+    }
+
+    fn take_result(&mut self, loaded: Result<Loaded, String>) {
+        let anchor = self.anchor();
+        match loaded {
+            Ok(loaded) => {
+                self.files = loaded.files;
+                self.rows = loaded.rows;
+                self.number_width = loaded.number_width;
                 self.error = None;
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
         }
-        self.rows = build_rows(&self.files);
-        // Stay on the same file when the diff is read again under the cursor.
-        let wanted = self.wanted.take().or(at);
-        match wanted.and_then(|path| self.file_row(&path)) {
-            Some(row) => self.cursor = row,
-            None => self.cursor = self.cursor.min(self.rows.len().saturating_sub(1)),
+        if let Some(path) = self.wanted.take() {
+            if let Some(row) = self.file_row(&path) {
+                self.cursor = row;
+                self.scroll = row;
+                return;
+            }
+            self.wanted = Some(path);
+        }
+        if let Some((index, path)) = self.after_discard.take() {
+            if self.files.iter().all(|file| file.path != path) {
+                let next = index.min(self.files.len().saturating_sub(1));
+                self.cursor = self.rows.iter().position(|row| matches!(row, DiffRow::File(f) if *f == next)).unwrap_or(0);
+                self.scroll = self.cursor;
+                return;
+            }
+            // Read before the discard finished: wait for the next read.
+            self.after_discard = Some((index, path));
+        }
+        match anchor.and_then(|anchor| self.row_for(&anchor).map(|row| (row, anchor.offset))) {
+            Some((row, offset)) => {
+                self.cursor = row;
+                self.scroll = row.saturating_sub(offset);
+            }
+            None => {
+                self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+                self.scroll = self.scroll.min(self.cursor);
+            }
         }
     }
 
@@ -197,14 +377,22 @@ impl ProjectDiff {
         }
     }
 
+    fn file_index_under_cursor(&self) -> Option<usize> {
+        self.rows.get(self.cursor).and_then(DiffRow::file)
+    }
+
     fn file_under_cursor(&self) -> Option<&FileDiff> {
-        self.rows.get(self.cursor).and_then(DiffRow::file).and_then(|file| self.files.get(file))
+        self.files.get(self.file_index_under_cursor()?)
     }
 
     /// Where `project_diff::OpenFile` goes: the file and the line of the cursor row on the
     /// new side (a removed line opens where it was).
-    fn open_target(&self, cx: &Cx<'_>) -> Option<Effect> {
+    fn open_target(&self, cx: &mut Cx<'_>) -> Option<Effect> {
         let file = self.file_under_cursor()?;
+        if file.status == DiffStatus::Deleted {
+            cx.error(format!("{} was deleted: there is nothing to open", file.path.display()));
+            return None;
+        }
         let path = cx.project.abs_path(&file.path)?;
         // The first line of the new side from the cursor on, within this file.
         let mut line = None;
@@ -222,8 +410,12 @@ impl ProjectDiff {
         Some(Effect::OpenFile { path, line, column: None, preview: false, focus: true })
     }
 
-    fn stage_file(&self, stage: bool, cx: &mut Cx<'_>) -> bool {
-        let Some(file) = self.file_under_cursor() else { return false };
+    fn stage_state(&self, file: &FileDiff, cx: &RenderCx<'_>) -> StageState {
+        cx.project.status().and_then(|status| status.entry(&file.path)).map(|entry| entry.stage_state()).unwrap_or(StageState::Unstaged)
+    }
+
+    fn stage_file(&self, index: usize, stage: bool, cx: &mut Cx<'_>) -> bool {
+        let Some(file) = self.files.get(index) else { return false };
         let paths = match &file.old_path {
             Some(old) => vec![file.path.clone(), old.clone()],
             None => vec![file.path.clone()],
@@ -239,75 +431,185 @@ impl ProjectDiff {
         true
     }
 
-    fn draw_row(&self, canvas: &mut Canvas<'_>, area: Rect, y: u16, index: usize, cx: &RenderCx<'_>) {
-        let theme = cx.theme;
-        let selected = index == self.cursor && cx.focused;
-        let gutter = NUMBER_WIDTH * 2 + 1;
-        match &self.rows[index] {
-            DiffRow::File(file) => {
-                let file = &self.files[*file];
-                let bg = if selected { theme.element_selected } else { theme.surface };
-                canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
-                let name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let (glyph, color) = file_icon(cx.settings, &name, false, false);
-                let mut x = area.x + 1;
-                x += canvas.text(x, y, &glyph, Style::colors(color, bg), 2) + 1;
-                // The counts go at the right edge, the path gets what is left.
-                let counts = format!("+{} −{}", file.additions(), file.deletions());
-                let counts_width = crate::ui::width(&counts) as u16;
-                let letter = status_letter(file.status);
-                x += canvas.text(x, y, letter, Style::colors(status_color(file.status, theme), bg).bold(), 1) + 1;
-                let path = match &file.old_path {
-                    Some(old) => format!("{} → {}", old.display(), file.path.display()),
-                    None => file.path.display().to_string(),
-                };
-                let room = area.right().saturating_sub(x + counts_width + 3);
-                canvas.text(x, y, &crate::ui::truncate_start(&path, room as usize), Style::colors(theme.text, bg).bold(), room);
-                if area.width > counts_width + 2 {
-                    let right = area.right() - 1;
-                    let added = format!("+{}", file.additions());
-                    let removed = format!("−{}", file.deletions());
-                    canvas.text_right(right, y, &removed, Style::colors(theme.deleted, bg));
-                    canvas.text_right(right - crate::ui::width(&removed) as u16 - 1, y, &added, Style::colors(theme.created, bg));
+    fn toggle_staged(&self, index: usize, cx: &mut Cx<'_>) -> bool {
+        let Some(file) = self.files.get(index) else { return false };
+        let staged = cx.project.status().and_then(|status| status.entry(&file.path)).is_some_and(|entry| entry.is_fully_staged());
+        self.stage_file(index, !staged, cx)
+    }
+
+    /// `git::RestoreAndNext`: discard the file under the cursor (asking first) and show the
+    /// file after it.
+    fn restore_and_next(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let skip_prompt = action.arg_bool("skip_prompt").unwrap_or(false);
+        let target = match action.arg_str("path") {
+            Some(path) => self.files.iter().position(|file| file.path == Path::new(path)),
+            None => self.file_index_under_cursor(),
+        };
+        let Some(index) = target else { return false };
+        let path = self.files[index].path.clone();
+        match request_discard(cx, &path, skip_prompt, "git::RestoreAndNext") {
+            Discarding::Refused => false,
+            Discarding::Asked => true,
+            Discarding::Started { task, paths } => {
+                self.after_discard = Some((index, path));
+                self.discards.push((task, paths));
+                true
+            }
+        }
+    }
+
+    /// The commit keys: the message is written in the git panel.
+    fn commit_in_panel(&self, action: &Action, cx: &mut Cx<'_>) {
+        cx.push(Effect::ShowPanel(PanelId::Git));
+        cx.push(Effect::Focus(Focus::Panel(PanelId::Git)));
+        cx.push(Effect::Dispatch(Action::new(&action.name)));
+    }
+
+    // ---- drawing -----------------------------------------------------------------------
+
+    /// Draw `text` at `(x, y)` in `width` columns: tabs expanded, syntax colours from
+    /// `spans` (byte ranges), scrolled `self.left` columns to the right.
+    #[allow(clippy::too_many_arguments)] // a drawing call: position, extent, text, colours
+    fn draw_code(&mut self, canvas: &mut Canvas<'_>, x: u16, y: u16, width: u16, text: &str, spans: &Spans, bg: Rgb, theme: &Theme) {
+        let right = self.left + width as usize;
+        let mut col = 0usize;
+        let mut span = 0usize;
+        for (byte, grapheme) in text.grapheme_indices(true) {
+            if col >= right {
+                break;
+            }
+            while span < spans.len() && spans[span].0.end <= byte {
+                span += 1;
+            }
+            let mut style = Style::colors(theme.editor_fg, bg);
+            if let Some((range, capture)) = spans.get(span) {
+                if range.start <= byte {
+                    if let Some(syntax) = self.styles.style(theme, *capture) {
+                        style.fg = syntax.color.or(style.fg);
+                        style.italic = syntax.italic;
+                        style.bold = syntax.bold;
+                    }
                 }
             }
-            DiffRow::Hunk { header, .. } => {
-                let bg = if selected { theme.element_selected } else { theme.editor_bg };
-                canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
-                canvas.text_truncated(area.x + gutter + 1, y, header, Style::colors(theme.text_muted, bg), area.width.saturating_sub(gutter + 2));
+            let (cells, shown) = if grapheme == "\t" {
+                (TAB - col % TAB, " ")
+            } else if grapheme.chars().all(char::is_control) {
+                (1, "·")
+            } else {
+                (ui::width(grapheme).max(1), grapheme)
+            };
+            for cell in 0..cells {
+                let cell_col = col + cell;
+                if cell_col < self.left || cell_col >= right {
+                    continue;
+                }
+                // A wide character cut by either edge is left out.
+                if cell == 0 && col >= self.left && col + cells <= right {
+                    canvas.put(x + (cell_col - self.left) as u16, y, shown, style);
+                } else if cell > 0 || col < self.left {
+                    canvas.put(x + (cell_col - self.left) as u16, y, " ", Style::new().on(bg));
+                }
             }
-            DiffRow::Line { kind, old, new, text, .. } => {
+            col += cells;
+        }
+    }
+
+    fn draw_file_header(&self, canvas: &mut Canvas<'_>, area: Rect, y: u16, index: usize, selected: bool, cx: &RenderCx<'_>) {
+        let theme = cx.theme;
+        let file = &self.files[index];
+        let bg = if selected { theme.element_selected } else { theme.surface };
+        canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
+        let mut x = area.x + 1;
+        let (box_glyph, box_color) = match (cx.settings.icons, self.stage_state(file, cx)) {
+            (Icons::Nerd, StageState::Staged) => ("\u{f14a}", theme.text_accent),
+            (Icons::Nerd, StageState::PartiallyStaged) => ("\u{f147}", theme.text_accent),
+            (Icons::Nerd, StageState::Unstaged) => ("\u{f096}", theme.text_muted),
+            (Icons::Ascii, StageState::Staged) => ("[x]", theme.text_accent),
+            (Icons::Ascii, StageState::PartiallyStaged) => ("[-]", theme.text_accent),
+            (Icons::Ascii, StageState::Unstaged) => ("[ ]", theme.text_muted),
+        };
+        canvas.text(x, y, box_glyph, Style::colors(box_color, bg), checkbox_width(cx.settings.icons));
+        x += checkbox_width(cx.settings.icons) + 1;
+        let name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (glyph, color) = file_icon(cx.settings, &name, false, false);
+        x += canvas.text(x, y, &glyph, Style::colors(color, bg), 2) + 1;
+        x += canvas.text(x, y, status_letter(file.status), Style::colors(status_color(file.status, theme), bg).bold(), 1) + 1;
+        // The counts sit at the right edge, the path gets what is left.
+        let (added, removed) = (file.additions(), file.deletions());
+        let removed_text = format!("−{removed}");
+        let added_text = format!("+{added}");
+        let mut right = area.right() - 1;
+        if area.width > 24 && (added > 0 || removed > 0) {
+            if removed > 0 {
+                right -= canvas.text_right(right, y, &removed_text, Style::colors(theme.deleted, bg)) + 1;
+            }
+            if added > 0 {
+                right -= canvas.text_right(right, y, &added_text, Style::colors(theme.created, bg)) + 1;
+            }
+        }
+        let room = right.saturating_sub(x);
+        let used = canvas.text_truncated(x, y, &name, Style::colors(theme.text, bg).bold(), room);
+        let mut shown = match &file.old_path {
+            Some(old) => format!("← {}", old.display()),
+            None => file.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
+        if file.old_path.is_none() && shown.is_empty() {
+            return;
+        }
+        let left = room.saturating_sub(used + 2) as usize;
+        if left >= 4 {
+            shown = ui::truncate_start(&shown, left);
+            canvas.text(x + used + 2, y, &shown, Style::colors(theme.text_muted, bg), left as u16);
+        }
+    }
+
+    fn draw_row(&mut self, canvas: &mut Canvas<'_>, area: Rect, y: u16, index: usize, cx: &RenderCx<'_>) {
+        let theme = cx.theme;
+        // A focused diff shows the cursor row strongly, an unfocused one faintly.
+        let is_cursor = index == self.cursor;
+        let cursor_bg = if cx.focused { theme.element_selected } else { theme.ghost_element_selected };
+        let nw = self.number_width;
+        let text_x = area.x + 1 + nw * 2 + 4;
+        let text_w = area.right().saturating_sub(text_x + 1);
+        match self.rows[index].clone() {
+            DiffRow::File(file) => self.draw_file_header(canvas, area, y, file, is_cursor && cx.focused, cx),
+            DiffRow::Hunk { header, .. } => {
+                let bg = if is_cursor { cursor_bg } else { theme.editor_bg };
+                canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
+                let numbers_end = area.x + 1 + nw * 2 + 2;
+                canvas.text_truncated(numbers_end, y, &header, Style::colors(theme.text_muted, bg).italic(), area.width.saturating_sub(numbers_end - area.x + 1));
+            }
+            DiffRow::Line { kind, old, new, text, spans, .. } => {
                 let tint = match kind {
                     DiffLineKind::Added => Some(theme.created),
                     DiffLineKind::Removed => Some(theme.deleted),
                     DiffLineKind::Context => None,
                 };
-                let mut bg = tint.map(|t| t.lerp(theme.editor_bg, 0.82)).unwrap_or(theme.editor_bg);
-                if selected {
-                    bg = theme.element_selected;
-                }
-                canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
-                let numbers = Style::colors(theme.line_number, bg);
+                let line_bg = tint.map(|t| t.lerp(theme.editor_bg, 0.86)).unwrap_or(theme.editor_bg);
+                let gutter_bg = tint.map(|t| t.lerp(theme.editor_bg, 0.72)).unwrap_or(theme.editor_bg);
+                let (line_bg, gutter_bg) = if is_cursor { (line_bg.lerp(cursor_bg, 0.75), gutter_bg.lerp(cursor_bg, 0.75)) } else { (line_bg, gutter_bg) };
+                canvas.fill(Rect::new(area.x, y, area.width, 1), line_bg);
+                canvas.fill(Rect::new(area.x, y, text_x - area.x - 1, 1), gutter_bg);
+                let number_color = if is_cursor { theme.active_line_number } else { theme.line_number };
+                let numbers = Style::colors(number_color, gutter_bg);
                 if let Some(old) = old {
-                    canvas.text_right(area.x + NUMBER_WIDTH, y, &old.to_string(), numbers);
+                    canvas.text_right(area.x + 1 + nw, y, &old.to_string(), numbers);
                 }
                 if let Some(new) = new {
-                    canvas.text_right(area.x + NUMBER_WIDTH * 2, y, &new.to_string(), numbers);
+                    canvas.text_right(area.x + 2 + nw * 2, y, &new.to_string(), numbers);
                 }
                 let marker = match kind {
                     DiffLineKind::Added => "+",
-                    DiffLineKind::Removed => "-",
+                    DiffLineKind::Removed => "−",
                     DiffLineKind::Context => " ",
                 };
-                let marker_color = tint.unwrap_or(theme.text_muted);
-                canvas.text(area.x + gutter, y, marker, Style::colors(marker_color, bg), 1);
-                let x = area.x + gutter + 2;
-                canvas.text(x, y, text, Style::colors(theme.editor_fg, bg), area.right().saturating_sub(x));
+                canvas.text(area.x + 3 + nw * 2, y, marker, Style::colors(tint.unwrap_or(theme.text_muted), gutter_bg).bold(), 1);
+                self.draw_code(canvas, text_x, y, text_w, &text, &spans, line_bg, theme);
             }
             DiffRow::Note { text, .. } => {
-                let bg = if selected { theme.element_selected } else { theme.editor_bg };
+                let bg = if is_cursor { cursor_bg } else { theme.editor_bg };
                 canvas.fill(Rect::new(area.x, y, area.width, 1), bg);
-                canvas.text_truncated(area.x + gutter + 2, y, text, Style::colors(theme.text_muted, bg).italic(), area.width.saturating_sub(gutter + 3));
+                canvas.text_truncated(area.x + 3, y, &text, Style::colors(theme.text_muted, bg).italic(), area.width.saturating_sub(4));
             }
             DiffRow::Gap => {}
         }
@@ -320,32 +622,62 @@ impl View for ProjectDiff {
         canvas.fill(area, theme.editor_bg);
         self.area = area;
         self.height = area.height as usize;
-        if area.width < 4 || area.height == 0 {
+        if area.width < 8 || area.height == 0 {
             return None;
         }
+        if self.styles_theme != theme.name {
+            self.styles = StyleCache::new();
+            self.styles_theme = theme.name.clone();
+        }
         let muted = Style::colors(theme.text_muted, theme.editor_bg);
-        let message = if cx.project.repo().is_none() {
-            Some("Not a git repository: there is nothing to compare with".to_string())
+        let text = Style::colors(theme.text, theme.editor_bg);
+        let message: Option<(&str, String)> = if cx.project.repo().is_none() {
+            Some(("Not a git repository", "There is nothing to compare with. Run git init in the terminal to track changes".to_string()))
         } else if let Some(error) = &self.error {
-            Some(format!("Could not read the changes: {error}"))
-        } else if self.rows.is_empty() && self.task.is_some() {
-            Some("Reading the changes…".to_string())
+            Some(("Could not read the changes", error.clone()))
+        } else if self.rows.is_empty() && (self.task.is_some() || self.generation.is_none()) {
+            Some(("Reading the changes…", String::new()))
         } else if self.rows.is_empty() {
-            Some("No changes: the working tree matches the last commit".to_string())
+            Some(("No changes", "The working tree matches the last commit. Edit a file and it appears here".to_string()))
         } else {
             None
         };
-        if let Some(message) = message {
-            canvas.text_truncated(area.x + 2, area.y + 1.min(area.height - 1), &message, muted, area.width.saturating_sub(4));
+        if let Some((title, detail)) = message {
+            let top = area.y + 1.min(area.height - 1);
+            let width = area.width.saturating_sub(4);
+            canvas.text_truncated(area.x + 2, top, title, text, width);
+            if !detail.is_empty() && top + 1 < area.bottom() {
+                canvas.text_truncated(area.x + 2, top + 1, &detail, muted, width);
+            }
             return None;
         }
+        let last = self.rows.len().saturating_sub(1);
+        self.cursor = self.cursor.min(last);
         if self.cursor < self.scroll {
             self.scroll = self.cursor;
         } else if self.cursor >= self.scroll + self.height {
             self.scroll = self.cursor + 1 - self.height;
         }
+        self.scroll = self.scroll.min(last);
+        let scrollbar = self.rows.len() > self.height;
+        let body = Rect::new(area.x, area.y, area.width - u16::from(scrollbar), area.height);
         for (offset, index) in (self.scroll..self.rows.len()).take(self.height).enumerate() {
-            self.draw_row(canvas, area, area.y + offset as u16, index, cx);
+            self.draw_row(canvas, body, area.y + offset as u16, index, cx);
+        }
+        if scrollbar {
+            let marks = ScrollMarks {
+                marks: self
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, row)| match row {
+                        DiffRow::File(f) => Some((i, status_color(self.files[*f].status, theme))),
+                        _ => None,
+                    })
+                    .collect(),
+                cursor_line: Some(self.cursor),
+            };
+            paint::scrollbar(canvas, area.right() - 1, area.y, area.height, self.rows.len(), self.scroll, self.height, &marks, theme);
         }
         None
     }
@@ -382,21 +714,24 @@ impl View for ProjectDiff {
             }
             "project_diff::OpenFile" => match self.open_target(cx) {
                 Some(effect) => cx.push(effect),
-                None => return false,
+                None => return self.file_under_cursor().is_some(),
             },
             "git::ToggleStaged" => {
-                let Some(file) = self.file_under_cursor() else { return false };
-                let staged = cx.project.status_of(&cx.project.abs_path(&file.path).unwrap_or_default()).is_some_and(|e| e.is_fully_staged());
-                return self.stage_file(!staged, cx);
+                let Some(index) = self.file_index_under_cursor() else { return false };
+                return self.toggle_staged(index, cx);
             }
-            "git::StageFile" => return self.stage_file(true, cx),
-            "git::UnstageFile" => return self.stage_file(false, cx),
+            "git::StageFile" | "git::UnstageFile" => {
+                let Some(index) = self.file_index_under_cursor() else { return false };
+                return self.stage_file(index, action.name == "git::StageFile", cx);
+            }
             "git::StageAll" => {
                 let _ = cx.project.git_job("Stage all", |repo| repo.stage_all().map(|()| String::new()));
             }
             "git::UnstageAll" => {
                 let _ = cx.project.git_job("Unstage all", |repo| repo.unstage_all().map(|()| String::new()));
             }
+            "git::RestoreAndNext" => return self.restore_and_next(action, cx),
+            "git::Commit" | "git::Amend" => self.commit_in_panel(action, cx),
             _ => return false,
         }
         true
@@ -406,22 +741,34 @@ impl View for ProjectDiff {
         false
     }
 
-    fn handle_mouse(&mut self, event: &MouseEvent, _area: Rect, _cx: &mut Cx<'_>) -> bool {
+    fn handle_mouse(&mut self, event: &MouseEvent, _area: Rect, cx: &mut Cx<'_>) -> bool {
+        let keep_cursor_visible = |diff: &mut ProjectDiff| {
+            diff.cursor = diff.cursor.clamp(diff.scroll, (diff.scroll + diff.height).saturating_sub(1).max(diff.scroll));
+        };
         match event.kind {
             MouseKind::ScrollDown => {
                 let last = self.rows.len().saturating_sub(self.height.max(1));
                 self.scroll = (self.scroll + WHEEL_ROWS).min(last);
-                self.cursor = self.cursor.clamp(self.scroll, (self.scroll + self.height).saturating_sub(1).max(self.scroll));
+                keep_cursor_visible(self);
             }
             MouseKind::ScrollUp => {
                 self.scroll = self.scroll.saturating_sub(WHEEL_ROWS);
-                self.cursor = self.cursor.clamp(self.scroll, (self.scroll + self.height).saturating_sub(1).max(self.scroll));
+                keep_cursor_visible(self);
             }
+            MouseKind::ScrollRight => self.left += WHEEL_COLUMNS,
+            MouseKind::ScrollLeft => self.left = self.left.saturating_sub(WHEEL_COLUMNS),
             MouseKind::Press(MouseButton::Left) => {
-                if let Some(row) = event.row.checked_sub(self.area.y) {
-                    let index = self.scroll + row as usize;
-                    if index < self.rows.len() {
-                        self.cursor = index;
+                let Some(row) = event.row.checked_sub(self.area.y) else { return true };
+                let index = self.scroll + row as usize;
+                if index >= self.rows.len() {
+                    return true;
+                }
+                self.cursor = index;
+                // The checkbox on a file's header stages or unstages the file.
+                if let DiffRow::File(file) = self.rows[index] {
+                    let first = self.area.x + 1;
+                    if event.col >= first && event.col < first + checkbox_width(cx.settings.icons) {
+                        self.toggle_staged(file, cx);
                     }
                 }
             }
@@ -442,6 +789,20 @@ impl View for ProjectDiff {
         }
         if finished {
             self.task = None;
+        }
+        let mut index = 0;
+        while index < self.discards.len() {
+            let result = self.discards[index].0.poll();
+            if result.is_none() && !self.discards[index].0.is_finished() {
+                index += 1;
+                continue;
+            }
+            let (_, paths) = self.discards.remove(index);
+            if result.is_some_and(|result| result.is_ok()) {
+                cx.push(Effect::PathsChanged(paths));
+            } else {
+                self.after_discard = None;
+            }
         }
         self.reload(cx);
         dirty
@@ -504,6 +865,24 @@ mod tests {
         (harness, diff)
     }
 
+    fn act(harness: &mut Harness, diff: &mut ProjectDiff, name: &str) -> bool {
+        diff.handle_action(&Action::new(name), &mut harness.cx())
+    }
+
+    /// Tick the diff and the project until `done`.
+    fn until(harness: &mut Harness, diff: &mut ProjectDiff, what: &str, done: impl Fn(&ProjectDiff) -> bool) {
+        let started = Instant::now();
+        loop {
+            harness.project.poll();
+            diff.tick(&mut harness.cx());
+            if done(diff) {
+                return;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "timed out waiting for: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn shows_each_file_with_its_hunks_and_counts() {
         let dir = repo();
@@ -514,10 +893,30 @@ mod tests {
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[0].contains("M a.txt") && rows[0].ends_with("+2 −1"), "{:?}", rows[0]);
         assert!(rows[1].contains("@@ -1,2 +1,3 @@"), "{:?}", rows[1]);
-        assert!(rows[2].trim_start().starts_with("1    1   one"), "{:?}", rows[2]);
-        assert!(rows[3].contains("- two"));
-        assert!(rows[4].contains("+ TWO"));
+        assert!(rows[2].trim_start().starts_with("1   1") && rows[2].ends_with("one"), "{:?}", rows[2]);
+        assert!(rows[3].contains("−") && rows[3].ends_with("two"), "{:?}", rows[3]);
+        assert!(rows[4].contains('+') && rows[4].ends_with("TWO"), "{:?}", rows[4]);
         assert!(rows.iter().any(|r| r.contains("U fresh.md")), "untracked files are listed: {text}");
+    }
+
+    #[test]
+    fn lines_are_tinted_and_coloured_by_syntax() {
+        let dir = repo();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn answer() -> u32 {\n    43\n}\n").unwrap();
+        let (harness, mut diff) = loaded(dir.path());
+        let (text, _, buf) = harness.draw(&mut diff, 70, 12);
+        let theme = &harness.theme;
+        let row_of = |needle: &str| text.lines().position(|l| l.contains(needle)).unwrap() as u16;
+        let added = row_of("43");
+        let removed = row_of("42");
+        let bg_at = |y: u16, x: u16| buf[(x, y)].bg;
+        let tinted = |color: Rgb| ui::color(color.lerp(theme.editor_bg, 0.86));
+        assert_eq!(bg_at(added, 40), tinted(theme.created), "added lines have the created tint");
+        assert_eq!(bg_at(removed, 40), tinted(theme.deleted));
+        // `pub` is a keyword: its colour is not the plain foreground.
+        let pub_row = row_of("pub fn");
+        let x = text.lines().nth(pub_row as usize).unwrap().find("pub").unwrap() as u16;
+        assert_ne!(buf[(x, pub_row)].fg, ui::color(theme.editor_fg), "syntax colour on the keyword");
     }
 
     #[test]
@@ -526,14 +925,14 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "one\nTWO\n").unwrap();
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn answer() -> u32 {\n    43\n}\n").unwrap();
         let (mut harness, mut diff) = loaded(dir.path());
-        assert!(diff.handle_action(&Action::new("project_diff::NextFile"), &mut harness.cx()));
+        assert!(act(&mut harness, &mut diff, "project_diff::NextFile"));
         assert!(matches!(diff.rows[diff.cursor], DiffRow::File(1)));
         let show = Action::with_args("project_diff::ShowFile", json!({ "path": dir.path().join("a.txt").to_string_lossy() }));
         assert!(diff.handle_action(&show, &mut harness.cx()));
         assert_eq!(diff.cursor, 0);
-        diff.handle_action(&Action::new("project_diff::NextHunk"), &mut harness.cx());
-        diff.handle_action(&Action::new("project_diff::LineDown"), &mut harness.cx());
-        assert!(diff.handle_action(&Action::new("project_diff::OpenFile"), &mut harness.cx()));
+        act(&mut harness, &mut diff, "project_diff::NextHunk");
+        act(&mut harness, &mut diff, "project_diff::LineDown");
+        assert!(act(&mut harness, &mut diff, "project_diff::OpenFile"));
         assert_eq!(
             harness.take_effects(),
             vec![Effect::OpenFile { path: dir.path().join("a.txt"), line: Some(1), column: None, preview: false, focus: true }]
@@ -541,30 +940,126 @@ mod tests {
     }
 
     #[test]
+    fn show_file_before_the_diff_arrives_scrolls_when_it_does() {
+        let dir = repo();
+        let mut body = String::new();
+        for i in 0..40 {
+            body.push_str(&format!("line {i}\n"));
+        }
+        std::fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.path().join("big.txt"), body).unwrap();
+        let mut project = Project::open(dir.path(), crate::background::Waker::detached());
+        project.settle(Duration::from_secs(20));
+        let mut harness = Harness::with_project(project);
+        let mut diff = ProjectDiff::new(&mut harness.cx());
+        let show = Action::with_args("project_diff::ShowFile", json!({ "path": dir.path().join("big.txt").to_string_lossy() }));
+        assert!(diff.handle_action(&show, &mut harness.cx()));
+        until(&mut harness, &mut diff, "the diff", |d| !d.rows.is_empty());
+        let text = harness.draw(&mut diff, 60, 8).0;
+        assert!(text.lines().next().unwrap().contains("U big.txt"), "{text}");
+    }
+
+    #[test]
     fn a_clean_tree_and_no_repository_say_so() {
         let dir = repo();
         let (harness, mut diff) = loaded(dir.path());
-        assert!(harness.draw(&mut diff, 70, 4).0.contains("No changes: the working tree matches the last commit"));
+        let text = harness.draw(&mut diff, 80, 4).0;
+        assert!(text.contains("No changes") && text.contains("Edit a file"), "{text}");
         let plain = tempfile::tempdir().unwrap();
         let (harness, mut diff) = loaded(plain.path());
-        assert!(harness.draw(&mut diff, 70, 4).0.contains("Not a git repository"));
+        assert!(harness.draw(&mut diff, 80, 4).0.contains("Not a git repository"));
         assert_eq!(diff.kind(), "project_diff");
         assert_eq!(diff.tab(&harness.render_cx(false)).title, "Project Diff");
     }
 
     #[test]
-    fn edits_on_disk_are_read_again() {
+    fn edits_on_disk_are_read_again_and_the_cursor_stays_on_its_line() {
         let dir = repo();
         std::fs::write(dir.path().join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn answer() -> u32 {\n    43\n}\n").unwrap();
         let (mut harness, mut diff) = loaded(dir.path());
+        act(&mut harness, &mut diff, "project_diff::NextFile");
+        act(&mut harness, &mut diff, "project_diff::NextHunk");
+        act(&mut harness, &mut diff, "project_diff::LineDown");
+        act(&mut harness, &mut diff, "project_diff::LineDown");
+        let before = diff.rows[diff.cursor].clone();
+        // A line added to the first file moves everything below it down one row.
         std::fs::write(dir.path().join("a.txt"), "one\nTWO\nmore\n").unwrap();
         diff.paths_changed(&FsChange::of(vec![dir.path().join("a.txt")]), &mut harness.cx());
         assert!(diff.task.is_some(), "a fresh read started");
+        until(&mut harness, &mut diff, "the new read", |d| d.rows.iter().any(|r| matches!(r, DiffRow::Line { text, .. } if text == "more")));
+        assert_eq!(diff.rows[diff.cursor], before, "the cursor is on the same line of the same file");
+    }
+
+    #[test]
+    fn binary_and_huge_files_are_summarised() {
+        let dir = repo();
+        std::fs::write(dir.path().join("pic.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
+        let mut huge = String::new();
+        for i in 0..(MAX_FILE_ROWS + 50) {
+            huge.push_str(&format!("{i}\n"));
+        }
+        std::fs::write(dir.path().join("huge.txt"), huge).unwrap();
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let (harness, mut diff) = loaded(dir.path());
+        let text = harness.draw(&mut diff, 90, 20).0;
+        assert!(text.contains("Binary file"), "{text}");
+        assert!(text.contains("too long to show here"), "{text}");
+        assert!(text.contains("Empty file"), "{text}");
+        assert!(diff.rows.len() < 40, "no lines of the huge file were kept: {}", diff.rows.len());
+    }
+
+    #[test]
+    fn staging_and_the_commit_keys() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a.txt"), "one\nTWO\n").unwrap();
+        let (mut harness, mut diff) = loaded(dir.path());
+        assert!(act(&mut harness, &mut diff, "git::ToggleStaged"));
         let started = Instant::now();
-        while !harness.draw(&mut diff, 70, 10).0.contains("+ more") {
-            diff.tick(&mut harness.cx());
-            assert!(started.elapsed() < Duration::from_secs(20));
+        while !harness.project.status_of(&dir.path().join("a.txt")).is_some_and(|e| e.is_fully_staged()) {
+            harness.project.poll();
+            assert!(started.elapsed() < Duration::from_secs(20), "never staged");
             std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(harness.draw(&mut diff, 70, 4).0.lines().next().unwrap().contains("M a.txt"));
+        harness.take_effects();
+        assert!(act(&mut harness, &mut diff, "git::Commit"));
+        assert_eq!(
+            harness.take_effects(),
+            vec![
+                Effect::ShowPanel(PanelId::Git),
+                Effect::Focus(Focus::Panel(PanelId::Git)),
+                Effect::Dispatch(Action::new("git::Commit"))
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_and_next_asks_then_discards_and_lands_on_the_next_file() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn answer() -> u32 {\n    43\n}\n").unwrap();
+        let (mut harness, mut diff) = loaded(dir.path());
+        assert!(act(&mut harness, &mut diff, "git::RestoreAndNext"));
+        let effects = harness.take_effects();
+        let Effect::Ask(question) = &effects[0] else { panic!("asked: {effects:?}") };
+        let Effect::Dispatch(confirm) = &question.answers[0].1[0] else { panic!("dispatches") };
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "one\nTWO\n");
+        diff.handle_action(confirm, &mut harness.cx());
+        until(&mut harness, &mut diff, "a.txt gone from the diff", |d| d.files.len() == 1 && d.after_discard.is_none());
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "one\ntwo\n");
+        assert_eq!(diff.files[0].path, Path::new("src/lib.rs"));
+        assert!(matches!(diff.rows[diff.cursor], DiffRow::File(0)), "the next file is under the cursor");
+        assert!(harness.take_effects().iter().any(|e| matches!(e, Effect::PathsChanged(_))));
+    }
+
+    #[test]
+    fn narrow_and_short_views_do_not_panic() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a-long-file-name-for-the-header.txt"), "x\n".repeat(30)).unwrap();
+        let (harness, mut diff) = loaded(dir.path());
+        for (w, h) in [(8, 1), (10, 3), (24, 6), (120, 2), (50, 40)] {
+            harness.draw(&mut diff, w, h);
         }
     }
 }
