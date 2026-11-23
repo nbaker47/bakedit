@@ -231,35 +231,63 @@ fn reset_forgets_swallowed_keys_and_a_cancelled_hold() {
 }
 
 #[test]
-fn a_second_trigger_press_without_a_release_starts_a_new_hold() {
-    // The release was lost (focus went away and nobody called reset).
+fn a_trigger_press_while_it_is_held_is_a_repeat() {
+    // Some terminals report auto-repeat as presses. They must not restart the hold: the
+    // layer stays as it is and the tap timer keeps running from the first press.
     let mut rig = Rig::new();
     rig.down(';');
-    rig.down('e');
-    rig.wait(5000);
-    assert_eq!(rig.down(';'), vec![sent_release(Key::Up, NONE)]);
+    assert_eq!(rig.down('e'), vec![sent(Key::Up, NONE)]);
+    assert_eq!(rig.down(';'), vec![]);
     assert!(rig.layer.active());
+    assert_eq!(rig.up('e'), vec![sent_release(Key::Up, NONE)]);
+    assert_eq!(
+        rig.up(';'),
+        vec![],
+        "the layer was used, so nothing is typed"
+    );
+
+    rig.down(';');
+    for _ in 0..20 {
+        rig.wait(95);
+        assert_eq!(rig.down(';'), vec![]);
+    }
+    assert_eq!(rig.up(';'), vec![], "held for two seconds: not a tap");
+
+    rig.down(';');
+    assert_eq!(rig.down(';'), vec![]);
     assert_eq!(
         rig.up(';'),
         vec![press(';'), release(';')],
-        "a new hold with a new timer"
+        "typed once, not twice"
     );
-
-    // The same after a hold that was cancelled by typing.
-    rig.down(';');
-    rig.down('x');
-    assert_eq!(rig.down(';'), vec![]);
-    assert!(rig.layer.active());
-    assert_eq!(rig.down('e'), vec![sent(Key::Up, NONE)]);
 }
 
 #[test]
-fn a_swallowed_key_pressed_again_is_ordinary_again() {
-    // `f` was swallowed and its release went missing; the next press must not be lost.
+fn a_trigger_press_after_the_hold_was_cancelled_passes_through() {
+    let mut rig = Rig::new();
+    rig.down(';');
+    assert_eq!(rig.down('x'), vec![press(';'), press('x')]);
+    assert_eq!(rig.down(';'), vec![press(';')]);
+    assert!(!rig.layer.active());
+    assert_eq!(rig.down('e'), vec![press('e')]);
+    assert_eq!(rig.up(';'), vec![release(';')]);
+    // The release ended the cancelled hold; the layer is back.
+    assert_eq!(rig.down(';'), vec![]);
+    assert!(rig.layer.active());
+}
+
+#[test]
+fn a_swallowed_key_stays_swallowed_until_it_comes_up() {
+    // `;` was released first while `f` was repeating. Whether the terminal reports the
+    // repeats as repeats or as presses, no "f" is typed.
     let mut rig = Rig::new();
     rig.down(';');
     rig.down('f');
     rig.up(';');
+    assert_eq!(rig.down('f'), vec![]);
+    assert_eq!(rig.again('f'), vec![]);
+    assert_eq!(rig.down('f'), vec![]);
+    assert_eq!(rig.up('f'), vec![]);
     assert_eq!(rig.down('f'), vec![press('f')]);
     assert_eq!(rig.again('f'), vec![repeat('f')]);
     assert_eq!(rig.up('f'), vec![release('f')]);

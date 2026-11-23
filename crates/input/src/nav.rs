@@ -262,7 +262,9 @@ impl NavLayer {
     /// Disabled, everything passes through. Modifier keys on their own always pass through
     /// and never count as "another key". Otherwise:
     ///
-    /// - **Trigger down** turns the layer on and sends nothing. Its repeats are swallowed.
+    /// - **Trigger down** turns the layer on and sends nothing. Its repeats are swallowed,
+    ///   and so is a second press with no release in between: some terminals report
+    ///   repeats as presses.
     /// - **Trigger up** turns the layer off. Every key the layer still holds down is
     ///   released first. If no other key was pressed during the hold and it lasted less
     ///   than `alone_timeout`, the trigger's own press (with its text, so shift+`;` still
@@ -279,46 +281,34 @@ impl NavLayer {
     /// - **Repeats** of a key the layer sent repeat what was sent, with the modifiers held
     ///   now. **Releases** release what was sent, with the modifiers its press had.
     ///
-    /// A key the layer swallowed that is still down when the layer ends stays swallowed:
-    /// its repeats and its release produce nothing.
+    /// A key the layer swallowed that is still down when the layer ends stays swallowed
+    /// until it comes up: its repeats and its release produce nothing, so letting go of the
+    /// trigger a moment before the other key never types a stray character.
     pub fn process(&mut self, ev: KeyEvent, now: Instant) -> Vec<KeyEvent> {
         if !self.config.enabled || matches!(ev.key, Key::Modifier(_)) {
             return vec![ev];
         }
         if let Some(index) = self.ghosts.iter().position(|key| *key == ev.key) {
-            match ev.kind {
-                // A new press means the release went missing; the key is ordinary again.
-                KeyKind::Press => {
-                    self.ghosts.remove(index);
-                }
-                KeyKind::Repeat => return Vec::new(),
-                KeyKind::Release => {
-                    self.ghosts.remove(index);
-                    return Vec::new();
-                }
+            // The layer's key until it comes up. A press here is a repeat from a terminal
+            // that does not tell the two apart.
+            if ev.kind == KeyKind::Release {
+                self.ghosts.remove(index);
             }
+            return Vec::new();
         }
         let is_trigger = self.config.is_trigger(&ev);
         match self.phase {
             Phase::Idle if is_trigger && ev.kind == KeyKind::Press => self.begin_hold(ev, now),
             Phase::Idle => vec![ev],
-            Phase::Cancelled if is_trigger => match ev.kind {
-                KeyKind::Press => self.begin_hold(ev, now),
-                KeyKind::Repeat => vec![ev],
-                KeyKind::Release => {
+            Phase::Cancelled => {
+                if is_trigger && ev.kind == KeyKind::Release {
                     self.phase = Phase::Idle;
-                    vec![ev]
                 }
-            },
-            Phase::Cancelled => vec![ev],
+                vec![ev]
+            }
             Phase::Held(_) if is_trigger => match ev.kind {
-                // The release went missing, so this is a new hold.
-                KeyKind::Press => {
-                    let out = self.release_all();
-                    self.begin_hold(ev, now);
-                    out
-                }
-                KeyKind::Repeat => Vec::new(),
+                // A press here is a repeat from a terminal that does not tell the two apart.
+                KeyKind::Press | KeyKind::Repeat => Vec::new(),
                 KeyKind::Release => self.end_hold(ev, now),
             },
             Phase::Held(_) => match ev.kind {
