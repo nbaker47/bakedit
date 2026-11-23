@@ -74,6 +74,9 @@ impl TerminalLaunch {
         let base = TermConfig {
             cwd: Some(root.to_path_buf()),
             env: settings.terminal.env.clone(),
+            // What runs in the panel is not the bakedit a Ghostty window runs: a `bakedit`
+            // typed there (or in a herdr server started there) opens a window as anywhere.
+            env_remove: crate::window::HOST_VARIABLES.iter().map(|name| name.to_string()).collect(),
             scrollback: settings.terminal.scrollback,
             colors: TermColors::from_theme(theme),
             ..TermConfig::shell()

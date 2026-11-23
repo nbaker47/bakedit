@@ -194,7 +194,9 @@ fn herdr_by_default_with_the_shell_when_it_cannot_run() {
     assert!(launch.fallback.is_some(), "the shell if herdr will not start");
     let client = launch.herdr.expect("herdr actions drive the default session");
     assert_eq!(client.socket_path(), home.join(".config/herdr/herdr.sock"));
-    assert!(launch.config.env_remove.is_empty(), "herdr's variables are never hidden from herdr");
+    assert!(launch.config.env_remove.iter().all(|name| !name.starts_with("HERDR_")), "herdr's variables are never hidden from herdr");
+    assert_eq!(launch.config.env_remove, ["BAKEDIT_HOST", "BAKEDIT_HOST_CONFIG"], "only the window's own bakedit is told it runs there");
+    assert_eq!(launch.fallback.as_ref().map(|shell| shell.env_remove.len()), Some(2), "nor is the shell it falls back to");
 
     let inside = resolve(&TerminalCommand::Herdr, &env(Some(&bin), true, &home));
     assert_eq!((inside.config.program.as_deref(), inside.herdr.is_none(), inside.program.as_str()), (None, true, "zsh"));
