@@ -1,5 +1,6 @@
 mod layout;
 mod line_input;
+mod picker;
 mod settings;
 mod ui;
 mod workspace;
