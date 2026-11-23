@@ -29,8 +29,11 @@ pub const EXPAND_ALL_LIMIT: usize = 10_000;
 /// Whether a row is a file or a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
-    /// A directory (or a symbolic link to one) and whether its children are shown.
-    Dir { expanded: bool },
+    /// A directory, or a symbolic link to one.
+    Dir {
+        /// Whether its children are shown.
+        expanded: bool,
+    },
     /// Anything that is not a directory, including links that lead nowhere.
     File,
 }
@@ -45,6 +48,7 @@ pub struct Row {
     pub name: String,
     /// Nesting level: 0 for the root, 1 for its children.
     pub depth: usize,
+    /// File or directory, and for a directory whether it is expanded.
     pub kind: RowKind,
     /// Matched by an ignore file (or inside a directory that is). The UI dims these.
     pub ignored: bool,

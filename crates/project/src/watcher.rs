@@ -74,7 +74,12 @@ pub enum WatchError {
     NotADirectory(PathBuf),
     /// The operating system refused the watch.
     #[error("could not watch {}: {message}", .path.display())]
-    Backend { path: PathBuf, message: String },
+    Backend {
+        /// The directory that could not be watched.
+        path: PathBuf,
+        /// What the system said.
+        message: String,
+    },
     /// The debounce thread could not be started.
     #[error("could not start the watcher thread: {0}")]
     Thread(#[source] io::Error),

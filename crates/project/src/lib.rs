@@ -8,7 +8,7 @@
 //! | [`tree`] | [`FileTree`], the model behind the project panel: lazy directories, selection, file operations |
 //! | [`index`] | [`FileIndex`], the background list of project files that the file finder searches |
 //! | [`fuzzy`] | [`parse_query`] and the path-aware fuzzy matching behind [`FileIndex::search`] |
-//! | [`search`] | [`search()`] and [`replace_all`], project-wide text search and replace |
+//! | [`mod@search`] | [`search()`] and [`replace_all`], project-wide text search and replace |
 //! | [`watcher`] | [`Watcher`], debounced file-system events with git and ignore awareness |
 //! | [`icons`] | [`icon_for`], Nerd Font glyphs in the Catppuccin Frappé colours |
 //! | [`fileops`] | the file operations the tree performs, usable on their own |
@@ -28,6 +28,8 @@
 //! `.git/info/exclude` or the global gitignore are *ignored*: the tree still shows them
 //! (flagged, so the UI can dim them), while the index, project search and the watcher
 //! leave them out unless asked otherwise.
+
+#![warn(missing_docs)]
 
 pub mod fileops;
 pub mod fuzzy;

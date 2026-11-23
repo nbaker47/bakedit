@@ -53,11 +53,18 @@ pub enum FileOpError {
     Unsupported(PathBuf),
     /// The system trash refused the path.
     #[error("could not move {} to the trash: {message}", .path.display())]
-    Trash { path: PathBuf, message: String },
+    Trash {
+        /// The entry that was to be trashed.
+        path: PathBuf,
+        /// What the system said.
+        message: String,
+    },
     /// Any other file-system error, with the path it happened on.
     #[error("{}: {source}", .path.display())]
     Io {
+        /// The path the operation failed on.
         path: PathBuf,
+        /// The underlying error.
         #[source]
         source: io::Error,
     },

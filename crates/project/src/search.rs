@@ -115,7 +115,12 @@ pub enum SearchError {
     MultiLine,
     /// One of the include or exclude globs is malformed.
     #[error("invalid glob {glob:?}: {message}")]
-    InvalidGlob { glob: String, message: String },
+    InvalidGlob {
+        /// The glob as the caller wrote it.
+        glob: String,
+        /// What is wrong with it.
+        message: String,
+    },
     /// The background thread could not be started.
     #[error("could not start the search: {0}")]
     Thread(#[source] io::Error),
@@ -152,6 +157,7 @@ pub enum SearchEvent {
     File {
         /// The file, relative to the search root.
         path: PathBuf,
+        /// Its matching lines, in ascending order. Never empty.
         matches: Vec<LineMatch>,
     },
     /// The search is over (finished, hit its limit, or was cancelled). Always the last
@@ -751,14 +757,18 @@ fn char_ranges(text: &str, start: usize, end: usize, spans: &[Range<usize>]) -> 
 pub struct ReplaceResult {
     /// The file, relative to the search root.
     pub path: PathBuf,
+    /// What happened to it.
     pub outcome: ReplaceOutcome,
 }
 
 /// The outcome of a replacement in one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplaceOutcome {
-    /// The file was rewritten with this many matches replaced.
-    Replaced { replacements: usize },
+    /// The file was rewritten.
+    Replaced {
+        /// How many matches were replaced in it.
+        replacements: usize,
+    },
     /// The file has matches but was left untouched, for the given reason.
     Skipped(SkipReason),
     /// Reading or writing the file failed; it is unchanged. The text is the error.

@@ -18,25 +18,41 @@ use std::sync::OnceLock;
 
 use bakedit_core::Rgb;
 
-/// The Catppuccin Frappé colours the icons are drawn in.
+/// The Catppuccin Frappé colours the icons are drawn in, under the palette's own names.
 pub mod frappe {
     use bakedit_core::Rgb;
 
+    /// `#f2d5cf`
     pub const ROSEWATER: Rgb = Rgb::new(0xf2, 0xd5, 0xcf);
+    /// `#eebebe`
     pub const FLAMINGO: Rgb = Rgb::new(0xee, 0xbe, 0xbe);
+    /// `#f4b8e4`
     pub const PINK: Rgb = Rgb::new(0xf4, 0xb8, 0xe4);
+    /// `#ca9ee6`
     pub const MAUVE: Rgb = Rgb::new(0xca, 0x9e, 0xe6);
+    /// `#e78284`
     pub const RED: Rgb = Rgb::new(0xe7, 0x82, 0x84);
+    /// `#ea999c`
     pub const MAROON: Rgb = Rgb::new(0xea, 0x99, 0x9c);
+    /// `#ef9f76`
     pub const PEACH: Rgb = Rgb::new(0xef, 0x9f, 0x76);
+    /// `#e5c890`
     pub const YELLOW: Rgb = Rgb::new(0xe5, 0xc8, 0x90);
+    /// `#a6d189`
     pub const GREEN: Rgb = Rgb::new(0xa6, 0xd1, 0x89);
+    /// `#81c8be`
     pub const TEAL: Rgb = Rgb::new(0x81, 0xc8, 0xbe);
+    /// `#99d1db`
     pub const SKY: Rgb = Rgb::new(0x99, 0xd1, 0xdb);
+    /// `#85c1dc`
     pub const SAPPHIRE: Rgb = Rgb::new(0x85, 0xc1, 0xdc);
+    /// `#8caaee`
     pub const BLUE: Rgb = Rgb::new(0x8c, 0xaa, 0xee);
+    /// `#babbf1`
     pub const LAVENDER: Rgb = Rgb::new(0xba, 0xbb, 0xf1);
+    /// `#c6d0f5`, the palette's foreground colour.
     pub const TEXT: Rgb = Rgb::new(0xc6, 0xd0, 0xf5);
+    /// `#838ba7`, a muted grey.
     pub const OVERLAY1: Rgb = Rgb::new(0x83, 0x8b, 0xa7);
 }
 
@@ -45,7 +61,9 @@ use frappe::*;
 /// One icon: the glyph to print (exactly one terminal cell wide) and its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Icon {
+    /// A single character, one terminal cell wide.
     pub glyph: &'static str,
+    /// The colour to draw the glyph in.
     pub color: Rgb,
 }
 
