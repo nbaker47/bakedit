@@ -574,7 +574,7 @@
   // ─────────────────────────────────────────────────────────────────────────────────────
 
   // Panels: cmd-<letter> shows a panel, cmd-alt-<letter> is its fullscreen form.
-  //   cmd-t        terminal            cmd-alt-t   terminal, fullscreen
+  //   cmd-j        terminal            cmd-alt-j   terminal, fullscreen
   //   cmd-g        git panel           cmd-alt-g   project diff, fullscreen
   //   cmd-shift-e  file tree (closes it when pressed inside the tree)
   //   cmd-e        the editor          cmd-alt-e   the editor, all docks hidden
@@ -582,10 +582,10 @@
   {
     "context": "Workspace",
     "bindings": {
-      "cmd-t": "terminal_panel::Toggle",
+      "cmd-j": "terminal_panel::Toggle",
       // In Zed this is workspace::ToggleZoom, which from the editor loses to a default
       // binding (close other tabs). Here it always means "the terminal, fullscreen".
-      "cmd-alt-t": "terminal_panel::ToggleZoom",
+      "cmd-alt-j": "terminal_panel::ToggleZoom",
       "cmd-g": "git_panel::Toggle",
       "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
       "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
@@ -597,7 +597,7 @@
   {
     "context": "Editor || Pane",
     "bindings": {
-      "cmd-alt-t": "terminal_panel::ToggleZoom",
+      "cmd-alt-j": "terminal_panel::ToggleZoom",
       "cmd-g": "git_panel::Toggle",
       "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
       "cmd-shift-e": "pane::RevealInProjectPanel",
@@ -609,7 +609,7 @@
   {
     "context": "Terminal",
     "bindings": {
-      "cmd-alt-t": "workspace::ToggleZoom",
+      "cmd-alt-j": "workspace::ToggleZoom",
       "cmd-g": "git_panel::Toggle",
       "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
       "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
