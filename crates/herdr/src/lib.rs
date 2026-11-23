@@ -12,6 +12,7 @@ mod root_split;
 mod scroll;
 mod state;
 mod types;
+mod workspace;
 
 pub use client::{
     is_mutating, Client, HerdrError, ServerInfo, DEFAULT_TIMEOUT, MAX_TIMEOUT, SOCKET_ENV_VAR,
@@ -25,3 +26,7 @@ pub use query::{
 pub use root_split::{root_split, root_split_with_share, DEFAULT_ROOT_SPLIT_SHARE};
 pub use scroll::{scroll, ScrollOutcome};
 pub use types::{Direction, PaneInfo, ParseDirectionError, Rect, ScrollInfo, SplitDirection};
+pub use workspace::{
+    focus_workspace_number, next_workspace, previous_workspace, zoom_toggle, WorkspaceOutcome,
+    ZoomOutcome,
+};
