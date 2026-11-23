@@ -631,6 +631,63 @@ fn a_failing_hook_surfaces_its_output() {
     assert_eq!(test.repo.status().unwrap().staged().len(), 1);
 }
 
+/// A stand-in for gpg: reads what it is asked to sign and answers the way git expects.
+const FAKE_GPG: &str = "#!/bin/sh\n\
+cat > /dev/null\n\
+echo '[GNUPG:] SIG_CREATED D 1 8 00 1700000000 0123456789ABCDEF' >&2\n\
+echo '-----BEGIN PGP SIGNATURE-----'\n\
+echo 'signed by the stand-in'\n\
+echo '-----END PGP SIGNATURE-----'\n";
+
+#[test]
+fn the_users_signing_configuration_applies() {
+    let test = TestRepo::with_commit();
+    let gpg = test.sandbox().join("fake-gpg");
+    std::fs::write(&gpg, FAKE_GPG).unwrap();
+    std::fs::set_permissions(&gpg, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    test.git(&["config", "gpg.program", gpg.to_str().unwrap()]);
+    test.git(&["config", "commit.gpgsign", "true"]);
+    test.git(&["config", "user.signingkey", "0123456789ABCDEF"]);
+
+    test.write("a.txt", "a\n");
+    test.repo.stage_all().unwrap();
+    test.repo
+        .commit("signed work", CommitOptions::default())
+        .unwrap();
+    let raw = test.git(&["cat-file", "commit", "HEAD"]);
+    assert!(
+        raw.contains("gpgsig -----BEGIN PGP SIGNATURE-----"),
+        "{raw}"
+    );
+    assert!(raw.contains("signed by the stand-in"), "{raw}");
+}
+
+#[test]
+fn a_signing_failure_surfaces_instead_of_hanging() {
+    let test = TestRepo::with_commit();
+    let gpg = test.sandbox().join("broken-gpg");
+    std::fs::write(
+        &gpg,
+        "#!/bin/sh\necho 'gpg: signing failed: No pinentry' >&2\nexit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&gpg, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    test.git(&["config", "gpg.program", gpg.to_str().unwrap()]);
+    test.git(&["config", "commit.gpgsign", "true"]);
+    let before = test.head();
+
+    test.write("a.txt", "a\n");
+    test.repo.stage_all().unwrap();
+    let error = test
+        .repo
+        .commit("cannot be signed", CommitOptions::default())
+        .unwrap_err();
+    let output = error.git_output().unwrap();
+    assert!(output.contains("No pinentry"), "{output}");
+    assert!(output.contains("failed to sign the data"), "{output}");
+    assert_eq!(test.head(), before);
+}
+
 #[test]
 fn hooks_have_no_terminal_to_prompt_on() {
     let test = TestRepo::with_commit();
