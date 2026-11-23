@@ -292,6 +292,7 @@ const style = css`a { color: red; }`;
 const page = html`<p class=\"x\">hi</p>`;
 const plain = `a { color: red; }`;
 const other = unknown`<p>no</p>`;
+const node = h`<p>hyperscript</p>`;
 ";
     check(
         "javascript",
@@ -304,6 +305,8 @@ const other = unknown`<p>no</p>`;
             // An untagged template and an unknown tag stay strings.
             ("= `«a { color: red; }»`", "string"),
             ("unknown`«<p>no</p>»`", "string"),
+            // A one-letter tag is a function, not the extension of a C header.
+            ("h`«<p>hyperscript</p>»`", "string"),
         ],
     );
 }

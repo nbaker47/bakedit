@@ -142,17 +142,25 @@ pub fn plain_text() -> &'static Language {
 /// The language a name in a fenced code block or an injection refers to: an id, an alias, a
 /// display name or a file extension, ignoring case (`rust`, `rs`, `JS`, `c++`, `Shell
 /// Script`). `None` when nothing matches.
+///
+/// An extension only counts when it is two characters or longer. The names come from
+/// documents, and in JavaScript from the tag of a template literal, where a one-letter name
+/// such as `h` is far more likely to be a function than a C header.
 pub fn language_by_name(name: &str) -> Option<&'static Language> {
     let name = name.trim();
     if name.is_empty() {
         return None;
     }
     let is = |candidate: &&str| candidate.eq_ignore_ascii_case(name);
+    let by_extension = || {
+        let found = LANGUAGES.iter().find(|l| l.extensions.iter().any(is));
+        found.filter(|_| name.len() >= 2)
+    };
     LANGUAGES
         .iter()
         .find(|l| is(&l.id) || l.aliases.iter().any(is))
         .or_else(|| LANGUAGES.iter().find(|l| is(&l.name)))
-        .or_else(|| LANGUAGES.iter().find(|l| l.extensions.iter().any(is)))
+        .or_else(by_extension)
 }
 
 /// The language of a file, from its name, its extension or its first line.
@@ -586,6 +594,11 @@ mod tests {
         }
         assert_eq!(language_by_name(""), None);
         assert_eq!(language_by_name("klingon"), None);
+        // By extension, but not by a one-letter one: `c` is an id, `h` only an extension.
+        assert_eq!(language_by_name("hpp").map(|l| l.id), Some("cpp"));
+        assert_eq!(language_by_name("pyi").map(|l| l.id), Some("python"));
+        assert_eq!(language_by_name("c").map(|l| l.id), Some("c"));
+        assert_eq!(language_by_name("h"), None);
     }
 
     #[test]
