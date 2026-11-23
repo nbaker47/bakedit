@@ -825,6 +825,18 @@ mod tests {
         assert!(!file.exists());
     }
 
+    /// The call into the system's trash is made for real, but on a path that is not
+    /// there, so it reports an error and moves nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_trash_can_be_reached_and_reports_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("never-existed.txt");
+        let error = system_trash(&missing).expect_err("there is nothing to trash");
+        assert!(!error.to_string().is_empty());
+        assert!(dir.path().exists());
+    }
+
     #[test]
     fn a_failed_cross_device_move_keeps_the_source() {
         let dir = tempfile::tempdir().unwrap();
