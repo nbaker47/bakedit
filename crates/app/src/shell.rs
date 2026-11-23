@@ -670,6 +670,14 @@ impl Shell {
             "tab_switcher::Toggle" => {
                 if self.pane.len() > 1 {
                     self.toggle_picker(PickerKind::TabSwitcher);
+                    // ctrl-shift-tab starts at the other end: the tab used longest ago.
+                    if action.arg_bool("select_last") == Some(true) {
+                        if let Some(Modal::Picker { kind: PickerKind::TabSwitcher, picker }) = &mut self.modal {
+                            picker.select(picker.items().len().saturating_sub(1));
+                        }
+                    }
+                } else {
+                    self.set_status("Only one tab is open", false);
                 }
             }
             "outline::Toggle" => self.toggle_picker(PickerKind::Outline),
@@ -1046,8 +1054,9 @@ impl Shell {
         } else {
             self.view_rows.clear();
         }
+        let include_ignored = self.project.index().is_some_and(|index| index.include_ignored());
         let placeholder = match kind {
-            PickerKind::FileFinder => "Search project files",
+            PickerKind::FileFinder => finder_placeholder(include_ignored),
             PickerKind::CommandPalette => "Execute a command",
             PickerKind::TabSwitcher => "Switch tab",
             PickerKind::Outline => "Go to symbol",
@@ -1250,6 +1259,18 @@ impl Shell {
 
     fn modal_action(&mut self, action: &Action) -> bool {
         let name = action.name.as_str();
+        if let Some(Modal::Picker { kind, .. }) = &self.modal {
+            let kind = *kind;
+            match name {
+                "picker::ConfirmCompletion" => return self.complete_query(),
+                "picker::ConfirmInput" => return self.confirm_query(kind, action.arg_bool("secondary").unwrap_or(false)),
+                "search::ToggleIncludeIgnored" if kind == PickerKind::FileFinder => {
+                    self.toggle_ignored_files();
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match &mut self.modal {
             Some(Modal::Picker { picker, .. }) => match picker.handle_action(action) {
                 Some(event) => {
@@ -1303,6 +1324,50 @@ impl Shell {
             },
             None => false,
         }
+    }
+
+    /// Tab in a picker: the query becomes what the selected row completes to (a file's
+    /// whole path). False when the row has nothing to complete to, so that the next binding
+    /// of the key (moving down the list) has it, as in Zed.
+    fn complete_query(&mut self) -> bool {
+        let Some(Modal::Picker { picker, .. }) = &mut self.modal else { return false };
+        let Some(completion) = picker.selected().and_then(|row| picker.items()[row].completion.clone()) else { return false };
+        if completion == picker.query() {
+            return true;
+        }
+        picker.input.set_text(&completion);
+        self.refill_picker();
+        true
+    }
+
+    /// Alt-enter in a picker: act on the query as typed rather than on the selected row (a
+    /// path that is not in the index, a branch to create). Lists that only choose among
+    /// their rows have nothing to do with it.
+    fn confirm_query(&mut self, kind: PickerKind, secondary: bool) -> bool {
+        if view_backed(kind) || matches!(kind, PickerKind::CommandPalette | PickerKind::TabSwitcher) {
+            return false;
+        }
+        let Some(Modal::Picker { picker, .. }) = &self.modal else { return false };
+        let query = picker.query().to_string();
+        self.close_picker(true);
+        let mut cx = cx!(self);
+        self.source.confirm(kind, None, &query, secondary, &mut cx);
+        true
+    }
+
+    /// cmd-shift-i in the file finder: list the files git ignores too, or stop listing them.
+    /// The index walks the project again; the open finder refills when it is done.
+    fn toggle_ignored_files(&mut self) {
+        let Some(index) = self.project.index() else {
+            self.set_status("This project has no file index", true);
+            return;
+        };
+        let include = !index.include_ignored();
+        index.set_include_ignored(include);
+        if let Some(Modal::Picker { picker, .. }) = &mut self.modal {
+            picker.placeholder = finder_placeholder(include).to_string();
+        }
+        self.set_status(if include { "The finder lists ignored files too" } else { "The finder leaves out ignored files" }, false);
     }
 
     fn close_switcher_selection(&mut self) -> bool {
@@ -1760,6 +1825,15 @@ impl Shell {
             None => {}
         }
         cursor
+    }
+}
+
+/// The file finder's placeholder, which says whether ignored files are listed.
+fn finder_placeholder(include_ignored: bool) -> &'static str {
+    if include_ignored {
+        "Search project files, ignored ones too"
+    } else {
+        "Search project files"
     }
 }
 

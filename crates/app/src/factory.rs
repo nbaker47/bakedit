@@ -103,6 +103,13 @@ impl AppSource {
                         None => format!("line {line}"),
                     });
                 }
+                // Tab puts the whole path in the query, keeping the line typed after it.
+                let position = match (parsed.line, parsed.col) {
+                    (Some(line), Some(col)) => format!(":{line}:{col}"),
+                    (Some(line), None) => format!(":{line}"),
+                    _ => String::new(),
+                };
+                item.completion = Some(format!("{display}{position}"));
                 self.files.push(FileRow { path: cx.root.join(&found.path), line: parsed.line, column: parsed.col });
                 item
             })
@@ -183,12 +190,19 @@ impl PickerSource for AppSource {
                     cx.push(Effect::OpenFile { path: file.path, line: file.line, column: file.column, preview: false, focus: true });
                 }
             }
-            // Nothing in the index matched: a path typed out in full still opens, inside the
-            // project or not (`~/notes.md:3`, `/etc/hosts`).
+            // Nothing in the index matched, or the query itself was confirmed (alt-enter): a
+            // path typed out in full still opens, inside the project or not (`~/notes.md:3`,
+            // `/etc/hosts`).
             (PickerKind::FileFinder, None) => {
-                let spec = crate::cli::parse_path_spec(query.trim(), cx.root);
-                if !query.trim().is_empty() && spec.path.is_file() {
+                let query = query.trim();
+                if query.is_empty() {
+                    return;
+                }
+                let spec = crate::cli::parse_path_spec(query, cx.root);
+                if spec.path.is_file() {
                     cx.push(Effect::OpenFile { path: spec.path, line: spec.line, column: spec.column, preview: false, focus: true });
+                } else {
+                    cx.error(format!("No file at {}", spec.path.strip_prefix(cx.root).unwrap_or(&spec.path).display()));
                 }
             }
             (PickerKind::Branches, Some(row)) => {
@@ -207,6 +221,19 @@ impl PickerSource for AppSource {
             (PickerKind::RecentProjects, Some(row)) => {
                 if let Some(path) = self.projects.get(row).cloned() {
                     cx.push(Effect::OpenProject(path));
+                }
+            }
+            // A folder typed out in full (alt-enter, or nothing recent matched it).
+            (PickerKind::RecentProjects, None) => {
+                let query = query.trim();
+                if query.is_empty() {
+                    return;
+                }
+                let path = crate::cli::parse_path_spec(query, cx.root).path;
+                if path.is_dir() {
+                    cx.push(Effect::OpenProject(path));
+                } else {
+                    cx.error(format!("No folder at {}", path.display()));
                 }
             }
             _ => {}
@@ -282,7 +309,9 @@ mod tests {
         source.confirm(PickerKind::FileFinder, None, &query, false, &mut harness.cx());
         assert_eq!(harness.take_effects(), vec![Effect::OpenFile { path: file, line: Some(7), column: None, preview: false, focus: true }]);
         source.confirm(PickerKind::FileFinder, None, "no/such/file", false, &mut harness.cx());
-        assert!(harness.take_effects().is_empty());
+        assert_eq!(harness.take_effects(), vec![Effect::error("No file at no/such/file")], "says why nothing opened");
+        source.confirm(PickerKind::FileFinder, None, "  ", false, &mut harness.cx());
+        assert!(harness.take_effects().is_empty(), "nothing typed: nothing to say");
     }
 
     #[test]
@@ -305,6 +334,30 @@ mod tests {
         source.confirm(PickerKind::Branches, Some(0), "login", false, &mut harness.cx());
         harness.project.settle(Duration::from_secs(20));
         assert_eq!(harness.project.git_summary().branch.as_deref(), Some("feature/login"));
+    }
+
+    #[test]
+    fn rows_complete_to_their_whole_path_keeping_the_line() {
+        let dir = repo();
+        let mut harness = settled(dir.path());
+        let mut source = AppSource::new(dir.path().join("state"));
+        let rows = source.rows(PickerKind::FileFinder, "lib:2", &mut harness.cx());
+        assert_eq!(rows[0].completion.as_deref(), Some("src/lib.rs:2"));
+        let rows = source.rows(PickerKind::FileFinder, "lib", &mut harness.cx());
+        assert_eq!(rows[0].completion.as_deref(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn a_folder_typed_in_the_recent_projects_opens() {
+        let dir = repo();
+        let other = tempfile::tempdir().unwrap();
+        let mut harness = settled(dir.path());
+        let mut source = AppSource::new(dir.path().join("state"));
+        let typed = other.path().to_string_lossy().into_owned();
+        source.confirm(PickerKind::RecentProjects, None, &typed, false, &mut harness.cx());
+        assert_eq!(harness.take_effects(), vec![Effect::OpenProject(other.path().to_path_buf())]);
+        source.confirm(PickerKind::RecentProjects, None, "/no/such/folder", false, &mut harness.cx());
+        assert_eq!(harness.take_effects(), vec![Effect::error("No folder at /no/such/folder")]);
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub struct PickerItem {
     pub hint: Option<String>,
     /// A leading glyph and its colour.
     pub icon: Option<(String, Rgb)>,
+    /// What `picker::ConfirmCompletion` (tab) puts in the query for this row: a file's whole
+    /// path, say. `None` when the row has nothing to complete to.
+    pub completion: Option<String>,
 }
 
 impl PickerItem {
@@ -54,6 +57,11 @@ impl PickerItem {
 
     pub fn matched(mut self, matched: Vec<usize>) -> PickerItem {
         self.matched = matched;
+        self
+    }
+
+    pub fn completion(mut self, completion: impl Into<String>) -> PickerItem {
+        self.completion = Some(completion.into());
         self
     }
 }

@@ -128,12 +128,17 @@ struct Source {
 
 impl PickerSource for Source {
     fn rows(&mut self, _: PickerKind, query: &str, _: &mut Cx<'_>) -> Vec<PickerItem> {
-        self.files.iter().filter(|f| f.contains(query)).map(|f| PickerItem::new(*f)).collect()
+        self.files.iter().filter(|f| f.contains(query)).map(|f| PickerItem::new(*f).completion(*f)).collect()
     }
     fn confirm(&mut self, _: PickerKind, row: Option<usize>, query: &str, _: bool, cx: &mut Cx<'_>) {
         let matching: Vec<&&str> = self.files.iter().filter(|f| f.contains(query)).collect();
-        if let Some(file) = row.and_then(|r| matching.get(r)) {
-            cx.push(Effect::open(format!("/project/{file}")));
+        match row {
+            Some(row) => {
+                if let Some(file) = matching.get(row) {
+                    cx.push(Effect::open(format!("/project/{file}")));
+                }
+            }
+            None => cx.status(format!("confirmed the query {query:?}")),
         }
     }
 }
@@ -417,6 +422,10 @@ fn the_tab_switcher_flips_to_the_previous_tab() {
     act(&mut shell, "tab_switcher::Toggle");
     act(&mut shell, "menu::Confirm");
     assert_eq!(shell.pane.active_index(), Some(0), "and back again");
+    // ctrl-shift-tab starts at the tab used longest ago: b.
+    shell.dispatch(&Action::with_args("tab_switcher::Toggle", json!({ "select_last": true })));
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(shell.pane.active_index(), Some(1));
 }
 
 #[test]
@@ -815,4 +824,63 @@ fn opening_the_settings_or_keymap_starts_the_file_when_there_is_none() {
     std::fs::write(shell.config_dir.join("keymap.json"), "[]").unwrap();
     act(&mut shell, "zed::OpenKeymap");
     assert_eq!(std::fs::read_to_string(shell.config_dir.join("keymap.json")).unwrap(), "[]");
+}
+
+#[test]
+fn tab_completes_a_finder_row_and_alt_enter_takes_the_query_as_typed() {
+    let (mut shell, _) = shell();
+    act(&mut shell, "file_finder::Toggle");
+    shell.handle_paste("lib");
+    assert!(act(&mut shell, "picker::ConfirmCompletion"));
+    let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder stays open") };
+    assert_eq!(picker.query(), "src/lib.rs", "tab puts the whole path in the query");
+    // alt-enter: the query as typed, not the row.
+    shell.handle_paste("x");
+    let confirm_input = Action::with_args("picker::ConfirmInput", json!({ "secondary": false }));
+    assert!(shell.dispatch(&confirm_input));
+    assert!(shell.modal.is_none());
+    assert_eq!(shell.status_message(), Some(("confirmed the query \"src/lib.rsx\"", false)));
+    // Lists that only choose among their rows leave tab to the next binding (move down).
+    act(&mut shell, "command_palette::Toggle");
+    assert!(!act(&mut shell, "picker::ConfirmCompletion"));
+    assert!(!shell.dispatch(&confirm_input));
+}
+
+#[test]
+fn cmd_shift_i_in_the_finder_lists_ignored_files_too() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::project::test_support::git(dir.path(), &["init", "--quiet"]);
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    std::fs::create_dir(dir.path().join("build")).unwrap();
+    std::fs::write(dir.path().join("build/out.txt"), "x").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    let mut project = Project::open(dir.path(), crate::background::Waker::detached());
+    project.settle(std::time::Duration::from_secs(20));
+    let state = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new(
+        Settings::default(),
+        Theme::builtin(),
+        project,
+        Clipboard::with_backend(Box::new(MemoryBackend::default())),
+        Box::new(Factory),
+        Box::new(crate::factory::AppSource::new(state.path().to_path_buf())),
+    );
+    let finder_labels = |shell: &Shell| -> Vec<String> {
+        let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder is open") };
+        picker.items().iter().map(|item| item.label.clone()).collect()
+    };
+    act(&mut shell, "file_finder::Toggle");
+    shell.handle_paste("out");
+    assert!(finder_labels(&shell).is_empty(), "ignored files are left out at first");
+    assert!(act(&mut shell, "search::ToggleIncludeIgnored"));
+    let Some(Modal::Picker { picker, .. }) = &shell.modal else { panic!("the finder stays open") };
+    assert_eq!(picker.placeholder, "Search project files, ignored ones too");
+    let started = std::time::Instant::now();
+    while finder_labels(&shell).is_empty() && started.elapsed() < std::time::Duration::from_secs(20) {
+        shell.tick();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(finder_labels(&shell), ["out.txt"], "the open finder refills once the index has walked again");
+    assert!(act(&mut shell, "search::ToggleIncludeIgnored"));
+    assert_eq!(shell.status_message(), Some(("The finder leaves out ignored files", false)));
 }
