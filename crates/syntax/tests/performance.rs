@@ -20,16 +20,22 @@ use common::language;
 /// Whether this is an optimised build, where the strict bounds apply.
 const RELEASE: bool = !cfg!(debug_assertions);
 
-/// The fastest of three runs: the least disturbed by whatever else the machine is doing.
-fn best_of_three(mut run: impl FnMut() -> usize) -> (Duration, usize) {
+/// The fastest of `runs` runs: the one least disturbed by whatever else the machine is
+/// doing.
+fn best_of(runs: usize, mut run: impl FnMut() -> usize) -> (Duration, usize) {
     let mut best = Duration::MAX;
     let mut size = 0;
-    for _ in 0..3 {
+    for _ in 0..runs {
         let started = Instant::now();
         size = run();
         best = best.min(started.elapsed());
     }
     (best, size)
+}
+
+/// The fastest of three runs.
+fn best_of_three(run: impl FnMut() -> usize) -> (Duration, usize) {
+    best_of(3, run)
 }
 
 /// Time highlighting `text` as `language`; returns the best time and the span count.
@@ -187,8 +193,19 @@ fn check_scaling(id: &str, generate: fn(usize) -> String) {
     highlighter
         .highlight(language, &small[..small.len().min(2_000)], None)
         .unwrap();
-    let (small_time, small_spans) = time_highlight(&mut highlighter, language, &small);
-    let (large_time, large_spans) = time_highlight(&mut highlighter, language, &large);
+    // Take turns, so a busy spell on the machine slows both measurements, not one of them.
+    let (mut small_time, mut large_time) = (Duration::MAX, Duration::MAX);
+    let (mut small_spans, mut large_spans) = (0, 0);
+    for _ in 0..3 {
+        let (time, spans) = best_of(1, || {
+            highlighter.highlight(language, &small, None).unwrap().len()
+        });
+        (small_time, small_spans) = (small_time.min(time), spans);
+        let (time, spans) = best_of(1, || {
+            highlighter.highlight(language, &large, None).unwrap().len()
+        });
+        (large_time, large_spans) = (large_time.min(time), spans);
+    }
     println!(
         "{id}: 5,000 lines ({} kB, {small_spans} spans) in {small_time:.1?}; \
          20,000 lines ({} kB, {large_spans} spans) in {large_time:.1?}",
@@ -224,7 +241,9 @@ fn a_5000_line_rust_file_is_fast() {
     highlighter
         .highlight(rust, "fn warm_up() {}\n", None)
         .unwrap();
-    let (time, spans) = time_highlight(&mut highlighter, rust, &text);
+    let (time, spans) = best_of(7, || {
+        highlighter.highlight(rust, &text, None).unwrap().len()
+    });
     println!(
         "rust: {} lines, {} kB, {spans} spans in {time:.1?}",
         text.lines().count(),
