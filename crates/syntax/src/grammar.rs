@@ -454,11 +454,16 @@ const MARKDOWN_INLINE_HTML_INJECTION: &str = r#"
  (#set! injection.combined))
 "#;
 
-/// See [`MARKDOWN_INLINE_HTML_INJECTION`].
-const MARKDOWN_HTML_BLOCK_INJECTION: &str = r#"
+/// See [`MARKDOWN_INLINE_HTML_INJECTION`] for the first pattern. The second is missing from
+/// tree-sitter-md's query altogether: the cells of a table hold inline markup just as a
+/// paragraph does, and the grammar's own Rust parser treats them so.
+const MARKDOWN_BLOCK_INJECTIONS: &str = r#"
 ((html_block) @injection.content
  (#set! injection.language "html")
  (#set! injection.combined))
+
+((pipe_table_cell) @injection.content
+ (#set! injection.language "markdown_inline"))
 "#;
 
 /// PHP's injection of HTML into the text outside `<?php ... ?>` ships in the grammar's
@@ -605,7 +610,7 @@ pub(crate) static MARKDOWN: GrammarSpec = GrammarSpec {
     highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
     injections: &[
         tree_sitter_md::INJECTION_QUERY_BLOCK,
-        MARKDOWN_HTML_BLOCK_INJECTION,
+        MARKDOWN_BLOCK_INJECTIONS,
     ],
     locals: &[],
     precedence: Precedence::LastWins,

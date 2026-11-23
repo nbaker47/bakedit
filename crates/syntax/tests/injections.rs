@@ -341,6 +341,29 @@ fn markdown_html_blocks_form_one_document() {
 }
 
 #[test]
+fn markdown_table_cells_hold_inline_markup() {
+    let text = "\
+| Crate | Job |
+|---|---|
+| `crates/core` | Shared *types* |
+| [text](https://example.com) | **bold** |
+";
+    check(
+        "markdown",
+        text,
+        &[
+            ("`«crates/core»`", "string"),
+            ("*«types»*", "emphasis"),
+            ("[«text»]", "link_text"),
+            ("https://example.com", "link_uri"),
+            ("**«bold»**", "emphasis.strong"),
+            ("Crate", ""),
+            ("Shared ", ""),
+        ],
+    );
+}
+
+#[test]
 fn an_injection_that_matches_nothing_usable_leaves_the_host_language_alone() {
     // tree-sitter-php's heredoc injection names the body node, whose text all belongs to
     // its children, so nothing is injected and the heredoc stays a string.
