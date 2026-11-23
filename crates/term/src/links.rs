@@ -527,7 +527,7 @@ fn markdown_link(chars: &[char], open: usize) -> Option<(usize, LinkTarget)> {
         match c {
             '[' => depth += 1,
             ']' => {
-                depth -= 1;
+                depth = depth.saturating_sub(1);
                 if depth == 0 {
                     close = Some(open + offset);
                     break;
