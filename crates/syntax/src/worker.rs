@@ -399,6 +399,40 @@ mod tests {
     }
 
     #[test]
+    fn typing_faster_than_the_worker_ends_with_the_newest_version() {
+        let worker = quiet_worker();
+        let base = long_source(1500);
+        let last = 300;
+        for version in 1..=last {
+            // Each "keystroke" is a new snapshot of the same document.
+            worker.request(5, version, rust(), format!("{base}// edit {version}\n"));
+        }
+        let mut versions = Vec::new();
+        loop {
+            let result = worker.results().recv_timeout(TIMEOUT).unwrap();
+            assert_eq!(result.doc_id, 5);
+            versions.push(result.version);
+            if result.version == last {
+                break;
+            }
+        }
+        // Versions only ever go forward, and most were never highlighted at all.
+        assert!(
+            versions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{versions:?}"
+        );
+        assert!(
+            versions.len() < 150,
+            "{} of {last} snapshots were highlighted",
+            versions.len()
+        );
+        assert!(worker
+            .results()
+            .recv_timeout(Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
     fn forgetting_a_document_drops_its_request() {
         let worker = quiet_worker();
         worker.request(1, 1, rust(), long_source(4000));
