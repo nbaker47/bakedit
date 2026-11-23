@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 830 400" width="830" height="400" role="img" aria-label="bakedit window layout: terminal and git on the left, editor in the middle, file tree on the right">
+<title>bakedit window layout: terminal and git on the left, editor in the middle, file tree on the right</title>
+<rect width="830" height="400" rx="14" fill="#11111b"/>
+<text x="415.0" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#cdd6f4" text-anchor="middle" font-weight="700">The window</text>
+<text x="415.0" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#7f849c" text-anchor="middle" font-weight="400">three columns, one status bar, every panel a keystroke away</text>
+<rect x="40" y="90" width="230" height="106" rx="8" fill="#181825" stroke="#a6e3a1" stroke-width="2"/>
+<text x="155.0" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#a6e3a1" text-anchor="middle" font-weight="700">Terminal</text>
+<text x="155.0" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7f849c" text-anchor="middle" font-weight="400">runs herdr</text>
+<text x="155.0" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#a6e3a1" text-anchor="middle" font-weight="400">cmd-t</text>
+<rect x="40" y="202" width="230" height="116" rx="8" fill="#181825" stroke="#fab387" stroke-width="2"/>
+<text x="155.0" y="240" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#fab387" text-anchor="middle" font-weight="700">Git</text>
+<text x="155.0" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7f849c" text-anchor="middle" font-weight="400">stage · diff · commit</text>
+<text x="155.0" y="282" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#fab387" text-anchor="middle" font-weight="400">cmd-g</text>
+<rect x="284" y="90" width="290" height="228" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="2"/>
+<text x="429.0" y="190" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#89b4fa" text-anchor="middle" font-weight="700">Editor</text>
+<text x="429.0" y="212" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7f849c" text-anchor="middle" font-weight="400">tabs · find · minimap · git gutter</text>
+<text x="429.0" y="238" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#89b4fa" text-anchor="middle" font-weight="400">cmd-e</text>
+<rect x="588" y="90" width="202" height="228" rx="8" fill="#181825" stroke="#cba6f7" stroke-width="2"/>
+<text x="689.0" y="190" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#cba6f7" text-anchor="middle" font-weight="700">File tree</text>
+<text x="689.0" y="212" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7f849c" text-anchor="middle" font-weight="400">icons · rename · new</text>
+<text x="689.0" y="238" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cba6f7" text-anchor="middle" font-weight="400">cmd-shift-e</text>
+<rect x="40" y="332" width="750" height="36" rx="8" fill="#1e1e2e" stroke="#313244" stroke-width="1.5"/>
+<rect x="50" y="339" width="44" height="22" rx="4" fill="#89b4fa"/>
+<text x="72" y="355" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#11111b" text-anchor="middle" font-weight="700">NAV</text>
+<text x="106" y="355" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#7f849c" text-anchor="start" font-weight="400">branch  ±changes</text>
+<text x="776" y="355" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#7f849c" text-anchor="end" font-weight="400">2:1   Rust   Spaces: 4   LF   ;layer</text>
+<text x="415.0" y="390" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#7f849c" text-anchor="middle" font-weight="400">cmd-alt-f hides every dock for a full-screen editor</text>
+</svg>
