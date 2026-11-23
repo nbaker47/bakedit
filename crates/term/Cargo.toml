@@ -8,11 +8,15 @@ publish.workspace = true
 [dependencies]
 bakedit-core.workspace = true
 alacritty_terminal.workspace = true
-regex.workspace = true
-unicode-width.workspace = true
 libc.workspace = true
 log.workspace = true
+memchr.workspace = true
+signal-hook.workspace = true
 thiserror.workspace = true
+# Both are already in the tree as dependencies of alacritty_terminal. They are named here
+# because this crate implements alacritty's pty traits for its own pty type.
+polling = "3"
+rustix-openpty = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
