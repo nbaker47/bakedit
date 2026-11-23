@@ -163,26 +163,26 @@ def layout():
 # ---------------------------------------------------------------- modes
 def modes():
     w, h = 830, 300
-    b = text(w / 2, 40, "Two modes, no vim modes to memorise", 24, TEXT, weight="700")
-    b += text(w / 2, 64, "NAV moves and acts, INSERT types. The nav layer works in both.", 14, DIM)
+    b = text(w / 2, 40, "Two modes, no vim keys to memorise", 24, TEXT, weight="700")
+    b += text(w / 2, 64, "NAV moves and acts, EDIT types. The nav layer works in both.", 14, DIM)
     b += rect(70, 100, 250, 110, PANEL, BLUE, sw=2)
     b += text(195, 135, "NAV", 22, BLUE, weight="700", font=FONT)
-    b += text(195, 162, "h j k l  w b e  gg  G", 13, TEXT, font=FONT)
-    b += text(195, 184, "y d c p x u  v  /  space-f", 13, TEXT, font=FONT)
+    b += text(195, 162, "arrows, cmd-keys", 13, TEXT, font=FONT)
+    b += text(195, 184, "letters type nothing", 13, TEXT, font=FONT)
     b += rect(510, 100, 250, 110, PANEL, GREEN, sw=2)
-    b += text(635, 135, "INSERT", 22, GREEN, weight="700", font=FONT)
+    b += text(635, 135, "EDIT", 22, GREEN, weight="700", font=FONT)
     b += text(635, 162, "type, paste, cmd-keys", 13, TEXT, font=FONT)
     b += text(635, 184, "all Zed shortcuts still work", 13, TEXT, font=FONT)
     arrow = f'stroke="{DIM}" stroke-width="2" fill="none" marker-end="url(#a)"'
     b = ('<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" '
          f'orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="{DIM}"/></marker></defs>\n') + b
     b += f'<path d="M320 134 H510" {arrow}/>\n'
-    b += text(415, 124, "i  a  o  I  A  O", 13, GREEN, font=FONT)
+    b += text(415, 124, "cmd-i", 13, GREEN, font=FONT)
     b += f'<path d="M510 180 H320" {arrow}/>\n'
-    b += text(415, 202, "esc   or   ; c", 13, BLUE, font=FONT)
+    b += text(415, 202, "cmd-i   or   esc", 13, BLUE, font=FONT)
     b += rect(205, 236, 420, 40, KEY, KEYLINE)
     b += text(415, 261, "hold ;  →  arrows + modifiers, in either mode", 13, YELLOW, font=FONT)
-    return svg(w, h, b, "Mode diagram: NAV and INSERT, with the nav layer available in both")
+    return svg(w, h, b, "Mode diagram: NAV and EDIT, with the nav layer available in both")
 
 
 for name, fn in [("nav-layer", nav_layer), ("nav-combos", combos), ("layout", layout), ("modes", modes)]:

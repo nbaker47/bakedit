@@ -669,13 +669,16 @@
   // ─────────────────────────────────────────────────────────────────────────────────────
   // 3. Nav mode and edit mode
   // ─────────────────────────────────────────────────────────────────────────────────────
-  // With "vim_mode": true the editor opens in nav mode: keys move and act, nothing types.
-  // i / a / o (and friends) switch to edit mode, escape comes back. That is all of vim
-  // there is: no operators, counts, registers, macros or : commands. Every cmd/alt/ctrl
-  // binding above works the same in both modes.
-  // cmd-i switches between the two either way (so do ctrl-] i, in any terminal, and a click
-  // on the mode in the status bar): into edit mode with the cursor where it is, back to nav
-  // mode without escape's step to the left. With the modes off it turns them on, as
+  // With "vim_mode": true the editor opens in nav mode, where no plain key changes the text:
+  // letters, digits, space and the other text keys type nothing (they are swallowed
+  // quietly), and enter, tab, backspace and delete do nothing either. Everything else works
+  // as in edit mode: the arrows and the ; nav layer move, shift-arrows select, and every
+  // cmd/alt/ctrl binding above (saving, pickers, cmd-x/cmd-v, cmd-z) does what it always
+  // does. There are no vim letter keys, operators, counts, registers or : commands.
+  // cmd-i switches between the two (so do ctrl-] i, in any terminal, and a click on the
+  // mode in the status bar): into edit mode with the cursor where it is, back to nav mode
+  // without escape's step to the left. Escape also leaves edit mode; in nav mode it only
+  // lets go of a selection. With the modes off cmd-i turns them on, as
   // bakedit::ToggleEditMode does (settings.json is left alone). From the find bar it switches
   // the text's mode and the bar keeps the keys.
   {
@@ -699,74 +702,15 @@
   {
     "context": "Editor && mode == full && vim_mode == normal",
     "bindings": {
-      // Move
-      "h": "editor::MoveLeft",
-      "j": "editor::MoveDown",
-      "k": "editor::MoveUp",
-      "l": "editor::MoveRight",
-      "w": "editor::MoveToNextWordStart",
-      "b": "editor::MoveToPreviousWordStart",
-      "e": "editor::MoveToNextWordEnd",
-      "0": ["editor::MoveToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": false }],
-      "^": "editor::MoveToFirstNonBlank",
-      "$": ["editor::MoveToEndOfLine", { "stop_at_soft_wraps": true }],
-      "g g": "editor::MoveToBeginning",
-      "shift-g": "editor::MoveToEnd",
-      "{": "editor::MoveToStartOfParagraph",
-      "}": "editor::MoveToEndOfParagraph",
-      "%": "editor::MoveToEnclosingBracket",
-      "ctrl-d": "vim::ScrollDown",
-      "ctrl-u": "vim::ScrollUp",
-      "ctrl-f": "editor::MovePageDown",
-      "ctrl-b": "editor::MovePageUp",
-      "z z": "editor::ScrollCursorCenter",
-      // Into edit mode
-      "i": "vim::InsertBefore",
-      "a": "vim::InsertAfter",
-      "shift-i": "vim::InsertFirstNonWhitespace",
-      "shift-a": "vim::InsertEndOfLine",
-      "o": "vim::InsertLineBelow",
-      "shift-o": "vim::InsertLineAbove",
-      // Select: v then move; y copies, d cuts, c cuts and edits, escape lets go.
-      "v": "vim::ToggleVisual",
-      "shift-v": "vim::ToggleVisualLine",
-      "y": "editor::Copy",
-      "d": "editor::Cut",
-      "c": ["action::Sequence", ["editor::Cut", "vim::InsertBefore"]],
-      "p": "editor::Paste",
-      "x": "editor::Delete",
-      // Undo, lines, indent
-      "u": "editor::Undo",
-      "shift-u": "editor::Redo",
-      "ctrl-r": "editor::Redo",
-      "shift-j": "editor::JoinLines",
-      ">": "editor::Indent",
-      "<": "editor::Outdent",
-      // Find
-      "/": "buffer_search::Deploy",
-      "n": "search::SelectNextMatch",
-      "shift-n": "search::SelectPreviousMatch",
-      "*": ["editor::SelectNext", { "replace_newest": false }],
-      // Around
-      "shift-h": "pane::ActivatePreviousItem",
-      "shift-l": "pane::ActivateNextItem",
-      "ctrl-o": "pane::GoBack",
-      "ctrl-i": "pane::GoForward",
-      ":": "command_palette::Toggle",
       "escape": "editor::Cancel",
-      // space is a leader for the things used most
-      "space f": "file_finder::Toggle",
-      "space /": "pane::DeploySearch",
-      "space e": "pane::RevealInProjectPanel",
-      "space t": "terminal_panel::Toggle",
-      "space g": "git_panel::Toggle",
-      "space d": "git::Diff",
-      "space o": "outline::Toggle",
-      "space b": "tab_switcher::Toggle",
-      "space w": "workspace::Save",
-      "space q": ["pane::CloseActiveItem", { "close_pinned": false }],
-      "space z": "workspace::ToggleAllDocks",
-      "space p": "command_palette::Toggle"
+      // The plain keys that edit: off in nav mode (null, so a key nobody takes is dropped).
+      "enter": null,
+      "shift-enter": null,
+      "tab": null,
+      "shift-tab": null,
+      "backspace": null,
+      "shift-backspace": null,
+      "delete": null
     }
   },
 

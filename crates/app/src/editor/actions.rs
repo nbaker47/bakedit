@@ -1,13 +1,14 @@
 //! Actions and typed keys: every `editor::` action through `bakedit_text::Command`, nav and
-//! edit mode (`vim::*`, `bakedit::ToggleMode`), scrolling, toggles, and what typing does.
+//! edit mode (`bakedit::ToggleMode`, `vim::NormalBefore`), scrolling, toggles, and what
+//! typing does.
 
 use std::cell::RefCell;
 
 use bakedit_core::{Action, KeyEvent};
-use bakedit_text::{Clipboard, ClipboardPiece, Command, Motion, Selection, Selections};
+use bakedit_text::{Clipboard, ClipboardPiece, Command, Selection, Selections};
 
 use super::layout::Reveal;
-use super::{EditorItem, Visual};
+use super::EditorItem;
 use crate::view::{Context, Cx, Effect};
 
 thread_local! {
@@ -55,16 +56,15 @@ impl EditorItem {
         out.push(context);
     }
 
-    /// Nav mode with no selection being made (`v`): what holds there is one cursor per
-    /// place, never a selection.
-    pub(super) fn nav_cursor_only(&self) -> bool {
-        self.modal && !self.insert && self.selecting.is_none()
+    /// Nav mode.
+    pub(super) fn in_nav_mode(&self) -> bool {
+        self.modal && !self.insert
     }
 
     /// Nav mode: the cursor sits on a character, not past the end of the line. The column
     /// vertical motion is heading for is kept.
     pub(super) fn clamp_nav_cursor(&mut self) {
-        if !self.modal || self.insert || self.selecting.is_some() {
+        if !self.in_nav_mode() {
             return;
         }
         let selections = self.editor.selections();
@@ -84,7 +84,6 @@ impl EditorItem {
 
     fn enter_insert(&mut self) {
         self.insert = true;
-        self.selecting = None;
         self.editor.break_undo_group();
     }
 
@@ -92,25 +91,23 @@ impl EditorItem {
     /// step.
     fn leave_insert(&mut self) {
         self.insert = false;
-        self.selecting = None;
         self.editor.break_undo_group();
         self.end_insert_run();
     }
 
     /// Switch nav and edit mode on or off for this editor (`vim_mode`). Either way it
-    /// starts over in nav mode, or plain editing, with nothing being selected.
+    /// starts over in nav mode, or plain editing.
     pub(super) fn set_modal(&mut self, on: bool) {
         self.modal = on;
         self.end_insert_run();
         self.insert = false;
-        self.selecting = None;
         self.clamp_nav_cursor();
     }
 
     /// `bakedit::ToggleMode` (cmd-i, or a click on the mode in the status bar): edit mode
-    /// goes to nav mode as escape does, except that the cursor stays put; nav mode, selecting
-    /// or not, goes to edit mode as `i` does, the cursor and any selection kept. With the
-    /// modes off it switches them on for the session, which lands in nav mode.
+    /// goes to nav mode as escape does, except that the cursor stays put; nav mode goes to
+    /// edit mode, the cursor and any selection kept. With the modes off it switches them on
+    /// for the session, which lands in nav mode.
     fn toggle_mode(&mut self, cx: &mut Cx<'_>) {
         if !self.modal {
             // The setting, not just this editor: the next tick would undo it otherwise.
@@ -120,8 +117,8 @@ impl EditorItem {
             self.set_modal(true);
         } else if self.insert {
             self.leave_insert();
-            // Nav mode holds cursors, never a selection (one kept from SELECT, say): each
-            // collapses onto its head before the block is clamped onto a character.
+            // Nav mode starts with cursors, not a selection: each collapses onto its head
+            // before the block is clamped onto a character.
             if !self.editor.selections().is_single_cursor() {
                 let mut selections = self.editor.selections().clone();
                 selections.transform(|selection| Selection::cursor(selection.head));
@@ -194,11 +191,13 @@ impl EditorItem {
                 self.toggle_mode(cx);
                 true
             }
-            n if n.starts_with("vim::") => self.vim_action(n, cx),
-            "editor::MoveToNextWordEnd" if self.nav_cursor_only() => self.nav_word_end(action, cx),
+            "vim::NormalBefore" => {
+                self.normal_before();
+                true
+            }
             _ => self.run_action_command(action, cx),
         };
-        if handled && self.nav_cursor_only() && matches!(name, "editor::Undo" | "editor::Redo") {
+        if handled && self.in_nav_mode() && matches!(name, "editor::Undo" | "editor::Redo") {
             // As in vim: what came back is not left selected; the cursor goes to its start.
             let mut selections = self.editor.selections().clone();
             selections.transform(|selection| Selection::cursor(selection.start()));
@@ -210,19 +209,6 @@ impl EditorItem {
         handled
     }
 
-    /// `e` in nav mode, as in vim: the block lands on the last character of the word, and
-    /// from there `e` goes on to the end of the next word. (The text engine's word end is the
-    /// boundary after the word, where edit mode's bar cursor belongs.)
-    fn nav_word_end(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
-        let before = self.cursor();
-        self.run_command(Command::Move(Motion::Right), cx);
-        self.run_action_command(action, cx);
-        if self.cursor() > before + 1 {
-            self.run_command(Command::Move(Motion::Left), cx);
-        }
-        true
-    }
-
     /// Leave edit mode's undo run: everything typed since it began becomes one undo step.
     pub(super) fn end_insert_run(&mut self) {
         if let Some(mark) = self.insert_mark.take() {
@@ -230,106 +216,15 @@ impl EditorItem {
         }
     }
 
-    fn vim_action(&mut self, name: &str, cx: &mut Cx<'_>) -> bool {
-        // What an edit started here (o's new line included) is undone in one step.
-        let mark = self.editor.undo_steps();
-        let was_inserting = self.insert;
-        let handled = self.vim_action_inner(name, cx);
-        if self.insert && !was_inserting {
-            self.insert_mark = Some(mark);
-        }
-        handled
-    }
-
-    fn vim_action_inner(&mut self, name: &str, cx: &mut Cx<'_>) -> bool {
-        match name {
-            "vim::InsertBefore" => self.enter_insert(),
-            "vim::InsertAfter" => {
-                let buffer = self.editor.buffer();
-                let head = self.cursor();
-                if head < buffer.line_end(buffer.char_to_line(head)) {
-                    self.run_command(Command::Move(Motion::Right), cx);
-                }
-                self.enter_insert();
-            }
-            "vim::InsertFirstNonWhitespace" => {
-                self.run_command(Command::Move(Motion::FirstNonBlank), cx);
-                self.enter_insert();
-            }
-            "vim::InsertEndOfLine" => {
-                self.run_command(Command::Move(Motion::EndOfLine { stop_at_soft_wraps: false }), cx);
-                self.enter_insert();
-            }
-            "vim::InsertLineBelow" => {
-                if !self.run_command(Command::NewlineBelow, cx) {
-                    return true;
-                }
-                self.enter_insert();
-            }
-            "vim::InsertLineAbove" => {
-                if !self.run_command(Command::NewlineAbove, cx) {
-                    return true;
-                }
-                self.enter_insert();
-            }
-            "vim::NormalBefore" => {
-                self.leave_insert();
-                let buffer = self.editor.buffer();
-                let head = self.cursor();
-                if self.editor.selections().is_single_cursor() && head > buffer.line_to_char(buffer.char_to_line(head)) {
-                    self.editor.set_cursor(buffer.prev_grapheme(head));
-                }
-            }
-            "vim::ToggleVisual" => self.toggle_visual(false),
-            "vim::ToggleVisualLine" => self.toggle_visual(true),
-            "vim::ScrollDown" | "vim::ScrollUp" => {
-                let lines = (self.geo.text.height as usize / 2).max(1);
-                let motion = if name == "vim::ScrollDown" { Motion::DownByLines { lines } } else { Motion::UpByLines { lines } };
-                self.run_command(Command::Move(motion), cx);
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn toggle_visual(&mut self, line_wise: bool) {
-        if !self.modal || self.insert {
-            return;
-        }
-        let head = self.cursor();
-        match (self.selecting, line_wise) {
-            (Some(Visual::Char), false) | (Some(Visual::Line { .. }), true) => {
-                self.selecting = None;
-                self.editor.set_cursor(head);
-            }
-            (_, true) => {
-                let line = self.cursor_line();
-                self.selecting = Some(Visual::Line { anchor_line: line, cursor: head });
-                self.select_lines();
-            }
-            (_, false) => {
-                let buffer = self.editor.buffer();
-                let end = if head < buffer.line_end(buffer.char_to_line(head)) { buffer.next_grapheme(head) } else { head };
-                self.selecting = Some(Visual::Char);
-                self.editor.select_range(head, end);
-            }
-        }
-    }
-
-    /// Select whole lines from the anchor line to the one the moving end is on.
-    fn select_lines(&mut self) {
-        let Some(Visual::Line { anchor_line, cursor }) = self.selecting else { return };
+    /// Escape in edit mode: back to nav mode, the block stepping left onto the character
+    /// before the bar, as vim does.
+    fn normal_before(&mut self) {
+        self.leave_insert();
         let buffer = self.editor.buffer();
-        let line = buffer.char_to_line(cursor);
-        let (low, high) = (anchor_line.min(line), anchor_line.max(line));
-        let start = buffer.line_to_char(low);
-        let end = if high + 1 < buffer.len_lines() { buffer.line_to_char(high + 1) } else { buffer.len_chars() };
-        if line < anchor_line {
-            self.editor.select_range(end, start);
-        } else {
-            self.editor.select_range(start, end);
+        let head = self.cursor();
+        if self.editor.selections().is_single_cursor() && head > buffer.line_to_char(buffer.char_to_line(head)) {
+            self.editor.set_cursor(buffer.prev_grapheme(head));
         }
-        self.reveal = Reveal::Fit;
     }
 
     /// An `editor::` action that is a text command.
@@ -349,7 +244,7 @@ impl EditorItem {
     }
 
     /// Run one command on the text: the language's comment markers and the page size filled
-    /// in, motions turned into selections while selecting, a read-only buffer refused.
+    /// in, a read-only buffer refused.
     pub(super) fn run_command(&mut self, mut command: Command, cx: &mut Cx<'_>) -> bool {
         if command.modifies_text() && self.read_only_blocks(cx) {
             return false;
@@ -373,39 +268,8 @@ impl EditorItem {
         if is_motion(&command) {
             self.editor.break_undo_group();
         }
-        let selecting = self.selecting;
-        if let (Some(visual), true) = (selecting, matches!(command, Command::Move(_))) {
-            return self.visual_motion(visual, command, cx);
-        }
-        let ends_selecting = selecting.is_some() && !is_motion(&command);
-        let collapses = matches!(command, Command::Copy | Command::Cancel);
-        let start = self.editor.selections().primary().start();
         let outcome = self.editor.apply(command);
         self.after_outcome(&outcome, cx);
-        if ends_selecting {
-            self.selecting = None;
-            if collapses {
-                self.editor.set_cursor(start);
-            }
-        }
-        true
-    }
-
-    fn visual_motion(&mut self, visual: Visual, command: Command, cx: &mut Cx<'_>) -> bool {
-        match visual {
-            Visual::Char => {
-                let outcome = self.editor.apply(command.extending());
-                self.after_outcome(&outcome, cx);
-            }
-            Visual::Line { anchor_line, cursor } => {
-                self.editor.set_cursor(cursor);
-                let outcome = self.editor.apply(command);
-                let cursor = self.cursor();
-                self.after_outcome(&outcome, cx);
-                self.selecting = Some(Visual::Line { anchor_line, cursor });
-                self.select_lines();
-            }
-        }
         true
     }
 

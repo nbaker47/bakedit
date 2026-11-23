@@ -8,53 +8,57 @@ text main.rs
 expect main.rs  src
 key enter
 expect src › main.rs
-# Files open in nav mode: keys move, nothing is typed.
+# Files open in nav mode: nothing is typed, and the arrows move as in edit mode.
 expect NAV
 expect  1:1  Rust
 
-# Nav mode: j k h l, w b e, 0 $, gg G, ctrl-d, and the line numbers follow.
-key j j
-expect  3:1  Rust
-key w
-expect  3:5  Rust
-key e
-expect  3:10  Rust
-key b
-expect  3:5  Rust
-key $
-expect  3:39  Rust
-key 0
-expect  3:1  Rust
-key shift-g
-expect  21:1  Rust
-key g g
+# Nav mode: letters (the old vim keys) neither move nor type.
+key j j w e shift-g g g
 expect  1:1  Rust
-key ctrl-d
+expect-not jjwe
+# The arrows, cmd-left/right, cmd-up/down (5 lines) and cmd-end/cmd-home move, and the
+# line numbers follow.
+key down down
+expect  3:1  Rust
+key right right right right
+expect  3:5  Rust
+# enter, tab, backspace, delete and space edit nothing in nav mode.
+key enter tab backspace delete space x
+expect  3:5  Rust
+expect /// Counts how often
+key cmd-right
+expect  3:39  Rust
+key cmd-left
+expect  3:1  Rust
+key cmd-down
+expect  8:1  Rust
+key cmd-up
+expect  3:1  Rust
+key cmd-end
 expect  21:1  Rust
-key g g
+key cmd-home
+expect  1:1  Rust
 snap nav
 
-# shift-v selects whole lines, d cuts, u brings them back; v e selects a word.
-key j j
-key shift-v
-expect SELECT
-key d
+# shift-arrows select in nav mode, cmd-x cuts, cmd-z brings it back, escape lets go.
+key down down
+key shift-down
 expect NAV
+key cmd-x
 expect-not Counts how
-key u
+key cmd-z
 expect Counts how
-key v e
-expect SELECT
+key shift-right shift-right
 key escape
 expect NAV
 snap undo
 
-# Edit mode: o opens a line below and types; escape goes back to nav mode.
-key shift-g
-key o
+# Edit mode: cmd-i, then typing; cmd-i goes back to nav mode.
+key cmd-end
+key cmd-i
 expect EDIT
 paste fn   added( )->u32{1}
-key escape
+key cmd-i
 expect NAV
 snap edited
 # cmd-s saves; rustfmt (Cargo.toml says the project wants it) formats the file.

@@ -246,8 +246,7 @@ impl EditorItem {
         self.apply_reveal(rows, settings.vertical_scroll_margin as usize);
 
         // Horizontal scroll: keep the cursor's column in view.
-        let view_cursor = self.view_cursor();
-        let cursor_position = self.editor.display_position(view_cursor);
+        let cursor_position = self.editor.display_position(self.cursor());
         if wrap.is_none() {
             let margin = (settings.horizontal_scroll_margin as usize).min((text_width as usize).saturating_sub(1) / 2);
             if cursor_position.col < self.left + margin {

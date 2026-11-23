@@ -10,12 +10,12 @@ key enter
 expect data › big.rs
 expect fn f1(x: u32)
 log end
-key shift-g
+key cmd-end
 expect  50001:1  Rust
 expect line 50000
-key g g
+key cmd-home
 expect  1:1  Rust
-key ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d
+key pagedown pagedown pagedown pagedown
 expect-not  1:1  Rust
 log find
 key cmd-f
@@ -24,12 +24,12 @@ expect 1 of 1
 expect line 49999
 key escape
 log type
-key o
+key cmd-i
 paste // typed into a big file
 key escape
 expect typed into a big file
 snap typed
-key u
+key cmd-z
 expect-not typed into a big file
 
 key cmd-q

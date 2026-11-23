@@ -103,7 +103,7 @@ pub struct Shell {
     layout: Layout,
     screen: Rect,
     tab_hits: Vec<TabHit>,
-    /// Where the last frame drew the mode (NAV, EDIT, SELECT) in the status bar: a click
+    /// Where the last frame drew the mode (NAV, EDIT) in the status bar: a click
     /// there switches the editor in front between nav and edit mode.
     mode_pill: Option<Rect>,
     dragging: Option<DockPosition>,
@@ -746,7 +746,7 @@ impl Shell {
             "bakedit::ToggleEditMode" => {
                 self.settings.vim_mode = !self.settings.vim_mode;
                 let text = if self.settings.vim_mode {
-                    "Nav and edit modes on: files open in nav mode, i to edit, escape to go back"
+                    "Nav and edit modes on: files open in nav mode, cmd-i to edit and to go back"
                 } else {
                     "Nav and edit modes off: keys type everywhere"
                 };

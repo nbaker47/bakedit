@@ -8,6 +8,8 @@ key enter
 expect src › main.rs
 expect NAV
 key j j w
+expect  1:1  Rust
+key down down right right right right
 expect  3:5  Rust
 
 # cmd-i: edit mode with the cursor where it was; typing types.
@@ -43,8 +45,8 @@ click-on EDIT
 expect NAV
 expect-not EDIT
 
-# One undo takes back what was typed; nothing unsaved, so cmd-q quits at once.
-key u
+# One cmd-z takes back what was typed; nothing unsaved, so cmd-q quits at once.
+key cmd-z
 expect-not xyCounts
 key cmd-q
 expect-exit

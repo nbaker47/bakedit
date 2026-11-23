@@ -32,7 +32,7 @@ fn the_built_in_keymap_loads_without_warnings() {
     let mut keymap = Keymap::new();
     let warnings = keymap.load(DEFAULT_KEYMAP, KeymapSource::Default);
     assert!(warnings.is_empty(), "{}", warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("\n"));
-    assert!(keymap.len() > 500);
+    assert!(keymap.len() > 450, "{}", keymap.len());
 }
 
 #[test]

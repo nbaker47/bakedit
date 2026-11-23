@@ -161,10 +161,10 @@ fn world(place: Place) -> World {
         Place::Editor | Place::EditMode | Place::FindBar | Place::Prompt | Place::GoToLine => {
             shell.open_file(&main, Some(2), Some(5), false, true);
             match place {
-                Place::EditMode => act(&mut shell, "vim::InsertBefore"),
+                Place::EditMode => act(&mut shell, "bakedit::ToggleMode"),
                 Place::FindBar => act(&mut shell, "buffer_search::Deploy"),
                 Place::Prompt => {
-                    act(&mut shell, "vim::InsertBefore");
+                    act(&mut shell, "bakedit::ToggleMode");
                     shell.handle_paste("x");
                     act(&mut shell, "pane::CloseActiveItem");
                     assert!(matches!(shell.modal, Some(Modal::Prompt { .. })), "closing an unsaved file asks");

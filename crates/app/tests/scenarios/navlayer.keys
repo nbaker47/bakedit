@@ -8,11 +8,29 @@ key enter
 expect  1:1  Rust
 expect ;layer
 
-# ; held, d tapped: down.
+# ; held, d tapped: down. In nav mode the layer's keys are not typed and move as in edit
+# mode.
 down ;
 key d d
 up ;
 expect  3:1  Rust
+expect NAV
+# ; held with j (shift) and f: shift-right, a selection.
+down ;
+down j
+key f f
+up j
+up ;
+expect 3:3 (2 selected)
+key escape
+# ; held with k (cmd) and d: cmd-down, 5 lines.
+down ;
+down k
+key d
+up k
+up ;
+expect  8:3  Rust
+expect /// Counts how often
 # ; held with k (cmd) and t: cmd-t, the terminal.
 down ;
 down k

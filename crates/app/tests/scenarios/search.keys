@@ -9,7 +9,7 @@ key enter
 expect src › main.rs
 
 # cmd-f: the find bar over the file, seeded with the word under the cursor.
-key j j j
+key down down down
 key cmd-f
 expect Find
 text count
@@ -25,14 +25,12 @@ key escape
 expect-not 2 of 8
 expect NAV
 expect  4:13  Rust
-# n and N go on with the same search from nav mode, moving the cursor as vim's do.
+# n is not a key in nav mode: nothing moves.
 key n
-expect  5:13  Rust
-key shift-n
 expect  4:13  Rust
 
-# / is find in nav mode too; alt-enter selects every match.
-key /
+# cmd-f again; alt-enter selects every match.
+key cmd-f
 text word
 key alt-enter
 expect 9 cursors

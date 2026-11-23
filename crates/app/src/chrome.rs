@@ -105,7 +105,6 @@ pub fn tab_bar(
 pub enum ModeIndicator {
     Nav,
     Edit,
-    Select,
     /// Modes are off (`"vim_mode": false`) or the focus is not in an editor.
     None,
 }
@@ -169,7 +168,7 @@ impl Default for Status {
 /// Draw the status bar in `area` (one row): mode and git on the left, the message in the
 /// middle, the cursor and file facts on the right. On a narrow screen the right side gives
 /// way first, least important item first, so the mode and branch never get cut. Returns
-/// where the mode pill (NAV, EDIT, SELECT) was drawn, for clicks on it: `None` when there is
+/// where the mode pill (NAV, EDIT) was drawn, for clicks on it: `None` when there is
 /// no mode to show or no room.
 pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> Option<Rect> {
     let bg = theme.status_bar_bg;
@@ -187,7 +186,6 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
     let mode = match status.mode {
         ModeIndicator::Nav => Some(pill("NAV", theme.text_accent)),
         ModeIndicator::Edit => Some(pill("EDIT", theme.success)),
-        ModeIndicator::Select => Some(pill("SELECT", theme.conflict)),
         ModeIndicator::None => None,
     };
     let mut pill = None;
@@ -570,7 +568,7 @@ mod tests {
             status_bar(&mut canvas, area, &Status { mode, ..full_status() }, &Theme::builtin())
         };
         assert_eq!(pill(ModeIndicator::Nav, Rect::new(0, 3, 60, 1)), Some(Rect::new(0, 3, 5, 1)), "\" NAV \"");
-        assert_eq!(pill(ModeIndicator::Select, Rect::new(10, 3, 60, 1)), Some(Rect::new(10, 3, 8, 1)));
+        assert_eq!(pill(ModeIndicator::Edit, Rect::new(10, 3, 60, 1)), Some(Rect::new(10, 3, 6, 1)));
         assert_eq!(pill(ModeIndicator::None, Rect::new(0, 3, 60, 1)), None);
         assert_eq!(pill(ModeIndicator::Edit, Rect::new(0, 3, 3, 1)), Some(Rect::new(0, 3, 3, 1)), "only what fits");
         assert_eq!(pill(ModeIndicator::Nav, Rect::new(0, 3, 0, 1)), None);

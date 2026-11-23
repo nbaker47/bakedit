@@ -11,7 +11,7 @@
 //!   `language` is a language name such as `"JSON"` to colour it as.
 //!
 //! Beyond those the app reaches it only through the `View` and `Item` traits: `editor::*`,
-//! `vim::*`, `bakedit::ToggleMode` (also sent for a click on the mode in the status bar),
+//! `vim::NormalBefore`, `bakedit::ToggleMode` (also sent for a click on the mode in the status bar),
 //! `buffer_search::*` and `search::*` actions from the keymap, `workspace::SaveAsPath`
 //! `{path}`, `go_to` when a file is opened at a line, `picker_rows`, `picker_preview` and
 //! `picker_confirm` for the outline, `paths_changed` when the file changes on disk,
@@ -65,14 +65,6 @@ const MAX_OPEN_BYTES: u64 = 256 * 1024 * 1024;
 /// Files above this many bytes are edited without syntax colours or git marks.
 const LARGE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// A selecting state of nav mode (`v` and `V`): motions extend the selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Visual {
-    Char,
-    /// Whole lines from `anchor_line` to the line of `cursor`, the moving end.
-    Line { anchor_line: usize, cursor: usize },
-}
-
 /// A file, an unsaved buffer or a read-only page.
 pub struct EditorItem {
     editor: Editor,
@@ -111,9 +103,8 @@ pub struct EditorItem {
     /// In edit mode (only meaningful when `modal`).
     insert: bool,
     /// How many undo steps there were when edit mode began: leaving it fuses the steps
-    /// since into one, so that `u` takes back a whole edit, as in vim.
+    /// since into one, so that one undo takes back a whole edit.
     insert_mark: Option<usize>,
-    selecting: Option<Visual>,
 
     git: GitMarks,
     find: Option<Box<FindBar>>,
@@ -213,7 +204,6 @@ impl EditorItem {
             modal: cx.settings.vim_mode,
             insert: false,
             insert_mark: None,
-            selecting: None,
             git: GitMarks::default(),
             find: None,
             last_search: None,
@@ -233,14 +223,6 @@ impl EditorItem {
 
     fn cursor_line(&self) -> usize {
         self.editor.buffer().char_to_line(self.cursor())
-    }
-
-    /// The text cursor the view follows: the moving end in line-wise selecting.
-    fn view_cursor(&self) -> usize {
-        match self.selecting {
-            Some(Visual::Line { cursor, .. }) => cursor,
-            _ => self.cursor(),
-        }
     }
 
     fn tab_size(&self, settings: &Settings) -> usize {
@@ -391,11 +373,10 @@ impl Item for EditorItem {
     fn status(&self) -> ItemStatus {
         let selection = self.editor.selections().primary();
         let point = self.editor.buffer().char_to_point(selection.head);
-        let mode = match (self.modal, self.insert, self.selecting) {
-            (false, ..) => None,
-            (true, _, Some(_)) => Some(ModeIndicator::Select),
-            (true, true, None) => Some(ModeIndicator::Edit),
-            (true, false, None) => Some(ModeIndicator::Nav),
+        let mode = match (self.modal, self.insert) {
+            (false, _) => None,
+            (true, true) => Some(ModeIndicator::Edit),
+            (true, false) => Some(ModeIndicator::Nav),
         };
         ItemStatus {
             mode,
@@ -434,7 +415,6 @@ impl Item for EditorItem {
     fn go_to(&mut self, line: u32, column: Option<u32>) {
         let motion = Motion::GoToLine { line: line.max(1) as usize, column: column.unwrap_or(1).max(1) as usize };
         self.editor.break_undo_group();
-        self.selecting = None;
         self.editor.apply(Command::Move(motion));
         self.reveal = Reveal::Center;
     }

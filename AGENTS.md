@@ -92,6 +92,11 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   `chrome.rs` (tab bar, status bar, prompt, toast), `picker.rs`, `line_input.rs`, `paint.rs`
   (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
   `minimap.rs`, `hints.rs` (which-key), `usage.rs` (the usage strip).
+- **Nav mode and edit mode** (`"vim_mode": true`): nav mode is edit mode minus every plain
+  key that edits. Letters and other text keys are swallowed; enter, tab, backspace and delete
+  are `null` in nav mode; arrows, the `;` layer, shift-arrows and every cmd/alt/ctrl binding
+  work as in edit mode. `cmd-i` (`bakedit::ToggleMode`) switches, escape leaves edit mode
+  (`vim::NormalBefore`). There are no vim letter keys or leader: do not add any.
 - **Keymap.** `assets/keymaps/default.json` is Zed's format and semantics. Action names are
   Zed's where Zed has the action; bakedit's own are `bakedit::*`, `herdr::*`,
   `project_diff::*`, `terminal_panel::ToggleZoom`, `terminal::OpenLinks`,

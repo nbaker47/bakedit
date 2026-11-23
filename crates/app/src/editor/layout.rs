@@ -142,7 +142,7 @@ impl EditorItem {
 
     /// Where the cursor is as a scroll position: its line and soft-wrap row.
     pub(super) fn cursor_row(&self) -> Scroll {
-        let position = self.editor.display_position(self.view_cursor());
+        let position = self.editor.display_position(self.cursor());
         Scroll { line: position.line, row: position.row }
     }
 

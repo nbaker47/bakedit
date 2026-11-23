@@ -253,56 +253,47 @@ fn multiple_cursors_type_together() {
 // ---- nav and edit mode --------------------------------------------------------------------
 
 #[test]
-fn nav_mode_types_nothing_and_edit_mode_comes_with_i() {
+fn nav_mode_types_nothing_and_the_toggle_goes_to_edit_mode() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "hello\nworld\n");
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    type_text(&mut item, &mut harness, "zq");
+    type_text(&mut item, &mut harness, "zq hjkl:/");
     assert_eq!(text_of(&item), "hello\nworld\n");
+    assert_eq!(item.position(), Some((1, 1)), "and no letter moves the cursor");
     let (_, cursor, _) = harness.draw(&mut item, 40, 5);
     assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Block));
-    // `a` appends after the character, `A` at the end, `o` opens a line below.
-    act(&mut item, &mut harness, "vim::InsertAfter");
+    act(&mut item, &mut harness, "editor::MoveRight");
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
     assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
     type_text(&mut item, &mut harness, "X");
     assert_eq!(text_of(&item), "hXello\nworld\n");
     let (_, cursor, _) = harness.draw(&mut item, 40, 5);
     assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Bar));
-    // Escape goes back and steps left onto the character, as vim does.
+    // Escape goes back and steps left onto the character.
     act(&mut item, &mut harness, "vim::NormalBefore");
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
     assert_eq!(item.position(), Some((1, 2)));
-    act(&mut item, &mut harness, "vim::InsertLineBelow");
-    type_text(&mut item, &mut harness, "new");
-    assert_eq!(text_of(&item), "hXello\nnew\nworld\n");
-    act(&mut item, &mut harness, "vim::NormalBefore");
-    act(&mut item, &mut harness, "vim::InsertLineAbove");
-    assert_eq!(item.position(), Some((2, 1)));
-    act(&mut item, &mut harness, "vim::NormalBefore");
-    act(&mut item, &mut harness, "editor::MoveToEnd");
-    act(&mut item, &mut harness, "vim::InsertFirstNonWhitespace");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
 }
 
 #[test]
-fn nav_mode_e_lands_on_the_last_character_of_each_word() {
+fn the_vim_actions_are_gone() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "hello\nworld\n");
+    for name in ["vim::InsertBefore", "vim::InsertLineBelow", "vim::ToggleVisual", "vim::ScrollDown"] {
+        assert!(!act(&mut item, &mut harness, name), "{name}");
+    }
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
+    assert_eq!(text_of(&item), "hello\nworld\n");
+}
+
+#[test]
+fn word_motions_in_nav_mode_go_where_edit_modes_do() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "let words = vec;\nnext\n");
     act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    assert_eq!(item.position(), Some((1, 3)), "on the t of let");
+    assert_eq!(item.position(), Some((1, 4)), "after let, as in edit mode");
     act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    assert_eq!(item.position(), Some((1, 9)), "from a word's end on to the s of words");
-    for _ in 0..3 {
-        act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    }
-    assert_eq!(item.position(), Some((1, 16)), "past =, vec, onto ;");
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    assert_eq!(item.position(), Some((2, 4)), "on to the next line");
-    // Edit mode keeps the engine's word end: the bar cursor goes after the word.
-    act(&mut item, &mut harness, "editor::MoveToBeginning");
-    act(&mut item, &mut harness, "vim::InsertBefore");
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    assert_eq!(item.position(), Some((1, 4)));
+    assert_eq!(item.position(), Some((1, 10)));
 }
 
 #[test]
@@ -310,8 +301,9 @@ fn one_undo_takes_back_a_whole_edit_mode_session() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "one\ntwo\n");
     let steps = item.editor.undo_steps();
-    // o, typing slowly enough for several undo steps, a paste, escape.
-    act(&mut item, &mut harness, "vim::InsertLineBelow");
+    // Into edit mode, a new line, typing slowly enough for several undo steps, a paste, escape.
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    act(&mut item, &mut harness, "editor::NewlineBelow");
     type_text(&mut item, &mut harness, "new");
     item.editor.break_undo_group();
     item.handle_paste(" line", &mut harness.cx());
@@ -326,7 +318,7 @@ fn one_undo_takes_back_a_whole_edit_mode_session() {
     act(&mut item, &mut harness, "editor::Redo");
     assert_eq!(text_of(&item), "one\nnew line!\ntwo\n");
     // A session of one keystroke is one step as well.
-    act(&mut item, &mut harness, "vim::InsertBefore");
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
     type_text(&mut item, &mut harness, "x");
     act(&mut item, &mut harness, "vim::NormalBefore");
     act(&mut item, &mut harness, "editor::Undo");
@@ -338,7 +330,7 @@ fn undo_in_nav_mode_leaves_no_selection() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "one\ntwo\nthree\n");
     act(&mut item, &mut harness, "editor::MoveDown");
-    act(&mut item, &mut harness, "vim::ToggleVisualLine");
+    act(&mut item, &mut harness, "editor::SelectLine");
     act(&mut item, &mut harness, "editor::Cut");
     assert_eq!(text_of(&item), "one\nthree\n");
     act(&mut item, &mut harness, "editor::Undo");
@@ -363,58 +355,26 @@ fn the_nav_cursor_stays_on_a_character_and_remembers_its_column() {
 }
 
 #[test]
-fn visual_mode_extends_and_y_d_c_end_it() {
+fn shift_arrows_select_in_nav_mode_as_in_edit_mode() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "one two three\nsecond\n");
-    act(&mut item, &mut harness, "vim::ToggleVisual");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Select));
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    for _ in 0..3 {
+        act(&mut item, &mut harness, "editor::SelectRight");
+    }
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
     assert_eq!(item.status().position.map(|p| p.2), Some(3), "`one` is selected");
     act(&mut item, &mut harness, "editor::Copy");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
     assert_eq!(harness.clipboard.get().map(|clip| clip.text), Some("one".to_string()));
-    assert_eq!(item.status().position.map(|p| p.2), Some(0), "the selection is let go");
-    // d cuts the selection and ends visual.
-    act(&mut item, &mut harness, "vim::ToggleVisual");
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    act(&mut item, &mut harness, "editor::Cut");
-    assert_eq!(text_of(&item), " two three\nsecond\n");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    // v then escape drops the selection.
-    act(&mut item, &mut harness, "vim::ToggleVisual");
-    act(&mut item, &mut harness, "editor::MoveRight");
+    // Escape lets go.
     act(&mut item, &mut harness, "editor::Cancel");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
     assert_eq!(item.status().position.map(|p| p.2), Some(0));
+    assert_eq!(text_of(&item), "one two three\nsecond\n");
 }
 
 #[test]
-fn visual_line_mode_selects_whole_lines() {
+fn the_setting_turns_modes_off_and_on() {
     let mut harness = Harness::new("/project");
-    let mut item = modal(&mut harness, "one\ntwo\nthree\nfour\n");
-    act(&mut item, &mut harness, "editor::MoveDown");
-    act(&mut item, &mut harness, "vim::ToggleVisualLine");
-    act(&mut item, &mut harness, "editor::MoveDown");
-    assert_eq!(item.editor.selections().primary().range(), 4..14, "lines two and three, with their breaks");
-    act(&mut item, &mut harness, "editor::Cut");
-    assert_eq!(text_of(&item), "one\nfour\n");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    // Upwards works too.
-    act(&mut item, &mut harness, "vim::ToggleVisualLine");
-    act(&mut item, &mut harness, "editor::MoveUp");
-    assert_eq!(item.editor.selections().primary().range(), 0..9);
-}
-
-#[test]
-fn half_page_scrolls_and_the_setting_turns_modes_off_and_on() {
-    let mut harness = Harness::new("/project");
-    let text: String = (1..=100).map(|n| format!("line {n}\n")).collect();
-    let mut item = modal(&mut harness, &text);
-    harness.draw(&mut item, 40, 21);
-    act(&mut item, &mut harness, "vim::ScrollDown");
-    assert_eq!(item.position(), Some((11, 1)), "half of 21 rows");
-    act(&mut item, &mut harness, "vim::ScrollUp");
-    assert_eq!(item.position(), Some((1, 1)));
+    let mut item = modal(&mut harness, "line 1\nline 2\n");
     harness.settings.vim_mode = false;
     assert!(item.tick(&mut harness.cx()));
     assert_eq!(item.status().mode, None);
@@ -436,7 +396,7 @@ fn the_nav_mode_setting_reaches_the_key_context() {
     let mut contexts = Vec::new();
     item.contexts(&mut contexts);
     assert_eq!(contexts[0].values, vec![("mode", "full".to_string()), ("vim_mode", "normal".to_string())]);
-    act(&mut item, &mut harness, "vim::InsertBefore");
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
     contexts.clear();
     item.contexts(&mut contexts);
     assert_eq!(contexts[0].values[1], ("vim_mode", "insert".to_string()));
@@ -471,7 +431,8 @@ fn the_mode_toggle_goes_to_edit_mode_and_back_leaving_the_cursor() {
     act(&mut item, &mut harness, "editor::Undo");
     assert_eq!(text_of(&item), "hello\nworld\n");
     // At the end of a line the block cannot sit past the last character: it goes onto it.
-    act(&mut item, &mut harness, "vim::InsertEndOfLine");
+    act(&mut item, &mut harness, "bakedit::ToggleMode");
+    act_with(&mut item, &mut harness, "editor::MoveToEndOfLine", json!({ "stop_at_soft_wraps": true }));
     assert_eq!(item.position(), Some((1, 6)));
     act(&mut item, &mut harness, "bakedit::ToggleMode");
     assert_eq!(item.position(), Some((1, 5)));
@@ -487,9 +448,8 @@ fn the_mode_toggle_goes_to_edit_mode_and_back_leaving_the_cursor() {
 fn the_mode_toggle_keeps_a_selection_for_edit_mode_to_replace() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "one two three\nsecond\n");
-    act(&mut item, &mut harness, "vim::ToggleVisual");
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Select));
+    act(&mut item, &mut harness, "editor::SelectToNextWordEnd");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
     let selected = item.editor.selections().primary().range();
     act(&mut item, &mut harness, "bakedit::ToggleMode");
     assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
@@ -499,7 +459,7 @@ fn the_mode_toggle_keeps_a_selection_for_edit_mode_to_replace() {
     // Whole lines too.
     act(&mut item, &mut harness, "bakedit::ToggleMode");
     act(&mut item, &mut harness, "editor::MoveDown");
-    act(&mut item, &mut harness, "vim::ToggleVisualLine");
+    act(&mut item, &mut harness, "editor::SelectLine");
     act(&mut item, &mut harness, "bakedit::ToggleMode");
     assert_eq!(item.status().mode, Some(ModeIndicator::Edit));
     assert_eq!(item.editor.selections().primary().range(), 12..19);
@@ -646,7 +606,7 @@ fn replace_and_select_all_matches() {
 }
 
 #[test]
-fn n_repeats_the_last_search_in_nav_mode() {
+fn the_last_search_repeats_in_nav_mode_as_in_edit_mode() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "x foo\nfoo\n");
     assert!(act(&mut item, &mut harness, "search::SelectNextMatch"));
@@ -656,13 +616,15 @@ fn n_repeats_the_last_search_in_nav_mode() {
     // Closing the bar leaves the cursor at the start of the match it found, nothing selected.
     act(&mut item, &mut harness, "buffer_search::Dismiss");
     assert_eq!(item.editor.selections().primary().range(), 2..2);
-    // n and N move the cursor from match to match, as in vim.
+    // Next and previous match select the match, as in edit mode.
     act(&mut item, &mut harness, "search::SelectNextMatch");
-    assert_eq!(item.editor.selections().primary().range(), 6..6);
+    assert_eq!(item.editor.selections().primary().range(), 2..5);
     act(&mut item, &mut harness, "search::SelectNextMatch");
-    assert_eq!(item.editor.selections().primary().range(), 2..2, "wraps around");
+    assert_eq!(item.editor.selections().primary().range(), 6..9);
+    act(&mut item, &mut harness, "search::SelectNextMatch");
+    assert_eq!(item.editor.selections().primary().range(), 2..5, "wraps around");
     act(&mut item, &mut harness, "search::SelectPreviousMatch");
-    assert_eq!(item.editor.selections().primary().range(), 6..6);
+    assert_eq!(item.editor.selections().primary().range(), 6..9);
     // While the bar is open, enter selects the match, as in Zed.
     act(&mut item, &mut harness, "buffer_search::Deploy");
     act(&mut item, &mut harness, "search::SelectNextMatch");
@@ -1262,22 +1224,26 @@ fn the_keymap_drives_nav_mode_edit_mode_and_the_find_bar() {
         shell.render(&mut buf);
         crate::dump::to_text(&buf)
     };
-    // Nav mode: letters move, nothing types.
+    // Nav mode: arrows move, letters do nothing.
     for c in ['z', 'j', 'l', 'l'] {
         send(&mut shell, KeyEvent::typed(c));
     }
     assert!(frame(&mut shell).contains("hello world"));
+    assert_eq!(shell.pane.active().unwrap().position(), Some((1, 1)));
+    for key in [Key::Down, Key::Right, Key::Right] {
+        send(&mut shell, KeyEvent::new(key, Mods::empty()));
+    }
     assert_eq!(shell.pane.active().unwrap().position(), Some((2, 3)));
-    // `i` then typing, escape.
-    send(&mut shell, KeyEvent::typed('i'));
+    // cmd-i then typing, escape.
+    send(&mut shell, KeyEvent::new(Key::Char('i'), Mods::SUPER));
     for c in "XY".chars() {
         send(&mut shell, KeyEvent::typed(c));
     }
     send(&mut shell, KeyEvent::new(Key::Escape, Mods::empty()));
     assert!(frame(&mut shell).contains("seXYcond foo line"));
     assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Nav));
-    // `/` opens the find bar; typing searches; enter steps; escape closes.
-    send(&mut shell, KeyEvent::typed('/'));
+    // cmd-f opens the find bar; typing searches; enter steps; escape closes.
+    send(&mut shell, KeyEvent::new(Key::Char('f'), Mods::SUPER));
     for c in "foo".chars() {
         send(&mut shell, KeyEvent::typed(c));
     }
@@ -1288,10 +1254,13 @@ fn the_keymap_drives_nav_mode_edit_mode_and_the_find_bar() {
     send(&mut shell, KeyEvent::new(Key::Escape, Mods::empty()));
     assert!(!frame(&mut shell).contains("Find"));
     assert_eq!(shell.pane.active().unwrap().position().map(|p| p.0), Some(3));
-    // `dd` is not vim: `d` cuts the line; `u` undoes it.
+    // d and u do nothing; cmd-x cuts the line and cmd-z brings it back, as in edit mode.
     send(&mut shell, KeyEvent::typed('d'));
-    assert!(!frame(&mut shell).contains("third foo"));
     send(&mut shell, KeyEvent::typed('u'));
+    assert!(frame(&mut shell).contains("third foo"));
+    send(&mut shell, KeyEvent::new(Key::Char('x'), Mods::SUPER));
+    assert!(!frame(&mut shell).contains("third foo"));
+    send(&mut shell, KeyEvent::new(Key::Char('z'), Mods::SUPER));
     assert!(frame(&mut shell).contains("third foo"));
     // cmd-s saves what was typed.
     send(&mut shell, KeyEvent::new(Key::Char('s'), Mods::SUPER));
@@ -1337,7 +1306,9 @@ fn cmd_i_and_ctrl_bracket_i_switch_the_mode_through_the_keymap() {
     let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
     let ctrl_bracket = KeyEvent::new(Key::Char(']'), Mods::CTRL);
     // cmd-i in nav mode, then in edit mode.
-    router.key(&mut shell, &KeyEvent::typed('w'));
+    for _ in 0..6 {
+        router.key(&mut shell, &KeyEvent::new(Key::Right, Mods::empty()));
+    }
     router.key(&mut shell, &cmd_i);
     assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
     assert_eq!(position(&shell), Some((1, 7)));
@@ -1354,9 +1325,9 @@ fn cmd_i_and_ctrl_bracket_i_switch_the_mode_through_the_keymap() {
     router.key(&mut shell, &KeyEvent::typed('i'));
     assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
     assert_eq!(text(&shell), "hello xworld\n");
-    // From SELECT.
-    router.key(&mut shell, &KeyEvent::typed('v'));
-    assert_eq!(mode(&shell), Some(ModeIndicator::Select));
+    // With a selection made with shift-right.
+    router.key(&mut shell, &KeyEvent::new(Key::Right, Mods::SHIFT));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
     router.key(&mut shell, &cmd_i);
     assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
     router.key(&mut shell, &cmd_i);
@@ -1373,7 +1344,7 @@ fn cmd_i_and_ctrl_bracket_i_switch_the_mode_through_the_keymap() {
 }
 
 #[test]
-fn cmd_i_from_select_and_back_leaves_no_selection_in_nav_mode() {
+fn cmd_i_from_a_selection_and_back_leaves_no_selection_in_nav_mode() {
     use bakedit_core::Key;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1381,18 +1352,19 @@ fn cmd_i_from_select_and_back_leaves_no_selection_in_nav_mode() {
     let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
     shell.open_file(&path, None, None, false, true);
     let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
-    router.key(&mut shell, &KeyEvent::typed('v'));
-    router.key(&mut shell, &KeyEvent::typed('w'));
+    for _ in 0..5 {
+        router.key(&mut shell, &KeyEvent::new(Key::Right, Mods::SHIFT));
+    }
     router.key(&mut shell, &cmd_i);
     let editor = |shell: &crate::shell::Shell| shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap().editor.selections().clone();
     assert!(!editor(&shell).is_single_cursor(), "edit mode keeps the selection to replace");
     router.key(&mut shell, &cmd_i);
     assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Nav));
-    assert!(editor(&shell).is_single_cursor(), "nav mode holds a cursor, not a selection");
-    // So d cuts the line, not the word that was selected.
+    assert!(editor(&shell).is_single_cursor(), "nav mode starts with a cursor, not a selection");
+    // And a letter there changes nothing.
     router.key(&mut shell, &KeyEvent::typed('d'));
     let text = text_of(shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap());
-    assert_eq!(text, "second\n");
+    assert_eq!(text, "hello world\nsecond\n");
 }
 
 #[test]
@@ -1404,14 +1376,82 @@ fn cmd_i_from_the_find_bar_switches_the_texts_mode_through_the_keymap() {
     let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
     shell.open_file(&path, None, None, false, true);
     let item = |shell: &crate::shell::Shell| shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap().find_focused();
-    router.key(&mut shell, &KeyEvent::typed('/'));
-    assert!(item(&shell), "the find bar has the keys");
     let cmd_i = KeyEvent::new(Key::Char('i'), Mods::SUPER);
+    router.key(&mut shell, &KeyEvent::new(Key::Char('f'), Mods::SUPER));
+    assert!(item(&shell), "the find bar has the keys");
     router.key(&mut shell, &cmd_i);
     assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Edit));
     assert!(item(&shell), "the bar keeps the keys");
     router.key(&mut shell, &cmd_i);
     assert_eq!(shell.pane.active().unwrap().status().mode, Some(ModeIndicator::Nav));
+}
+
+#[test]
+fn nav_mode_keys_change_nothing_but_the_rest_work_as_in_edit_mode() {
+    use crate::shell::Shell;
+    use bakedit_core::Key;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", "one two\nthree\nfour\n");
+    let (mut shell, mut router) = app_shell(&dir, Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() });
+    shell.open_file(&path, None, None, false, true);
+    let mode = |shell: &Shell| shell.pane.active().unwrap().status().mode;
+    let status = |shell: &Shell| shell.pane.active().unwrap().status().position.unwrap();
+    let text = |shell: &Shell| text_of(shell.pane.active().unwrap().as_any().downcast_ref::<EditorItem>().unwrap());
+    let key = |key: Key, mods: Mods| KeyEvent::new(key, mods);
+    let with_text = |key: Key, text: &str| KeyEvent { text: Some(text.to_string()), ..KeyEvent::new(key, Mods::empty()) };
+    let start = text(&shell);
+    router.key(&mut shell, &key(Key::Right, Mods::empty()));
+    assert_eq!(status(&shell), (1, 2, 0));
+
+    // The old vim letters, digits, punctuation and the space leader: nothing moves or changes.
+    for c in "hjklwbe0^$gGG{}%iaIAoOvVydcpxuUJ><nN*HL:/ fq".chars() {
+        router.key(&mut shell, &KeyEvent::typed(c));
+        assert_eq!((text(&shell), status(&shell), mode(&shell)), (start.clone(), (1, 2, 0), Some(ModeIndicator::Nav)), "{c:?}");
+    }
+    assert!(shell.modal.is_none(), "no picker or palette opened");
+    // Enter, tab, backspace and delete edit nothing, with or without the text a terminal sends.
+    let plain = [Key::Enter, Key::Tab, Key::Backspace, Key::Delete];
+    for k in plain {
+        for mods in [Mods::empty(), Mods::SHIFT] {
+            router.key(&mut shell, &key(k, mods));
+            assert_eq!((text(&shell), status(&shell)), (start.clone(), (1, 2, 0)), "{k:?} {mods:?}");
+        }
+    }
+    router.key(&mut shell, &with_text(Key::Enter, "\r"));
+    router.key(&mut shell, &with_text(Key::Tab, "\t"));
+    assert_eq!((text(&shell), status(&shell)), (start.clone(), (1, 2, 0)));
+    assert!(!shell.pane.active().unwrap().is_dirty());
+
+    // Arrows, shift-arrows and cmd-up/down work as in edit mode.
+    router.key(&mut shell, &key(Key::Down, Mods::empty()));
+    assert_eq!(status(&shell), (2, 2, 0));
+    router.key(&mut shell, &key(Key::Right, Mods::SHIFT));
+    router.key(&mut shell, &key(Key::Right, Mods::SHIFT));
+    assert_eq!(status(&shell), (2, 4, 2), "two characters selected");
+    router.key(&mut shell, &key(Key::Escape, Mods::empty()));
+    assert_eq!(status(&shell).2, 0, "escape lets go");
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    router.key(&mut shell, &key(Key::Up, Mods::SUPER));
+    assert_eq!(status(&shell), (1, 4, 0), "cmd-up jumps 5 lines, here to the first");
+    router.key(&mut shell, &key(Key::Down, Mods::SUPER));
+    assert_eq!(status(&shell).0, 4, "cmd-down jumps 5 lines, here to the last");
+
+    // cmd-i into edit mode, where typing works; cmd-s saves from nav mode.
+    router.key(&mut shell, &key(Key::Up, Mods::SUPER));
+    router.key(&mut shell, &key(Key::Left, Mods::SUPER));
+    assert_eq!(status(&shell), (1, 1, 0));
+    router.key(&mut shell, &KeyEvent::new(Key::Char('i'), Mods::SUPER));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Edit));
+    for c in "hi".chars() {
+        router.key(&mut shell, &KeyEvent::typed(c));
+    }
+    router.key(&mut shell, &key(Key::Enter, Mods::empty()));
+    assert_eq!(text(&shell), "hi\none two\nthree\nfour\n");
+    router.key(&mut shell, &KeyEvent::new(Key::Char('i'), Mods::SUPER));
+    assert_eq!(mode(&shell), Some(ModeIndicator::Nav));
+    router.key(&mut shell, &KeyEvent::new(Key::Char('s'), Mods::SUPER));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "hi\none two\nthree\nfour\n");
 }
 
 #[test]
@@ -1477,8 +1517,7 @@ fn write_snapshots_for_looking_at() {
         std::fs::write(std::path::Path::new(&out).join(name), html).unwrap();
     };
     item.go_to(10, Some(5));
-    act(&mut item, &mut harness, "vim::ToggleVisual");
-    act(&mut item, &mut harness, "editor::MoveToNextWordEnd");
+    act(&mut item, &mut harness, "editor::SelectToNextWordEnd");
     write("editor-wide.html", &harness, &mut item, 130, 34);
     act(&mut item, &mut harness, "editor::Cancel");
     act_with(&mut item, &mut harness, "buffer_search::Deploy", json!({ "replace_enabled": true }));

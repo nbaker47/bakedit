@@ -149,7 +149,6 @@ impl EditorItem {
             return true;
         }
         self.find_focus_editor();
-        self.selecting = None;
         let pos = self.position_at_cell(col, row);
         let in_gutter = col < self.geo.text.x;
         self.editor.break_undo_group();

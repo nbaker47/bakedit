@@ -69,7 +69,7 @@ It is much faster than vim's approach in practice: there is no mode to be in, no
 forget you are in, and the same arrows and shortcuts work everywhere. Under the layer is the
 usual pair of modes if you want them:
 
-![NAV and INSERT modes](docs/img/modes.svg)
+![NAV and EDIT modes](docs/img/modes.svg)
 
 The layer matches the physical key position, not the character, so it stays in place on
 other keyboard layouts. It is a built-in version of the Karabiner-Elements rule I used to
@@ -87,7 +87,7 @@ Project search with include and exclude globs (`cmd-shift-f`):
 
 ![Project search](docs/img/search-project-search.png)
 
-Git panel with stage, commit and amend (`cmd-g`), and a project diff (`space d`):
+Git panel with stage, commit and amend (`cmd-g`), and a project diff (`cmd-alt-g`):
 
 ![Git panel](docs/img/kitty-git.png)
 
@@ -143,10 +143,11 @@ names where Zed has the action. A few that matter most:
 | `cmd-e` | back to the editor |
 | `cmd-alt-f` | hide every dock |
 | `ctrl-]` then `?` | show all keybindings |
-| `space f`, `space /`, `space g` (NAV mode) | find file, search, git |
+| `cmd-i` | switch between NAV and EDIT mode |
 
-In NAV mode the editor answers to `h j k l`, `w b e`, `gg`, `G`, `y d c p x u`, `v`, `/`, `n`
-and friends, so it feels like a small subset of vim without needing to be one.
+In NAV mode nothing you press changes the text: letters and the other text keys are ignored,
+and so are enter, tab, backspace and delete. The arrows, the `;` layer, shift-arrows and every
+cmd, alt and ctrl shortcut work exactly as in EDIT mode. There are no vim letter keys.
 
 ## Built to stay fast
 
@@ -161,7 +162,7 @@ and friends, so it feels like a small subset of vim without needing to be one.
 ## Status
 
 Early, and built for one user's workflow first. It is my daily driver, but expect rough edges
-(tree drag and multi-select, hunk staging and a few vim-ish quirks are not there yet). Issues
+(tree drag and multi-select and hunk staging are not there yet). Issues
 and pull requests are welcome, but there is no promise to add features I do not use.
 
 `AGENTS.md` has the architecture notes and how to build, test and screenshot it.
