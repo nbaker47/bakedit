@@ -1533,6 +1533,21 @@ fn move_pane_matches_the_move_script() {
     }
 }
 
+/// `text` with every `<pane id>` (a pane the test did not name) written as `new`.
+fn unnamed_as_new(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        let end = rest[start..]
+            .find('>')
+            .map_or(rest.len(), |end| start + end + 1);
+        out.push_str(&rest[..start]);
+        out.push_str("new");
+        rest = &rest[end..];
+    }
+    out + rest
+}
+
 #[test]
 fn root_split_matches_the_root_split_script() {
     let Some(mut session) = Session::open() else {
@@ -1549,22 +1564,10 @@ fn root_split_matches_the_root_split_script() {
     }
     // Panes the split made are not in the name table; call each one `new`.
     let nameless_picture = |session: &Session, set: &ThreePanes| {
-        let tree = session.tree(&set.a);
-        let focused = session.focused();
-        let anonymous = |text: String| {
-            let mut out = String::new();
-            let mut rest = text.as_str();
-            while let Some(start) = rest.find('<') {
-                let end = rest[start..]
-                    .find('>')
-                    .map_or(rest.len(), |end| start + end + 1);
-                out.push_str(&rest[..start]);
-                out.push_str("new");
-                rest = &rest[end..];
-            }
-            out + rest
-        };
-        (anonymous(tree), anonymous(focused))
+        (
+            unnamed_as_new(&session.tree(&set.a)),
+            unnamed_as_new(&session.focused()),
+        )
     };
     for (step, (focus, direction)) in [("b", SplitDirection::Right), ("a", SplitDirection::Down)]
         .into_iter()
