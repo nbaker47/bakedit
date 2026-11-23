@@ -161,6 +161,7 @@
       "shift-enter": "search::SelectPreviousMatch",
       "alt-enter": "search::SelectAllMatches",
       "cmd-f": "search::FocusSearch",
+      "cmd-shift-h": "search::ToggleReplace",
       "cmd-shift-o": "outline::Toggle"
     }
   },
