@@ -227,9 +227,33 @@ fn checkbox_width(icons: Icons) -> u16 {
 
 // ---- trash and discard, shared with the project diff ------------------------------------
 
-/// The folder "moved to the Trash" files go to: `$BAKEDIT_TRASH_DIR` (tests), `~/.Trash` on
-/// macOS, else the freedesktop trash.
+#[cfg(test)]
+thread_local! {
+    /// The Trash of the test running on this thread. Each test sets its own: an
+    /// environment variable would be shared by the tests running at the same time.
+    static TEST_TRASH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Make the Trash of the test on this thread `dir`.
+#[cfg(test)]
+pub(crate) fn set_test_trash(dir: &Path) {
+    TEST_TRASH.with(|trash| *trash.borrow_mut() = Some(dir.to_path_buf()));
+}
+
+/// The folder "moved to the Trash" files go to: `$BAKEDIT_TRASH_DIR` (scenarios), `~/.Trash`
+/// on macOS, else the freedesktop trash. Asked on the thread that starts the job: a test
+/// build gives the Trash its test set ([`set_test_trash`]), and never the real one.
 fn trash_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        TEST_TRASH.with(|trash| trash.borrow().clone())
+    }
+    #[cfg(not(test))]
+    real_trash_dir()
+}
+
+#[cfg(not(test))]
+fn real_trash_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("BAKEDIT_TRASH_DIR") {
         return Some(PathBuf::from(dir));
     }
@@ -263,10 +287,11 @@ fn trash_into(dir: &Path, path: &Path) -> Result<(), String> {
     }
 }
 
-/// Move a file or folder to the Trash. Nothing is deleted outright.
-pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
-    let dir = trash_dir().ok_or_else(|| "there is no Trash folder".to_string())?;
-    trash_into(&dir, path)
+/// Move a file or folder into `trash` (from [`trash_dir`], asked before the job started).
+/// Nothing is deleted outright.
+pub(crate) fn move_to_trash(trash: Option<&Path>, path: &Path) -> Result<(), String> {
+    let dir = trash.ok_or_else(|| "there is no Trash folder".to_string())?;
+    trash_into(dir, path)
 }
 
 fn trash_failure(message: String) -> GitError {
@@ -293,13 +318,13 @@ fn discard_of(entry: &StatusEntry) -> Option<Discard> {
     Some(Discard { restore, trash: if brand_new { vec![entry.path.clone()] } else { Vec::new() } })
 }
 
-fn run_discard(repo: &bakedit_git::Repo, discard: &Discard) -> Result<(), GitError> {
+fn run_discard(repo: &bakedit_git::Repo, discard: &Discard, trash: Option<&Path>) -> Result<(), GitError> {
     if !discard.restore.is_empty() {
         repo.unstage(&discard.restore)?;
         repo.restore(&discard.restore)?;
     }
     for path in &discard.trash {
-        move_to_trash(&repo.root().join(path)).map_err(trash_failure)?;
+        move_to_trash(trash, &repo.root().join(path)).map_err(trash_failure)?;
     }
     Ok(())
 }
@@ -346,7 +371,8 @@ pub(crate) fn request_discard(cx: &mut Cx<'_>, rel: &Path, skip_prompt: bool, co
         return Discarding::Asked;
     }
     let paths: Vec<PathBuf> = discard.restore.iter().chain(&discard.trash).filter_map(|path| cx.project.abs_path(path)).collect();
-    let task = cx.project.git_job(format!("Discard {name}"), move |repo| run_discard(repo, &discard).map(|()| String::new()));
+    let trash = trash_dir();
+    let task = cx.project.git_job(format!("Discard {name}"), move |repo| run_discard(repo, &discard, trash.as_deref()).map(|()| String::new()));
     Discarding::Started { task, paths }
 }
 
@@ -566,7 +592,8 @@ impl GitPanel {
         }
         let touched: Vec<PathBuf> = restore.iter().chain(&trash).filter_map(|path| cx.project.abs_path(path)).collect();
         let discard = Discard { restore, trash };
-        let task = cx.project.git_job("Discard tracked changes", move |repo| run_discard(repo, &discard).map(|()| String::new()));
+        let trash = trash_dir();
+        let task = cx.project.git_job("Discard tracked changes", move |repo| run_discard(repo, &discard, trash.as_deref()).map(|()| String::new()));
         self.pending.push(Pending { task, after: After::Changed(touched) });
         true
     }
@@ -592,9 +619,10 @@ impl GitPanel {
             return true;
         }
         let touched: Vec<PathBuf> = paths.iter().filter_map(|path| cx.project.abs_path(path)).collect();
+        let trash = trash_dir();
         let task = cx.project.git_job("Trash untracked files", move |repo| {
             for path in &paths {
-                move_to_trash(&repo.root().join(path)).map_err(trash_failure)?;
+                move_to_trash(trash.as_deref(), &repo.root().join(path)).map_err(trash_failure)?;
             }
             Ok(String::new())
         });
@@ -1609,7 +1637,7 @@ mod tests {
     fn discarding_asks_first_and_untracked_files_go_to_the_trash() {
         let dir = repo();
         let trash = tempfile::tempdir().unwrap();
-        std::env::set_var("BAKEDIT_TRASH_DIR", trash.path());
+        set_test_trash(trash.path());
         std::fs::write(dir.path().join("a.txt"), "one\nchanged\n").unwrap();
         std::fs::write(dir.path().join("scratch.txt"), "tmp\n").unwrap();
         let (mut harness, mut panel) = panel_for(dir.path());
@@ -1635,7 +1663,7 @@ mod tests {
     fn restoring_all_tracked_and_trashing_all_untracked_always_ask() {
         let dir = repo();
         let trash = tempfile::tempdir().unwrap();
-        std::env::set_var("BAKEDIT_TRASH_DIR", trash.path());
+        set_test_trash(trash.path());
         std::fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
         std::fs::write(dir.path().join("fresh.txt"), "x\n").unwrap();
         git(dir.path(), &["add", "fresh.txt"]);
