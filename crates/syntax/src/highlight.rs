@@ -43,6 +43,10 @@ const MAX_INJECTION_DEPTH: u16 = 10;
 /// The most layers one document may have. A long Markdown file has one per paragraph.
 const MAX_LAYERS: usize = 200_000;
 
+/// The largest span buffer a highlighter keeps between calls (a few megabytes; a file of
+/// tens of thousands of lines). One huge file should not pin its memory for good.
+const KEEP_COLLECTED: usize = 1 << 18;
+
 // Guards against a query that takes far longer than the parse it follows.
 //
 // tree-sitter matches a pattern in time linear in the tree unless the pattern has to keep a
@@ -215,8 +219,13 @@ impl Highlighter {
         }
         let grammar = grammar::load(spec)?;
         self.collected.clear();
-        self.collect_layers(grammar, text, cancel)?;
-        Ok(flatten(&mut self.collected, text))
+        let collected = self.collect_layers(grammar, text, cancel);
+        let spans = collected.map(|()| flatten(&mut self.collected, text));
+        // Keep the buffer for the next file, unless this one was unusually large.
+        if self.collected.capacity() > KEEP_COLLECTED {
+            self.collected = Vec::new();
+        }
+        spans
     }
 
     /// Parse and query every layer, leaving their spans in `self.collected`.
