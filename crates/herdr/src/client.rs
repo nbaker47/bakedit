@@ -11,9 +11,10 @@
 //! The session a developer works in is also the session their tests would reach if a test
 //! built a client from the environment. So a client refuses to send anything that changes
 //! herdr (focus, move, resize, close, send text, ...) to the *live* session unless the
-//! application said so with [`Client::allow_live_mutations`]. The live session is the socket
-//! at `~/.config/herdr/herdr.sock` and whatever `HERDR_SOCKET_PATH` named when the process
-//! first built a client. Read-only methods are never refused.
+//! application said so with [`Client::allow_live_mutations`]. The live session is the default
+//! session's socket (`~/.config/herdr/herdr.sock`, and `$XDG_CONFIG_HOME/herdr/herdr.sock`
+//! when that variable is set) and whatever `HERDR_SOCKET_PATH` named when the process first
+//! built a client. Read-only methods are never refused.
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -280,9 +281,10 @@ impl Client {
     }
 
     /// Whether this client points at a session the mutation guard protects: the default
-    /// socket, the socket `HERDR_SOCKET_PATH` named when the process first built a client,
-    /// or one added with [`Client::with_protected_socket`]. Symlinks and `..` are resolved
-    /// before comparing, so another spelling of the same path does not slip through.
+    /// session's socket (under `~/.config/herdr`, and under `$XDG_CONFIG_HOME/herdr` when
+    /// that is set), the socket `HERDR_SOCKET_PATH` named when the process first built a
+    /// client, or one added with [`Client::with_protected_socket`]. Symlinks and `..` are
+    /// resolved before comparing, so another spelling of the same path does not slip through.
     pub fn is_live_session(&self) -> bool {
         let mine = resolve(&self.socket_path);
         live_sockets()
@@ -545,18 +547,35 @@ pub(crate) fn decode<T: DeserializeOwned>(
         .map_err(|err| HerdrError::protocol(method, format!("bad `{key}`: {err}")))
 }
 
-/// The sockets of the session the user is working in, noted once per process: the default
-/// socket and the one the environment named.
+/// The sockets of the session the user is working in, noted once per process.
 fn live_sockets() -> &'static [PathBuf] {
     static LIVE: OnceLock<Vec<PathBuf>> = OnceLock::new();
     LIVE.get_or_init(|| {
-        let home = home_dir();
-        let mut sockets = vec![socket_path_from(None, home.as_deref())];
-        if let Some(named) = std::env::var_os(SOCKET_ENV_VAR).filter(|value| !value.is_empty()) {
-            sockets.push(PathBuf::from(named));
-        }
-        sockets
+        live_sockets_from(
+            home_dir().as_deref(),
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os(SOCKET_ENV_VAR),
+        )
     })
+}
+
+/// The sockets a live session can be on: the default session's socket where the scripts look
+/// for it (`<home>/.config/herdr/herdr.sock`), where herdr itself puts it when
+/// `XDG_CONFIG_HOME` is set, and the socket the environment named.
+fn live_sockets_from(
+    home: Option<&Path>,
+    xdg_config_home: Option<OsString>,
+    named: Option<OsString>,
+) -> Vec<PathBuf> {
+    let mut sockets = vec![socket_path_from(None, home)];
+    if let Some(dir) = crate::launch::config_dir(xdg_config_home.as_deref(), home) {
+        sockets.push(crate::launch::Session::Default.socket_path(&dir));
+    }
+    if let Some(named) = named.filter(|value| !value.is_empty()) {
+        sockets.push(PathBuf::from(named));
+    }
+    sockets.dedup();
+    sockets
 }
 
 /// `path` with symlinks and `..` resolved. A socket whose server has stopped does not exist,
@@ -1037,6 +1056,35 @@ mod tests {
             .call("pane.focus", json!({"pane_id": NO_SUCH_PANE}))
             .unwrap_err();
         assert!(matches!(err, HerdrError::MutationRefused { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn the_guard_knows_every_place_a_live_socket_can_be() {
+        let home = Path::new("/home/nat");
+        assert_eq!(
+            live_sockets_from(Some(home), None, None),
+            vec![PathBuf::from("/home/nat/.config/herdr/herdr.sock")]
+        );
+        assert_eq!(
+            live_sockets_from(
+                Some(home),
+                Some("/x/config".into()),
+                Some("/run/outer.sock".into())
+            ),
+            vec![
+                PathBuf::from("/home/nat/.config/herdr/herdr.sock"),
+                PathBuf::from("/x/config/herdr/herdr.sock"),
+                PathBuf::from("/run/outer.sock"),
+            ]
+        );
+        assert_eq!(
+            live_sockets_from(Some(home), Some("".into()), Some("".into())),
+            vec![PathBuf::from("/home/nat/.config/herdr/herdr.sock")]
+        );
+        // What this process really noted includes the socket its environment names.
+        if let Some(named) = std::env::var_os(SOCKET_ENV_VAR).filter(|value| !value.is_empty()) {
+            assert!(live_sockets().contains(&PathBuf::from(named)));
+        }
     }
 
     #[test]
