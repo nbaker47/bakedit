@@ -10,8 +10,9 @@
 //! - A tab runs to the next multiple of `tab_size`, counted from the start of its row.
 //! - A cluster is as wide as `unicode-width` says its string is: 2 for CJK and emoji, 0 for
 //!   a lone combining mark or joiner, 1 for almost everything else.
-//! - Control characters other than tab take one cell. The UI must draw a visible stand-in
-//!   for them ([`control_picture`]), never the raw character.
+//! - Control characters other than tab take one cell, and so do the Unicode line and
+//!   paragraph separators. The UI must draw a visible stand-in for them
+//!   ([`control_picture`]), never the raw character.
 //! - A line break takes no cell.
 //!
 //! Soft wrap splits one line into rows. A row is a char range of the line; the rows of a
@@ -40,16 +41,20 @@ pub fn grapheme_width(grapheme: &str, col: usize, tab_size: usize) -> usize {
     }
 }
 
-/// The character the UI should draw in place of a control character, which a terminal
-/// would otherwise interpret: the Unicode control pictures for U+0000..U+001F and DEL, and
-/// U+FFFD for the C1 controls. `None` for every other character (including tab and line
-/// feed, which the UI lays out itself).
+/// The character the UI should draw in place of one that a terminal would interpret or
+/// misplace: the Unicode control pictures for U+0000..U+001F and DEL, U+FFFD for the C1
+/// controls, and `␤` and `¶` for the line and paragraph separators U+2028 and U+2029 (which
+/// are ordinary one-cell characters inside a line here). `None` for every other character,
+/// including tab and line feed, which the UI lays out itself. Each stand-in is one cell
+/// wide, as wide as the engine takes the original to be.
 pub fn control_picture(c: char) -> Option<char> {
     match c {
         '\t' | '\n' => None,
         '\u{0}'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
         '\u{7f}' => Some('\u{2421}'),
         '\u{80}'..='\u{9f}' => Some('\u{fffd}'),
+        '\u{2028}' => Some('\u{2424}'),
+        '\u{2029}' => Some('\u{b6}'),
         _ => None,
     }
 }
@@ -434,8 +439,10 @@ mod tests {
         assert_eq!(control_picture('\t'), None);
         assert_eq!(control_picture('\n'), None);
         assert_eq!(control_picture('a'), None);
+        assert_eq!(control_picture('\u{2028}'), Some('␤'));
+        assert_eq!(control_picture('\u{2029}'), Some('¶'));
         // Every stand-in is exactly as wide as the engine assumes the control is.
-        for code in 0..0xa0u32 {
+        for code in (0..0xa0u32).chain([0x2028, 0x2029]) {
             let c = char::from_u32(code).unwrap();
             if let Some(picture) = control_picture(c) {
                 let mut buf = [0u8; 4];
