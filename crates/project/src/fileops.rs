@@ -132,11 +132,44 @@ fn require_dir(dir: &Path) -> Result<(), FileOpError> {
     }
 }
 
-fn create_parents(path: &Path) -> Result<(), FileOpError> {
-    match path.parent() {
-        Some(parent) => fs::create_dir_all(parent).map_err(|source| io_error(parent, source)),
-        None => Ok(()),
+/// Create the directories above `path` that do not exist yet and return them, outermost
+/// first, so that a caller whose next step fails can take them away again.
+fn create_parents(path: &Path) -> Result<Vec<PathBuf>, FileOpError> {
+    let Some(parent) = path.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut missing: Vec<PathBuf> = parent
+        .ancestors()
+        .take_while(|dir| !dir.as_os_str().is_empty() && fs::symlink_metadata(dir).is_err())
+        .map(Path::to_path_buf)
+        .collect();
+    missing.reverse();
+    fs::create_dir_all(parent).map_err(|source| {
+        remove_empty_dirs(&missing);
+        io_error(parent, source)
+    })?;
+    Ok(missing)
+}
+
+/// Remove the given directories again, innermost first, as long as they are still empty.
+fn remove_empty_dirs(dirs: &[PathBuf]) {
+    for dir in dirs.iter().rev() {
+        match fs::remove_dir(dir) {
+            Ok(()) => {}
+            // It never got created: the ones above it may still have been.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            // Not empty (or not ours to remove): everything above it stays as well.
+            Err(_) => break,
+        }
     }
+}
+
+/// Run `step`; if it fails, remove the directories that were created for it.
+fn or_undo_parents<T>(
+    created: Vec<PathBuf>,
+    step: impl FnOnce() -> Result<T, FileOpError>,
+) -> Result<T, FileOpError> {
+    step().inspect_err(|_| remove_empty_dirs(&created))
 }
 
 /// Create an empty file called `name` inside `dir` and return its path.
@@ -151,12 +184,14 @@ pub fn create_file(dir: &Path, name: &str) -> Result<PathBuf, FileOpError> {
     }
     require_dir(dir)?;
     let path = join_components(dir, &components);
-    create_parents(&path)?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|source| io_error(&path, source))?;
+    let created = create_parents(&path)?;
+    or_undo_parents(created, || {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|source| io_error(&path, source))
+    })?;
     Ok(path)
 }
 
@@ -168,8 +203,10 @@ pub fn create_dir(dir: &Path, name: &str) -> Result<PathBuf, FileOpError> {
     let (components, _) = split_name(name)?;
     require_dir(dir)?;
     let path = join_components(dir, &components);
-    create_parents(&path)?;
-    fs::create_dir(&path).map_err(|source| io_error(&path, source))?;
+    let created = create_parents(&path)?;
+    or_undo_parents(created, || {
+        fs::create_dir(&path).map_err(|source| io_error(&path, source))
+    })?;
     Ok(path)
 }
 
@@ -193,8 +230,8 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, FileOpError> {
     if meta.is_dir() && target.starts_with(path) {
         return Err(FileOpError::IntoItself(path.to_path_buf()));
     }
-    create_parents(&target)?;
-    rename_no_replace(path, &target)?;
+    let created = create_parents(&target)?;
+    or_undo_parents(created, || rename_no_replace(path, &target))?;
     Ok(target)
 }
 
@@ -236,15 +273,15 @@ pub(crate) fn move_into_unique(path: &Path, dir: &Path) -> Result<PathBuf, FileO
         return Err(FileOpError::IntoItself(path.to_path_buf()));
     }
     let name = name.to_string_lossy().into_owned();
-    for attempt in 0.. {
+    let mut attempt = 0;
+    loop {
         let target = dir.join(copy_name(&name, meta.is_dir(), attempt));
         match rename_no_replace(path, &target) {
-            Err(FileOpError::AlreadyExists(_)) => continue,
+            Err(FileOpError::AlreadyExists(_)) => attempt += 1,
             Err(error) => return Err(error),
             Ok(()) => return Ok(target),
         }
     }
-    unreachable!("the attempt counter does not end")
 }
 
 /// Copy `path` into the directory `dir` and return the path of the copy.
@@ -270,10 +307,11 @@ pub fn copy_into(path: &Path, dir: &Path) -> Result<PathBuf, FileOpError> {
         remove_any(&temp);
         return Err(error);
     }
-    for attempt in 0.. {
+    let mut attempt = 0;
+    loop {
         let target = dir.join(copy_name(&name, meta.is_dir(), attempt));
         match rename_no_replace(&temp, &target) {
-            Err(FileOpError::AlreadyExists(_)) => continue,
+            Err(FileOpError::AlreadyExists(_)) => attempt += 1,
             Err(error) => {
                 remove_any(&temp);
                 return Err(error);
@@ -281,7 +319,6 @@ pub fn copy_into(path: &Path, dir: &Path) -> Result<PathBuf, FileOpError> {
             Ok(()) => return Ok(target),
         }
     }
-    unreachable!("the attempt counter does not end")
 }
 
 /// Copy `path` next to itself and return the path of the copy, named as in
@@ -666,6 +703,41 @@ mod tests {
                 "{bad:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn directories_made_for_a_step_that_fails_are_taken_away_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("existing")).unwrap();
+
+        let created = create_parents(&root.join("existing/a/b/file.txt")).unwrap();
+        assert_eq!(
+            created,
+            [root.join("existing/a"), root.join("existing/a/b")]
+        );
+        let failed: Result<(), FileOpError> = or_undo_parents(created, || Err(FileOpError::IsRoot));
+        assert!(failed.is_err());
+        assert!(!root.join("existing/a").exists());
+        assert!(
+            root.join("existing").exists(),
+            "what was there before stays"
+        );
+
+        // Nothing to create, nothing to undo; and success keeps what was created.
+        assert!(create_parents(&root.join("existing/file.txt"))
+            .unwrap()
+            .is_empty());
+        let created = create_parents(&root.join("x/y/file.txt")).unwrap();
+        assert_eq!(or_undo_parents(created, || Ok(7)).unwrap(), 7);
+        assert!(root.join("x/y").is_dir());
+
+        // A directory that is no longer empty is never removed.
+        let created = create_parents(&root.join("p/q/file.txt")).unwrap();
+        fs::write(root.join("p/q/someone-elses.txt"), "x").unwrap();
+        let failed: Result<(), FileOpError> = or_undo_parents(created, || Err(FileOpError::IsRoot));
+        assert!(failed.is_err());
+        assert!(root.join("p/q/someone-elses.txt").exists());
     }
 
     #[test]

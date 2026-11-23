@@ -89,6 +89,35 @@ fn nothing_is_ever_overwritten() {
 }
 
 #[test]
+fn a_failed_operation_leaves_no_new_directories_behind() {
+    let project = Project::new();
+    project.write("dir/keep.txt", "x");
+    project.write("a.txt", "a");
+    project.write("taken/b.txt", "b");
+    // No file system takes a name this long, so the last step of each of these fails
+    // after the directories on the way were made.
+    let too_long = "x".repeat(4_000);
+
+    assert!(fileops::create_file(project.root(), &format!("fresh/dirs/{too_long}")).is_err());
+    assert!(fileops::create_dir(project.root(), &format!("more/fresh/dirs/{too_long}")).is_err());
+    assert!(fileops::create_dir(project.root(), &format!("early/{too_long}/late")).is_err());
+    assert!(fileops::rename(&project.path("a.txt"), &format!("brand/new/{too_long}")).is_err());
+    // Failures that are caught before anything is created.
+    assert!(matches!(
+        fileops::rename(&project.path("dir"), "dir/new/place"),
+        Err(FileOpError::IntoItself(_))
+    ));
+    assert!(matches!(
+        fileops::rename(&project.path("a.txt"), "taken/b.txt"),
+        Err(FileOpError::AlreadyExists(_))
+    ));
+    assert_eq!(
+        project.listing(),
+        ["a.txt", "dir/", "dir/keep.txt", "taken/", "taken/b.txt"]
+    );
+}
+
+#[test]
 fn copies_count_up_until_a_name_is_free() {
     let project = Project::new();
     project.write("report.txt", "v1");
