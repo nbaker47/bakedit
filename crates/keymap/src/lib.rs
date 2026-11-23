@@ -5,6 +5,8 @@
 
 #![warn(missing_docs)]
 
+pub mod context;
 pub mod keystroke;
 
+pub use context::{ContextError, ContextPredicate, KeyContext};
 pub use keystroke::{Keystroke, KeystrokeError};
