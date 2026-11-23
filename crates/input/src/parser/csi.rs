@@ -160,11 +160,14 @@ fn kitty_key(params: &Params) -> Option<KeyEvent> {
     ev.base = params.get(0, 2).and_then(printable);
     if let Key::Char(c) = key {
         // The key code is defined as the unshifted key. A terminal that sends the
-        // upper-case letter anyway means shift + the lower-case key.
+        // upper-case letter anyway means shift + the lower-case key, unless caps lock is
+        // what made it upper case.
         if let Some(lower) = keys::lower_case(c) {
             ev.key = Key::Char(lower);
-            ev.mods |= Mods::SHIFT;
-            ev.shifted = ev.shifted.or(Some(c));
+            if !state.caps_lock || state.mods.contains(Mods::SHIFT) {
+                ev.mods |= Mods::SHIFT;
+                ev.shifted = ev.shifted.or(Some(c));
+            }
         }
     }
     let mut ev = state.apply(ev);

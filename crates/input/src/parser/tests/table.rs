@@ -334,6 +334,10 @@ fn kitty_text_key_cases() -> Vec<Case> {
         case(csi("65u"), vec![Expect::ch('a').mods(shift).shifted('A').text("A").event()]),
         case(csi("65;6u"), vec![Expect::ch('a').mods(shift | Mods::CTRL).shifted('A').event()]),
         case(csi("201u"), vec![Expect::ch('é').mods(shift).shifted('É').text("É").event()]),
+        // Unless caps lock explains the upper case: then it is the plain key.
+        case(csi("65;65u"), vec![Expect::ch('a').caps_lock().text("A").event()]),
+        case(csi("65;69u"), vec![Expect::ch('a').mods(Mods::CTRL).caps_lock().event()]),
+        case(csi("65;66u"), vec![Expect::ch('a').mods(shift).caps_lock().shifted('A').text("A").event()]),
         // Lock states are not modifiers.
         case(csi("97;65u"), vec![Expect::ch('a').caps_lock().text("A").event()]),
         case(csi("97;66u"), vec![Expect::ch('a').mods(shift).caps_lock().text("A").event()]),
