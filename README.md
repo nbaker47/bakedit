@@ -106,15 +106,21 @@ ln -s "$PWD/target/release/bakedit" ~/.local/bin/bakedit
 ```sh
 bakedit                      # open the current directory
 bakedit src/main.rs:42       # open a file at a line (also :42:7, :42-60, #L42)
-bakedit --window             # a dedicated Ghostty window that passes every cmd key through
+bakedit --here               # in this terminal, not a Ghostty window of its own
 bakedit --terminal shell     # plain shell in the terminal panel instead of herdr
 bakedit --probe              # what your terminal supports
 bakedit --print-keymap       # the built-in keymap
 ```
 
+On macOS bakedit opens in a dedicated Ghostty window that passes every cmd key through,
+and the command returns at once. `--here`, an SSH session, or `"window": false` in
+`~/.config/bakedit/settings.json` keep it in the terminal you ran it from; without Ghostty
+it stays there and says why.
+
 When bakedit is already running, files are sent to that window, so it works as `$EDITOR`
 and as the target of `path:line` links printed by tools and agents. Terminal output links
-are cmd-clickable too.
+are cmd-clickable too. For a program that waits for its editor to close, such as git, use
+`bakedit --here --new`.
 
 ## Keys
 

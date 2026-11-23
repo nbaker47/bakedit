@@ -1,6 +1,7 @@
 //! The `bakedit` command: the editor, and the small tools around it (`--help` lists them).
 
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use bakedit::app::{self, App, StartOptions};
 use bakedit::cli::{self, Mode};
 use bakedit::host::{self, Host, HostEvent};
 use bakedit::settings::TerminalCommand;
+use bakedit::window::{self, Facts, Place};
 use bakedit_core::{ColorSlot, InputEvent, Key, KeyEvent, Mods, TerminalReply};
 use bakedit_input::{describe, Parser};
 
@@ -26,12 +28,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let args = match cli::parse(raw.clone(), &cwd) {
+    let args = match cli::parse(raw, &cwd) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("bakedit: {message}");
             return ExitCode::from(2);
         }
+    };
+    // `--cwd`: from here on bakedit runs as if started there.
+    let cwd = match &args.cwd {
+        Some(dir) => match std::env::set_current_dir(dir) {
+            Ok(()) => dir.clone(),
+            Err(error) => {
+                eprintln!("bakedit: cannot run in {}: {error}", dir.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => cwd,
     };
     if let Err(error) = bakedit::logging::init(args.log_file.as_deref()) {
         eprintln!("bakedit: cannot write the log: {error}");
@@ -55,9 +68,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Mode::Action { name, args } => app::send_action(name, args.clone()).map_err(anyhow::Error::msg),
-        Mode::DumpInput => dump_input(),
-        Mode::Probe => probe(),
-        Mode::Edit => edit(args, &raw, &cwd),
+        Mode::DumpInput | Mode::Probe | Mode::Edit => launch(args, &cwd),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -74,25 +85,63 @@ fn user_keymap() -> bakedit_keymap::Keymap {
     bakedit::keys::KeyRouter::new(text.as_deref()).0.keymap
 }
 
-fn edit(args: cli::Args, raw: &[String], cwd: &std::path::Path) -> anyhow::Result<()> {
-    if args.window {
-        return bakedit::window::open_window(&user_keymap(), raw).map_err(anyhow::Error::msg);
-    }
-    // Files while a window is up go to that window, as `zed file` does.
-    if !args.new_instance && !args.paths.is_empty() && args.paths.iter().all(|spec| !spec.path.is_dir()) {
-        match app::send_files(&args.paths) {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(error) => log::warn!("starting a new window: {error}"),
+/// The editor or a diagnostic, wherever `window::decide` puts it: a running window (files,
+/// as `zed file` does), a new Ghostty window, or this terminal.
+fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
+    let ghostty = window::find_ghostty();
+    let running = if window::may_hand_over(&args) { app::window_for_files(&args.paths) } else { None };
+    let mut facts = Facts {
+        window_setting: bakedit::settings::load().settings.window,
+        in_window: window::running_in_window(),
+        test_pty: window::running_in_test_pty(),
+        ssh: window::running_over_ssh(),
+        ghostty: ghostty.is_some(),
+        running_window: running.is_some(),
+        tty: io::stdin().is_terminal() && io::stdout().is_terminal(),
+    };
+    let mut place = window::decide(&args, &facts);
+    if let (Place::RunningWindow, Some(target)) = (&place, &running) {
+        match app::send_files(target, &args.paths) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                log::warn!("not handed to the running window: {error}");
+                facts.running_window = false;
+                place = window::decide(&args, &facts);
+            }
         }
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        bail!("bakedit needs a terminal to run in (for a running window use --action, or pass files without --new)");
+    if let (Place::NewWindow, Some(ghostty)) = (&place, &ghostty) {
+        let keep_open = args.mode != Mode::Edit;
+        match window::open_window(ghostty, &user_keymap(), cwd, &args.forward, keep_open) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                log::warn!("no Ghostty window: {error}");
+                place = window::after_failed_launch(&error, &args, &facts);
+            }
+        }
+    }
+    match place {
+        Place::Here { why } => here(args, cwd, why),
+        Place::Nowhere(why) => bail!(why),
+        // Not reached: `decide` hands files over only to the running window found above, and
+        // opens a window only when Ghostty was found above; both return or fall back there.
+        Place::RunningWindow | Place::NewWindow => bail!("bakedit could not tell where to run"),
+    }
+}
+
+/// Run in this terminal. `why` (no window when one was wanted) is said once: in the status
+/// bar, or before a diagnostic on stderr.
+fn here(args: cli::Args, cwd: &Path, why: Option<String>) -> anyhow::Result<()> {
+    if args.mode != Mode::Edit {
+        if let Some(why) = why {
+            eprintln!("bakedit: {why}");
+        }
+        return if args.mode == Mode::Probe { probe() } else { dump_input() };
     }
     let root = cli::project_root(&args.paths, cwd);
     let files = args.paths.iter().filter(|spec| !spec.path.is_dir()).cloned().collect();
     let terminal_command = args.terminal_command.as_deref().map(TerminalCommand::parse);
-    App::run(StartOptions { root, files, terminal_command, restore: !args.no_restore })
+    App::run(StartOptions { root, files, terminal_command, restore: !args.no_restore, notice: why })
 }
 
 fn is_ctrl_c(event: &InputEvent) -> bool {

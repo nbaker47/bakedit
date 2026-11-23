@@ -31,7 +31,7 @@ own third-party crates); only the app depends on the others.
 cargo build                       # everything
 cargo test -p bakedit-text        # one crate
 cargo clippy --workspace --all-targets
-cargo run -p bakedit -- <path>    # run the IDE
+cargo run -p bakedit -- <path>    # run the IDE (in a Ghostty window; --here for this terminal)
 ```
 
 Worktrees share one build directory so dependencies compile once:
@@ -56,7 +56,10 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   may block drawing: start work with `cx.project.spawn` or `git_job` and collect it in `tick`.
 - **The running app:** `app.rs` (the main loop: input wiring, timers, drawing, session
   saves, config reloads), `host.rs` (terminal modes and their restore), `main.rs` (every
-  `cli.rs` mode), `window.rs` (`--window`, the dedicated Ghostty window), `themes.rs`,
+  `cli.rs` mode), `window.rs` (the dedicated Ghostty window a plain `bakedit` opens on
+  macOS, and `decide`: that window, the running one for files, or this terminal with
+  `--here` or `"window": false`; the bakedit in the window gets `--here` and
+  `BAKEDIT_HOST`, so it never opens another), `themes.rs`,
   `logging.rs` (`--log`), `external.rs` (URLs and Finder reveals handed to the OS; test
   builds record them instead, so no test opens a window).
 - **Views:** `editor/` (`EditorItem`), `panels/terminal.rs`, `panels/git.rs`,
@@ -73,10 +76,13 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   editor settings, put where bakedit looks for Zed's. `herdr-session` drives a real herdr
   through a throwaway server of its own (`crates/herdr/tests/isolated-session.sh`,
   `herdr-check.py`); `quit` checks the terminal is restored (`check-restored.py`).
-  `tests/scenarios.rs` replays them under `cargo test` (skipped without `uv`). Run bakedit
-  by hand the same way: `--terminal shell` (never the user's herdr session),
-  `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in a scratch folder, `ZDOTDIR` there too so the
-  panel's shell reads none of the user's dotfiles.
+  `tests/scenarios.rs` replays them under `cargo test` (skipped without `uv`). run.sh gives
+  every bakedit `--here`, and a bakedit in ptyshot (`TERM_PROGRAM=ptyshot`) never opens a
+  Ghostty window whatever it is given. Run bakedit by hand the same way:
+  `--here` (without it bakedit opens a Ghostty window and takes the user's focus),
+  `--terminal shell` (never the user's herdr session), `XDG_CONFIG_HOME` and
+  `XDG_STATE_HOME` in a scratch folder, `ZDOTDIR` there too so the panel's shell reads none
+  of the user's dotfiles.
 - **Every key does something:** `handlers_tests.rs` builds the real app in each place the
   keymap's contexts describe and fails on any action the keymap binds or the palette lists
   that nothing acts on. A binding added without a handler fails it; a deliberate no-op goes
@@ -109,7 +115,8 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   `dump::to_text` gives the same frame as text for assertions. Check spacing, alignment and
   empty states in the picture before calling UI work done.
 - Tests must never touch the user's clipboard (`BAKEDIT_CLIPBOARD=memory` or a
-  `MemoryBackend`), their herdr session, or their config files.
+  `MemoryBackend`), their herdr session, or their config files, and never open a Ghostty
+  window (test `window::decide` and `window::window_command`, run the binary with `--here`).
 
 ## Conventions
 

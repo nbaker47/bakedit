@@ -3,7 +3,13 @@
 //! The file format is Zed's `settings.json` (JSON with comments) and the keys bakedit
 //! understands keep Zed's names and meanings, so an existing Zed settings file can be read
 //! as it is. Keys bakedit does not know are ignored. A handful of keys are bakedit's own
-//! (`terminal.command`, `nav_layer`, `icons`, `link_click_modifier`, `formatters`).
+//! (`terminal.command`, `nav_layer`, `icons`, `link_click_modifier`, `formatters`,
+//! `window`).
+//!
+//! `"window": true | false` says where a plain `bakedit` runs: `true` (the default on
+//! macOS) opens a dedicated Ghostty window and returns at once (not over SSH), `false` (the
+//! default elsewhere) runs in the terminal it was started from. `--here` and `--window`
+//! override it for one run.
 //!
 //! Defaults are Zed's defaults (v1.29) wherever the setting exists there.
 //!
@@ -178,6 +184,10 @@ pub struct Settings {
 
     // bakedit's own
     pub nav_layer: bool,
+    /// `"window"`: a plain `bakedit` opens a dedicated Ghostty window (`true`) or runs in
+    /// the terminal it was started from (`false`). On by default on macOS, the only place
+    /// the window exists.
+    pub window: bool,
     /// Show the usage strip (AI subscription quotas) on the bottom row.
     pub usage_meter: bool,
     pub link_click_modifier: LinkModifier,
@@ -274,6 +284,7 @@ impl Default for Settings {
             },
 
             nav_layer: true,
+            window: cfg!(target_os = "macos"),
             usage_meter: true,
             link_click_modifier: LinkModifier::Cmd,
             formatters: HashMap::new(),
@@ -691,6 +702,7 @@ impl Settings {
             None | Some(Value::Null) => {}
             Some(_) => r.warn("nav_layer", "true, false or {\"enabled\": bool}"),
         }
+        r.bool("window", &mut self.window);
         match map.get("usage_meter") {
             Some(Value::Bool(b)) => self.usage_meter = *b,
             Some(Value::Object(meter)) => {
@@ -975,6 +987,17 @@ mod tests {
         assert!(s.usage_meter, "on unless switched off");
         assert!(!parse(r#"{"usage_meter": false}"#).0.usage_meter);
         assert!(!parse(r#"{"usage_meter": {"show": false}}"#).0.usage_meter);
+    }
+
+    #[test]
+    fn the_window_setting() {
+        assert_eq!(Settings::default().window, cfg!(target_os = "macos"), "on where Ghostty.app windows exist");
+        assert_eq!(parse(ZED_SETTINGS).0.window, Settings::default().window, "Zed has no such key");
+        assert!(!parse(r#"{"window": false}"#).0.window);
+        assert!(parse(r#"{"window": true}"#).0.window);
+        let (s, warnings) = parse(r#"{"window": "here"}"#);
+        assert_eq!(s.window, Settings::default().window, "a bad value keeps the default");
+        assert_eq!(warnings, ["\"window\" should be true or false"]);
     }
 
     #[test]

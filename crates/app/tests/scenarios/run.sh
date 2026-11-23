@@ -10,7 +10,8 @@
 # and PASS or FAIL with the reason. The exit status is 1 if any scenario failed.
 # BAKEDIT_SCENARIO_PICTURES=0 skips the PNG pictures (headless Chrome, its own profile).
 #
-# Nothing of the user's is touched. bakedit's config and state go to <out-dir>/.work, with
+# Nothing of the user's is touched. Every bakedit here gets --here, so it runs in ptyshot's
+# pty and never opens a Ghostty window. bakedit's config and state go to <out-dir>/.work, with
 # zed-settings.json (Nathan's editor settings) where bakedit looks for Zed's. The terminal
 # panel runs zsh with ZDOTDIR there (no dotfiles read, no history written) or plain sh.
 # ptyshot strips HERDR_* and keeps the clipboard in the process (BAKEDIT_CLIPBOARD=memory).
@@ -101,7 +102,7 @@ run() {
     rm -f "$out/$name"-*.txt "$out/$name"-*.html "$out/$name"-*.png
     if uv run --quiet --with pyte python3 "$repo/scripts/ptyshot.py" --size "$size" --out "$out/$name" \
         --script "$here/$name.keys" "${env_args[@]}" ${ptyshot_args[@]+"${ptyshot_args[@]}"} -- \
-        "$bin" --log "$out/$name.log" ${bakedit_args[@]+"${bakedit_args[@]}"} > "$out/$name.transcript" 2> "$out/$name.err"; then
+        "$bin" --here --log "$out/$name.log" ${bakedit_args[@]+"${bakedit_args[@]}"} > "$out/$name.transcript" 2> "$out/$name.err"; then
         echo "PASS $name ($(( SECONDS - started ))s)"
         passed+=("$name")
     else
@@ -146,7 +147,7 @@ for scenario in "${all[@]}"; do
         ipc)
             # Another process hands the running window an action, then a file.
             ( sleep 3; XDG_STATE_HOME="$work/state" "$bin" --action command_palette::Toggle
-              sleep 1; XDG_STATE_HOME="$work/state" "$bin" "$project/README.md:2" ) &
+              sleep 1; XDG_STATE_HOME="$work/state" "$bin" --here "$project/README.md:2" ) &
             run ipc 160x40 -- --terminal shell --new --no-restore "$project"
             wait ;;
         quit) run quit 120x30 --raw-out "$out/quit.raw" -- --terminal shell --new --no-restore "$project" ;;

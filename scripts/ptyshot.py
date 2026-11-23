@@ -6,7 +6,7 @@ terminal window. The pty's output is fed to pyte (a VT emulator); snapshots come
 and as HTML that headless Chrome can turn into a picture.
 
     uv run --with pyte scripts/ptyshot.py --size 160x45 --out /tmp/shots/run \\
-        --script keys.txt -- target/debug/bakedit --terminal shell some/dir
+        --script keys.txt -- target/debug/bakedit --here --terminal shell some/dir
 
 Script lines (blank lines and lines starting with # are skipped):
     wait 0.5            pause, in seconds, while still reading output

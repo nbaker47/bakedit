@@ -84,6 +84,9 @@ pub struct StartOptions {
     pub terminal_command: Option<TerminalCommand>,
     /// Reopen the last session's tabs (`--no-restore` turns it off).
     pub restore: bool,
+    /// Why bakedit runs here rather than in the Ghostty window it would have opened, shown
+    /// once in the status bar.
+    pub notice: Option<String>,
 }
 
 /// The files whose changes reload the configuration, and when each last changed.
@@ -279,13 +282,16 @@ impl App {
         for file in &options.files {
             shell.open_file(&file.path, file.line, file.column, false, true);
         }
-        match loaded.warnings.as_slice() {
+        // Why there is no window comes first: it explains what the user is looking at.
+        let messages: Vec<&String> = options.notice.iter().chain(&loaded.warnings).collect();
+        let error = !loaded.warnings.is_empty();
+        match messages.as_slice() {
             [] => {}
-            [one] => shell.set_status(one.clone(), true),
-            [first, rest @ ..] => shell.set_status(format!("{first} (and {} more: see --log)", rest.len()), true),
+            [one] => shell.set_status(one.as_str(), error),
+            [first, rest @ ..] => shell.set_status(format!("{first} (and {} more: see --log)", rest.len()), error),
         }
-        for warning in &loaded.warnings {
-            log::warn!("{warning}");
+        for message in &messages {
+            log::warn!("{message}");
         }
         if let Err(error) = session::remember_project(&state_dir, &options.root) {
             log::warn!("could not update the recent projects: {error}");
@@ -772,15 +778,19 @@ pub fn send_action(name: &str, args: Option<serde_json::Value>) -> Result<(), St
     }
 }
 
-/// For `bakedit file.rs:12` while a window is up: hand the files to the window that should
-/// open them. Returns `Ok(false)` when no window is running.
-pub fn send_files(files: &[PathSpec]) -> Result<bool, String> {
+/// For `bakedit file.rs:12` while a window is up: the running window that should open the
+/// files (see [`ipc::pick_instance`]), or `None` when no window is running.
+pub fn window_for_files(files: &[PathSpec]) -> Option<ipc::InstanceInfo> {
     let instances = ipc::live_instances(&ipc::instances_dir());
     let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-    let Some(target) = ipc::pick_instance(&instances, &paths) else { return Ok(false) };
+    ipc::pick_instance(&instances, &paths).cloned()
+}
+
+/// Hand the files to `target`, a window [`window_for_files`] picked.
+pub fn send_files(target: &ipc::InstanceInfo, files: &[PathSpec]) -> Result<(), String> {
     let targets = files.iter().map(|file| ipc::OpenTarget { path: file.path.clone(), line: file.line, column: file.column }).collect();
     match ipc::send(&target.socket, &ipc::Request::Open { targets }) {
-        Ok(response) if response.ok => Ok(true),
+        Ok(response) if response.ok => Ok(()),
         Ok(response) => Err(response.error.unwrap_or_else(|| "the window refused the files".to_string())),
         Err(error) => Err(format!("could not reach the window (pid {}): {error}", target.pid)),
     }

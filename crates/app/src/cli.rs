@@ -11,19 +11,32 @@ With no path, opens the current directory. A directory becomes the project; file
 opened in it. When bakedit is already running, files are sent to that window (the one
 whose project contains them, else the one used most recently) unless --new is given.
 
+bakedit opens in a Ghostty window of its own, set up to pass every cmd key through, and
+the command returns at once; it works without a terminal too (a script, an agent's hook).
+It runs in the current terminal instead with --here, over SSH, or for good with
+  \"window\": false
+in ~/.config/bakedit/settings.json (true, the default on macOS, opens the window).
+Without Ghostty in /Applications, bakedit runs in the current terminal and says why.
+
 Paths may carry a position the way tools and agents print them:
   src/main.rs:42   src/main.rs:42:7   src/main.rs:42-60   src/main.rs#L42   file:///abs/main.rs#L42
 
 Options:
   -n, --new                 start a new window even if one is running
-      --window              open in a dedicated Ghostty window set up to pass every cmd key through
+      --here, --no-window   run in the current terminal, not in a Ghostty window
+      --window              open a new Ghostty window, even with \"window\": false or a window
+                            running (the last of --here and --window wins)
+      --cwd <dir>           run as if started in <dir>: paths are relative to it, and with no
+                            path it is the project (the Ghostty window is started this way)
       --terminal <command>  run this in the terminal panel instead of the configured command
                             (\"shell\" for a plain shell)
       --no-restore          do not reopen the last session's tabs
-      --dump-input          print every key and mouse event as bakedit decodes it (ctrl-c twice to quit)
-      --probe               print what the host terminal supports and exit
+      --dump-input          print every key and mouse event as bakedit decodes it (ctrl-c twice to
+                            quit); in the current terminal, or in a Ghostty window with --window
+      --probe               print what the host terminal supports and exit (in the current
+                            terminal, or in a Ghostty window with --window)
       --print-keymap        print the built-in keymap and exit
-      --print-ghostty-config  print the Ghostty config used by --window and exit
+      --print-ghostty-config  print the Ghostty config of bakedit's window and exit
       --action <name> [json]  run an action in the running window and exit
       --log <file>          write a debug log
   -h, --help                show this help
@@ -56,10 +69,19 @@ pub struct Args {
     pub mode: Mode,
     pub paths: Vec<PathSpec>,
     pub new_instance: bool,
-    pub window: bool,
+    /// Where to run: `Some(true)` for `--window`, `Some(false)` for `--here` (or
+    /// `--no-window`), `None` to leave it to the `"window"` setting. The last flag wins.
+    pub window: Option<bool>,
+    /// `--cwd <dir>`, made absolute: the directory to run in. Paths and `--log` are
+    /// relative to it wherever it appears on the line.
+    pub cwd: Option<PathBuf>,
     pub terminal_command: Option<String>,
     pub no_restore: bool,
     pub log_file: Option<PathBuf>,
+    /// The arguments as given, minus the ones only the launching process acts on
+    /// (`--window`, `--here`, `--no-window`, `-n`, `--new`, `--cwd`): what a Ghostty window
+    /// passes on to the bakedit it runs. Values and everything after `--` are kept as they are.
+    pub forward: Vec<String>,
 }
 
 impl Default for Args {
@@ -68,15 +90,18 @@ impl Default for Args {
             mode: Mode::Edit,
             paths: Vec::new(),
             new_instance: false,
-            window: false,
+            window: None,
+            cwd: None,
             terminal_command: None,
             no_restore: false,
             log_file: None,
+            forward: Vec::new(),
         }
     }
 }
 
-/// Parse the arguments after the program name. `cwd` anchors relative paths.
+/// Parse the arguments after the program name. `cwd` anchors relative paths, unless
+/// `--cwd` names another directory.
 pub fn parse<I, S>(args: I, cwd: &Path) -> Result<Args, String>
 where
     I: IntoIterator<Item = S>,
@@ -85,33 +110,66 @@ where
     let mut out = Args::default();
     let mut args = args.into_iter().map(Into::into).peekable();
     let mut only_paths = false;
+    // Paths and the log file are resolved at the end, once `--cwd` is known.
+    let mut raw_paths: Vec<String> = Vec::new();
+    let mut raw_log: Option<String> = None;
     while let Some(arg) = args.next() {
         if only_paths || !arg.starts_with('-') || arg == "-" {
-            out.paths.push(parse_path_spec(&arg, cwd));
+            raw_paths.push(arg.clone());
+            out.forward.push(arg);
+            continue;
+        }
+        if let Some(dir) = arg.strip_prefix("--cwd=") {
+            out.cwd = Some(absolute(Path::new(dir), cwd));
             continue;
         }
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("{flag} needs a value"));
+        let mut forwarded = vec![arg.clone()];
         match arg.as_str() {
             "--" => only_paths = true,
-            "-n" | "--new" => out.new_instance = true,
-            "--window" => out.window = true,
+            "-n" | "--new" => {
+                out.new_instance = true;
+                forwarded.clear();
+            }
+            "--window" => {
+                out.window = Some(true);
+                forwarded.clear();
+            }
+            "--here" | "--no-window" => {
+                out.window = Some(false);
+                forwarded.clear();
+            }
+            "--cwd" => {
+                out.cwd = Some(absolute(Path::new(&value("--cwd")?), cwd));
+                forwarded.clear();
+            }
             "--no-restore" => out.no_restore = true,
-            "--terminal" => out.terminal_command = Some(value("--terminal")?),
-            "--log" => out.log_file = Some(absolute(Path::new(&value("--log")?), cwd)),
+            "--terminal" => {
+                let command = value("--terminal")?;
+                forwarded.push(command.clone());
+                out.terminal_command = Some(command);
+            }
+            "--log" => {
+                let file = value("--log")?;
+                forwarded.push(file.clone());
+                raw_log = Some(file);
+            }
             "--dump-input" => out.mode = Mode::DumpInput,
             "--probe" => out.mode = Mode::Probe,
             "--print-keymap" => out.mode = Mode::PrintKeymap,
             "--print-ghostty-config" => out.mode = Mode::PrintGhosttyConfig,
             "--action" => {
                 let name = value("--action")?;
+                forwarded.push(name.clone());
                 let args_json = match args.peek() {
                     Some(next) if !next.starts_with("--") => args.next(),
                     _ => None,
                 };
                 let parsed = match args_json {
-                    Some(text) => Some(
-                        serde_json::from_str(&text).map_err(|e| format!("--action arguments are not valid JSON: {e}"))?,
-                    ),
+                    Some(text) => {
+                        forwarded.push(text.clone());
+                        Some(serde_json::from_str(&text).map_err(|e| format!("--action arguments are not valid JSON: {e}"))?)
+                    }
                     None => None,
                 };
                 out.mode = Mode::Action { name, args: parsed };
@@ -120,7 +178,11 @@ where
             "-V" | "--version" => out.mode = Mode::Version,
             other => return Err(format!("unknown option {other} (try --help)")),
         }
+        out.forward.extend(forwarded);
     }
+    let base = out.cwd.clone().unwrap_or_else(|| cwd.to_path_buf());
+    out.paths = raw_paths.iter().map(|raw| parse_path_spec(raw, &base)).collect();
+    out.log_file = raw_log.map(|file| absolute(Path::new(&file), &base));
     Ok(out)
 }
 
@@ -326,9 +388,62 @@ mod tests {
         assert_eq!(parse(["--help"], cwd).unwrap().mode, Mode::Help);
         assert_eq!(parse(["-V"], cwd).unwrap().mode, Mode::Version);
         assert_eq!(parse(["--dump-input"], cwd).unwrap().mode, Mode::DumpInput);
-        assert!(parse(["--window"], cwd).unwrap().window);
         assert!(parse(["--nope"], cwd).is_err());
         assert!(parse(["--terminal"], cwd).is_err());
+        assert!(parse(["--cwd"], cwd).is_err());
+    }
+
+    #[test]
+    fn here_and_window_and_the_last_one_wins() {
+        let cwd = Path::new("/work");
+        let window = |line: &[&str]| parse(line.iter().copied(), cwd).unwrap().window;
+        assert_eq!(window(&[]), None, "no flag: the setting decides");
+        assert_eq!(window(&["--window"]), Some(true));
+        assert_eq!(window(&["--here"]), Some(false));
+        assert_eq!(window(&["--no-window"]), Some(false), "an alias of --here");
+        assert_eq!(window(&["--here", "--window"]), Some(true));
+        assert_eq!(window(&["--window", "--no-window"]), Some(false));
+        assert_eq!(window(&["--", "--window"]), None, "after -- it is a file");
+    }
+
+    #[test]
+    fn cwd_moves_every_relative_path_wherever_it_is_given() {
+        let args = parse(["a.rs:3", "--log", "debug.log", "--cwd", "/elsewhere/app", "../b.rs"], Path::new("/work")).unwrap();
+        assert_eq!(args.cwd, Some(PathBuf::from("/elsewhere/app")));
+        assert_eq!(args.paths[0].path, PathBuf::from("/elsewhere/app/a.rs"));
+        assert_eq!(args.paths[0].line, Some(3));
+        assert_eq!(args.paths[1].path, PathBuf::from("/elsewhere/app/../b.rs"));
+        assert_eq!(args.log_file, Some(PathBuf::from("/elsewhere/app/debug.log")));
+        let joined = parse(["--cwd=/with space/x", "a b.rs"], Path::new("/work")).unwrap();
+        assert_eq!(joined.cwd, Some(PathBuf::from("/with space/x")));
+        assert_eq!(joined.paths[0].path, PathBuf::from("/with space/x/a b.rs"));
+        assert_eq!(parse(["--cwd", "sub"], Path::new("/work")).unwrap().cwd, Some(PathBuf::from("/work/sub")), "relative to where it was run");
+        assert_eq!(parse(["a.rs"], Path::new("/work")).unwrap().cwd, None);
+    }
+
+    #[test]
+    fn forward_keeps_everything_but_where_to_run() {
+        let args = parse(
+            ["--window", "-n", "src/main.rs:12", "--terminal", "herdr --session work", "my file.rs", "--cwd", "/x", "--here", "--log", "l.txt", "--no-restore", "--new", "--", "--window", "-n"],
+            Path::new("/work"),
+        )
+        .unwrap();
+        assert_eq!(
+            args.forward,
+            ["src/main.rs:12", "--terminal", "herdr --session work", "my file.rs", "--log", "l.txt", "--no-restore", "--", "--window", "-n"],
+            "values stay with their options, and after -- nothing is dropped"
+        );
+        // An option's value is never taken for a launcher flag.
+        assert_eq!(parse(["--terminal", "--here"], Path::new("/work")).unwrap().forward, ["--terminal", "--here"]);
+        assert_eq!(parse(["--terminal", "--here"], Path::new("/work")).unwrap().window, None);
+        assert_eq!(parse(["--probe", "--cwd=/x"], Path::new("/work")).unwrap().forward, ["--probe"]);
+    }
+
+    #[test]
+    fn help_documents_where_bakedit_runs() {
+        for wanted in ["--here, --no-window", "--window", "--cwd <dir>", "\"window\": false", "settings.json", "Ghostty"] {
+            assert!(USAGE.contains(wanted), "--help does not mention {wanted:?}");
+        }
     }
 
     #[test]
