@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod dump;
 pub mod format;
 pub mod fuzzy;
+pub mod hints;
 pub mod host;
 pub mod ipc;
 pub mod layout;
