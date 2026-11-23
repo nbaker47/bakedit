@@ -1,0 +1,20 @@
+//! bakedit, the application: everything behind the `bakedit` binary.
+
+pub mod actions;
+pub mod chrome;
+pub mod cli;
+pub mod clipboard;
+pub mod dump;
+pub mod format;
+pub mod fuzzy;
+pub mod host;
+pub mod ipc;
+pub mod layout;
+pub mod line_input;
+pub mod minimap;
+pub mod paint;
+pub mod picker;
+pub mod session;
+pub mod settings;
+pub mod ui;
+pub mod workspace;

@@ -256,8 +256,8 @@ impl Theme {
         let text_accent = pick(&["text.accent"], background, border_focused);
 
         let search_match_bg = pick(&["search.match_background"], editor_bg, yellow.over(editor_bg, 70));
-        let indent_guide = pick(&["editor.indent_guide"], editor_bg, text.over(editor_bg, 22));
-        let indent_guide_active = pick(&["editor.indent_guide_active"], editor_bg, text.over(editor_bg, 60));
+        let indent_guide = pick(&["editor.indent_guide"], editor_bg, text.over(editor_bg, 38));
+        let indent_guide_active = pick(&["editor.indent_guide_active"], editor_bg, text.over(editor_bg, 96));
         let wrap_guide = pick(&["editor.wrap_guide"], editor_bg, indent_guide);
         let matching_bracket_bg = pick(
             &["editor.document_highlight.bracket_background", "editor.document_highlight.read_background"],

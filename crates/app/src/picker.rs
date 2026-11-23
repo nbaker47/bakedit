@@ -240,7 +240,9 @@ impl Picker {
         let cursor_x = self.input.render(canvas, query_area, text, selection, &self.placeholder, muted);
         // A hairline under the query separates it from the results without a box.
         if panel.height > 1 {
-            canvas.hline(panel.x, panel.y + 1, panel.width, "─", Style::colors(theme.border, bg));
+            // Mixed from the text colour: `border` is often the panel's own colour.
+            let rule = theme.text_muted.lerp(bg, 0.7);
+            canvas.hline(panel.x, panel.y + 1, panel.width, "─", Style::colors(rule, bg));
         }
 
         let list_height = panel.height.saturating_sub(3);
