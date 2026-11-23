@@ -3,9 +3,13 @@
 //!
 //! The numbers come from tools the user already runs rather than from vendor APIs:
 //! `ai-usagebar usage --json` (the "AI Usage" menu-bar app) reports every subscription it is
-//! configured for. Without it, Claude's figures are read from the cache its status line
-//! writes and Antigravity's from `antigravity-usage --json`, as the user's own
-//! `ai-usage-monitor` does.
+//! configured for. What it does not report is read elsewhere: Claude's figures from the
+//! cache its status line writes, Antigravity's from `antigravity-usage --json` (as the
+//! user's own `ai-usage-monitor` does), and Codex's from the rate limits its CLI logs with
+//! every session.
+//!
+//! The strip always shows the four subscriptions the user has (Claude, Antigravity, Cursor,
+//! Codex), in that order: one with no numbers shows a dash rather than disappearing.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -169,6 +173,94 @@ pub fn parse_antigravity(text: &str, now: i64) -> Option<Vendor> {
     Some(Vendor { short: "agy".into(), name: "Antigravity".into(), meters: fullest_per_window(meters), error: None })
 }
 
+/// The subscriptions the strip always shows, in order: (short name, name).
+pub const ALWAYS_SHOWN: [(&str, &str); 4] = [("cld", "Claude"), ("agy", "Antigravity"), ("cur", "Cursor"), ("cdx", "Codex")];
+
+/// Whether `vendor` is the subscription called `short` / `name`.
+fn is_vendor(vendor: &Vendor, short: &str, name: &str) -> bool {
+    vendor.short.eq_ignore_ascii_case(short) || vendor.name.eq_ignore_ascii_case(name)
+}
+
+/// The four subscriptions of [`ALWAYS_SHOWN`] first and in that order, each with its numbers
+/// from `found` or, when `found` has none for it, with none (drawn as a dash); then
+/// anything else `found` lists.
+pub fn with_every_vendor(found: Vec<Vendor>) -> Vec<Vendor> {
+    let mut rest = found;
+    let mut out = Vec::new();
+    for (short, name) in ALWAYS_SHOWN {
+        match rest.iter().position(|vendor| is_vendor(vendor, short, name)) {
+            Some(index) => {
+                let mut vendor = rest.remove(index);
+                vendor.short = short.to_string();
+                out.push(vendor);
+            }
+            None => out.push(Vendor { short: short.into(), name: name.into(), meters: Vec::new(), error: Some("no numbers".into()) }),
+        }
+    }
+    out.extend(rest);
+    out
+}
+
+/// Codex's limits from one line of its session log (`~/.codex/sessions/.../rollout-*.jsonl`):
+/// the `rate_limits` of a `token_count` event. Windows that have reset since are left out
+/// (their use since is unknown); `None` when the line has no limits.
+pub fn parse_codex_line(line: &str, now: i64) -> Option<Vendor> {
+    let document: Value = serde_json::from_str(line).ok()?;
+    let limits = document.get("payload")?.get("rate_limits")?;
+    if !limits.is_object() {
+        return None;
+    }
+    let logged_at = document.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339);
+    let mut meters = Vec::new();
+    for key in ["primary", "secondary"] {
+        let Some(limit) = limits.get(key).filter(|v| v.is_object()) else { continue };
+        let Some(percent) = limit.get("used_percent").and_then(Value::as_f64) else { continue };
+        let minutes = limit.get("window_minutes").and_then(Value::as_u64);
+        let reset_at = limit
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .or_else(|| Some(logged_at? + limit.get("resets_in_seconds").and_then(Value::as_i64)?));
+        if reset_at.is_some_and(|at| at <= now) {
+            continue;
+        }
+        let secs = minutes.map(|m| m * 60);
+        meters.push((secs, Meter { window: window_name(secs, key), percent: percent.clamp(0.0, 100.0) as f32, reset_at }));
+    }
+    let error = meters.is_empty().then(|| "no Codex use since its limits last reset".to_string());
+    Some(Vendor { short: "cdx".into(), name: "Codex".into(), meters: fullest_per_window(meters), error })
+}
+
+/// The newest Codex limits on this machine: the last `rate_limits` line of the newest session
+/// logs under `codex_home/sessions` (`YYYY/MM/DD/rollout-*.jsonl`).
+pub fn codex_usage(codex_home: &std::path::Path, now: i64) -> Option<Vendor> {
+    let sessions = codex_home.join("sessions");
+    // Newest first: the folders and files are named by date and time.
+    let sorted = |dir: &std::path::Path| -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map(|read| read.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        entries.sort();
+        entries.reverse();
+        entries
+    };
+    let mut logs = Vec::new();
+    'walk: for year in sorted(&sessions) {
+        for month in sorted(&year) {
+            for day in sorted(&month) {
+                logs.extend(sorted(&day).into_iter().filter(|p| p.extension().is_some_and(|e| e == "jsonl")));
+                if logs.len() >= 3 {
+                    break 'walk;
+                }
+            }
+        }
+    }
+    for log in logs.iter().take(3) {
+        let Ok(text) = std::fs::read_to_string(log) else { continue };
+        if let Some(vendor) = text.lines().rev().filter(|line| line.contains("\"rate_limits\"")).find_map(|line| parse_codex_line(line, now)) {
+            return Some(vendor);
+        }
+    }
+    None
+}
+
 fn find_tool(name: &str, extra: &[&str]) -> Option<PathBuf> {
     crate::format::which(name).or_else(|| extra.iter().map(PathBuf::from).find(|p| p.exists()))
 }
@@ -208,24 +300,36 @@ fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-/// Collect the current numbers. Blocks while the tools run: call it off the UI thread.
+/// Collect the current numbers, always for the four subscriptions of [`ALWAYS_SHOWN`].
+/// Blocks while the tools run: call it off the UI thread.
 pub fn fetch() -> Vec<Vendor> {
     let usagebar = find_tool("ai-usagebar", &["/Applications/AI Usage.app/Contents/MacOS/ai-usagebar"]);
-    if let Some(vendors) = usagebar.and_then(|tool| run(&tool, &["usage", "--json"])).and_then(|out| parse_usagebar(&out)) {
-        if !vendors.is_empty() {
-            return vendors;
+    let mut vendors =
+        usagebar.and_then(|tool| run(&tool, &["usage", "--json"])).and_then(|out| parse_usagebar(&out)).unwrap_or_default();
+    let has = |vendors: &[Vendor], short: &str, name: &str| vendors.iter().any(|v| is_vendor(v, short, name) && !v.meters.is_empty());
+    let home = dirs::home_dir();
+    if !has(&vendors, "cld", "Claude") {
+        let cache = home.as_ref().map(|home| home.join(".cache/claude-rate-limits.json"));
+        if let Some(vendor) = cache.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| parse_claude_cache(&t)) {
+            vendors.retain(|v| !is_vendor(v, "cld", "Claude"));
+            vendors.push(vendor);
         }
     }
-    let mut vendors = Vec::new();
-    let cache = dirs::home_dir().map(|home| home.join(".cache/claude-rate-limits.json"));
-    if let Some(vendor) = cache.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| parse_claude_cache(&t)) {
-        vendors.push(vendor);
+    if !has(&vendors, "agy", "Antigravity") {
+        let agy = find_tool("antigravity-usage", &[]);
+        if let Some(vendor) = agy.and_then(|tool| run(&tool, &["--json"])).and_then(|out| parse_antigravity(&out, now_unix())) {
+            vendors.retain(|v| !is_vendor(v, "agy", "Antigravity"));
+            vendors.push(vendor);
+        }
     }
-    let agy = find_tool("antigravity-usage", &[]);
-    if let Some(vendor) = agy.and_then(|tool| run(&tool, &["--json"])).and_then(|out| parse_antigravity(&out, now_unix())) {
-        vendors.push(vendor);
+    if !has(&vendors, "cdx", "Codex") {
+        let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| home.as_ref().map(|home| home.join(".codex")));
+        if let Some(vendor) = codex_home.and_then(|dir| codex_usage(&dir, now_unix())) {
+            vendors.retain(|v| !is_vendor(v, "cdx", "Codex"));
+            vendors.push(vendor);
+        }
     }
-    vendors
+    with_every_vendor(vendors)
 }
 
 /// Refreshes the numbers on a background thread.
@@ -325,7 +429,7 @@ pub fn render(canvas: &mut Canvas<'_>, area: Rect, vendors: &[Vendor], now: i64,
     }
     let muted = Style::colors(theme.text_muted, bg);
     if vendors.is_empty() {
-        canvas.text_truncated(area.x + 1, area.y, "usage: waiting for numbers", muted, area.width - 2);
+        canvas.text_truncated(area.x + 1, area.y, "usage: reading the numbers…", muted, area.width - 2);
         return;
     }
     const BAR: u16 = 6;
@@ -451,6 +555,61 @@ mod tests {
     }
 
     #[test]
+    fn the_four_subscriptions_are_always_there_in_order() {
+        let found = parse_usagebar(USAGEBAR).unwrap();
+        let extra = Vendor { short: "zzz".into(), name: "Other".into(), meters: Vec::new(), error: None };
+        let mut reordered = vec![extra.clone(), found[2].clone(), found[0].clone()];
+        reordered.push(found[1].clone());
+        let vendors = with_every_vendor(reordered);
+        let shorts: Vec<&str> = vendors.iter().map(|v| v.short.as_str()).collect();
+        assert_eq!(shorts, ["cld", "agy", "cur", "cdx", "zzz"]);
+        assert_eq!(vendors[0].meters.len(), 2, "Claude keeps its numbers");
+        assert!(vendors[3].meters.is_empty(), "Codex, not reported, is there without numbers");
+        let (text, _) = draw(&with_every_vendor(Vec::new()), 60);
+        assert_eq!(text, " cld – · agy – · cur – · cdx –", "nothing known yet still names all four");
+    }
+
+    #[test]
+    fn reads_codex_limits_from_its_session_log() {
+        let line = r#"{"timestamp":"2026-11-23T02:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":null,
+            "rate_limits":{"limit_id":"codex","primary":{"used_percent":12.0,"window_minutes":300,"resets_at":1795410000},
+            "secondary":{"used_percent":40.5,"window_minutes":10080,"resets_at":1795900000},"credits":null,"plan_type":null}}}"#
+            .replace('\n', "");
+        let codex = parse_codex_line(&line, NOW).unwrap();
+        assert_eq!(codex.short, "cdx");
+        assert_eq!(codex.meters.iter().map(|m| (m.window.as_str(), m.percent)).collect::<Vec<_>>(), [("5h", 12.0), ("7d", 40.5)]);
+        // A week later both windows have reset: what was used since is not known.
+        let later = parse_codex_line(&line, NOW + 8 * 86_400).unwrap();
+        assert!(later.meters.is_empty());
+        assert!(later.error.is_some());
+        // The older form: seconds to the reset, counted from when the line was logged.
+        let old = r#"{"timestamp":"2026-11-23T02:00:00Z","payload":{"rate_limits":{"primary":{"used_percent":5,"window_minutes":300,"resets_in_seconds":7200}}}}"#;
+        assert_eq!(parse_codex_line(old, NOW).unwrap().meters[0].reset_at, parse_rfc3339("2026-11-23T04:00:00Z"));
+        assert!(parse_codex_line(r#"{"payload":{"type":"token_count"}}"#, NOW).is_none());
+        assert!(parse_codex_line("not json", NOW).is_none());
+    }
+
+    #[test]
+    fn finds_the_newest_codex_session_log() {
+        let home = tempfile::tempdir().unwrap();
+        let day = |date: &str| {
+            let dir = home.path().join("sessions").join(date);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let line = |percent: u32| {
+            format!(r#"{{"timestamp":"2026-11-23T02:00:00Z","payload":{{"rate_limits":{{"primary":{{"used_percent":{percent},"window_minutes":300,"resets_at":1795410000}}}}}}}}"#)
+        };
+        std::fs::write(day("2026/11/20").join("rollout-2026-11-20T10-00-00-a.jsonl"), line(70) + "\n").unwrap();
+        std::fs::write(day("2026/11/22").join("rollout-2026-11-22T09-00-00-b.jsonl"), format!("{}\n{{\"other\":1}}\n", line(30))).unwrap();
+        // The newest log has no limits yet (a session just started): the one before has them.
+        std::fs::write(day("2026/11/22").join("rollout-2026-11-22T11-00-00-c.jsonl"), "{\"type\":\"session_meta\"}\n").unwrap();
+        let codex = codex_usage(home.path(), NOW).unwrap();
+        assert_eq!(codex.meters[0].percent, 30.0);
+        assert!(codex_usage(&home.path().join("missing"), NOW).is_none());
+    }
+
+    #[test]
     fn countdowns() {
         assert_eq!(countdown(45 * 60), "45m");
         assert_eq!(countdown(2 * 3600 + 14 * 60), "2h14m");
@@ -499,7 +658,7 @@ mod tests {
     #[test]
     fn says_when_there_are_no_numbers_yet() {
         let (text, _) = draw(&[], 60);
-        assert_eq!(text, " usage: waiting for numbers");
+        assert_eq!(text, " usage: reading the numbers…");
     }
 
     #[test]
