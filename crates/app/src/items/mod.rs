@@ -2,3 +2,4 @@
 
 pub mod diff;
 pub mod search;
+mod search_replace;
