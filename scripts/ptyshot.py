@@ -306,7 +306,10 @@ def main() -> int:
 
     alive = pump(args.settle)
     if args.script:
-        for raw in open(args.script, encoding="utf-8"):
+        # Read the whole script first: it must not change under a run in progress.
+        with open(args.script, encoding="utf-8") as script:
+            lines = script.read().splitlines()
+        for raw in lines:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
