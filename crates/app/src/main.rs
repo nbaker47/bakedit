@@ -1,4 +1,7 @@
+mod actions;
+mod chrome;
 mod cli;
+mod clipboard;
 mod format;
 mod ipc;
 mod layout;
