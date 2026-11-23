@@ -632,6 +632,34 @@ fn a_failing_hook_surfaces_its_output() {
 }
 
 #[test]
+fn hooks_have_no_terminal_to_prompt_on() {
+    let test = TestRepo::with_commit();
+    let report = test.sandbox().join("hook-terminal.txt");
+    // The hook notes which terminal it is attached to, and fails if it can open one:
+    // whatever it then asked there would land on top of the IDE.
+    test.install_hook(
+        "pre-commit",
+        &format!(
+            "#!/bin/sh\nps -o tty= -p $$ > '{}'\n\
+             if (exec < /dev/tty) 2>/dev/null; then\n\
+               echo 'the hook reached a terminal' >&2\n  exit 1\nfi\n",
+            report.display()
+        ),
+    );
+    test.write("a.txt", "a\n");
+    test.repo.stage_all().unwrap();
+
+    test.repo
+        .commit("committed without a terminal", CommitOptions::default())
+        .unwrap();
+    let terminal = std::fs::read_to_string(&report).unwrap();
+    assert!(
+        matches!(terminal.trim(), "??" | "?" | "-"),
+        "the hook ran on terminal {terminal:?}"
+    );
+}
+
+#[test]
 fn hooks_see_the_message_and_can_rewrite_it() {
     let test = TestRepo::with_commit();
     test.install_hook(
