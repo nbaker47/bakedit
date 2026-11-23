@@ -652,6 +652,8 @@
       "space": "project_panel::Open",
       "up": "menu::SelectPrevious",
       "down": "menu::SelectNext",
+      "cmd-up": ["menu::SelectPrevious", { "lines": 5 }],
+      "cmd-down": ["menu::SelectNext", { "lines": 5 }],
       "enter": "project_panel::OpenPermanent"
     }
   },

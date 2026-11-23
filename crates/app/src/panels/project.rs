@@ -793,8 +793,18 @@ impl View for ProjectPanel {
         let page = self.height.max(1);
         let hide = Self::hides_ignored(cx);
         match action.name.as_str() {
-            "menu::SelectNext" => self.step(true, hide),
-            "menu::SelectPrevious" => self.step(false, hide),
+            "menu::SelectNext" => {
+                let steps = action.args.as_ref().and_then(|v| v.get("lines")).and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
+                for _ in 0..steps {
+                    self.step(true, hide);
+                }
+            }
+            "menu::SelectPrevious" => {
+                let steps = action.args.as_ref().and_then(|v| v.get("lines")).and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
+                for _ in 0..steps {
+                    self.step(false, hide);
+                }
+            }
             "menu::SelectFirst" => self.tree.select_first(),
             "menu::SelectLast" => self.select_last_shown(hide),
             "project_panel::SelectNextPage" => self.tree.select_page_down(page),
