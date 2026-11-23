@@ -1,6 +1,6 @@
 //! Undo history: transactions, grouping of typed characters, and the saved-state marker.
 //!
-//! The buffer records every batch of edits here. A [`Transaction`] is one undo step: one or
+//! The buffer records every batch of edits here. A transaction is one undo step: one or
 //! more batches plus the selections before and after. The history never drops a step.
 
 use std::ops::Range;
