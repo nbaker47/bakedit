@@ -1,0 +1,822 @@
+// bakedit's built-in keymap.
+//
+// The format and the rules are Zed's (https://zed.dev/docs/key-bindings): a list of
+// sections, each with an optional "context" and its "bindings". A binding in a deeper
+// context wins; at the same depth the later one wins; a section with no context matches at
+// the deepest level. When the winning action has nothing to act on (menu::Confirm with no
+// menu open), the next candidate is tried, and a key nothing claims is typed.
+//
+// Your own ~/.config/bakedit/keymap.json is loaded after this file, so anything there wins.
+// Set a key to null to switch a built-in binding off.
+//
+// The sections are, in order:
+//   1. Zed's default macOS bindings (v1.29) for everything bakedit has
+//   2. Nathan's own bindings, ported from ~/.config/zed/keymap.json
+//   3. Nav mode and edit mode
+//   4. bakedit's extras (herdr, the nav layer, the ctrl-] prefix that works in any terminal)
+[
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // 1. Zed defaults
+  // ─────────────────────────────────────────────────────────────────────────────────────
+
+  // Lists, menus and prompts. No context: these are offered everywhere and act only where
+  // something is listening (a picker, the project panel, a confirmation).
+  {
+    "bindings": {
+      "home": "menu::SelectFirst",
+      "shift-pageup": "menu::SelectFirst",
+      "pageup": "menu::SelectFirst",
+      "cmd-up": "menu::SelectFirst",
+      "end": "menu::SelectLast",
+      "shift-pagedown": "menu::SelectLast",
+      "pagedown": "menu::SelectLast",
+      "cmd-down": "menu::SelectLast",
+      "tab": "menu::SelectNext",
+      "ctrl-n": "menu::SelectNext",
+      "down": "menu::SelectNext",
+      "shift-tab": "menu::SelectPrevious",
+      "ctrl-p": "menu::SelectPrevious",
+      "up": "menu::SelectPrevious",
+      "enter": "menu::Confirm",
+      "ctrl-enter": "menu::SecondaryConfirm",
+      "cmd-enter": "menu::SecondaryConfirm",
+      "cmd-escape": "menu::Cancel",
+      "ctrl-escape": "menu::Cancel",
+      "ctrl-c": "menu::Cancel",
+      "escape": "menu::Cancel",
+      "shift-escape": "workspace::ToggleZoom",
+      "cmd-q": "zed::Quit",
+      "cmd-,": "zed::OpenSettingsFile",
+      "cmd-alt-,": "zed::OpenSettingsFile"
+    }
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "escape": "editor::Cancel",
+      "shift-backspace": "editor::Backspace",
+      "ctrl-h": "editor::Backspace",
+      "backspace": "editor::Backspace",
+      "ctrl-d": "editor::Delete",
+      "delete": "editor::Delete",
+      "tab": "editor::Tab",
+      "shift-tab": "editor::Backtab",
+      "ctrl-t": "editor::Transpose",
+      "ctrl-k": "editor::KillRingCut",
+      "ctrl-y": "editor::KillRingYank",
+      "cmd-backspace": "editor::DeleteToBeginningOfLine",
+      "cmd-delete": "editor::DeleteToEndOfLine",
+      "alt-backspace": ["editor::DeleteToPreviousWordStart", { "ignore_newlines": false, "ignore_brackets": false }],
+      "ctrl-w": ["editor::DeleteToPreviousWordStart", { "ignore_newlines": false, "ignore_brackets": false }],
+      "alt-delete": ["editor::DeleteToNextWordEnd", { "ignore_newlines": false, "ignore_brackets": false }],
+      "cmd-x": "editor::Cut",
+      "cmd-c": "editor::Copy",
+      "cmd-v": "editor::Paste",
+      "cmd-z": "editor::Undo",
+      "cmd-shift-z": "editor::Redo",
+      "up": "editor::MoveUp",
+      "ctrl-up": "editor::MoveToStartOfParagraph",
+      "pageup": "editor::MovePageUp",
+      "shift-pageup": "editor::SelectPageUp",
+      "cmd-pageup": "editor::PageUp",
+      "ctrl-pageup": "editor::LineUp",
+      "down": "editor::MoveDown",
+      "ctrl-down": "editor::MoveToEndOfParagraph",
+      "pagedown": "editor::MovePageDown",
+      "shift-pagedown": "editor::SelectPageDown",
+      "cmd-pagedown": "editor::PageDown",
+      "ctrl-pagedown": "editor::LineDown",
+      "ctrl-p": "editor::MoveUp",
+      "ctrl-n": "editor::MoveDown",
+      "ctrl-b": "editor::MoveLeft",
+      "left": "editor::MoveLeft",
+      "ctrl-f": "editor::MoveRight",
+      "right": "editor::MoveRight",
+      "ctrl-l": "editor::ScrollCursorCenter",
+      "alt-left": "editor::MoveToPreviousWordStart",
+      "alt-right": "editor::MoveToNextWordEnd",
+      "cmd-left": ["editor::MoveToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": true }],
+      "ctrl-a": ["editor::MoveToBeginningOfLine", { "stop_at_soft_wraps": false, "stop_at_indent": true }],
+      "home": ["editor::MoveToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": true }],
+      "cmd-right": ["editor::MoveToEndOfLine", { "stop_at_soft_wraps": true }],
+      "ctrl-e": ["editor::MoveToEndOfLine", { "stop_at_soft_wraps": false }],
+      "end": ["editor::MoveToEndOfLine", { "stop_at_soft_wraps": true }],
+      "cmd-up": "editor::MoveToBeginning",
+      "cmd-down": "editor::MoveToEnd",
+      "cmd-home": "editor::MoveToBeginning",
+      "cmd-end": "editor::MoveToEnd",
+      "shift-up": "editor::SelectUp",
+      "ctrl-shift-p": "editor::SelectUp",
+      "shift-down": "editor::SelectDown",
+      "ctrl-shift-n": "editor::SelectDown",
+      "shift-left": "editor::SelectLeft",
+      "ctrl-shift-b": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+      "ctrl-shift-f": "editor::SelectRight",
+      "alt-shift-left": "editor::SelectToPreviousWordStart",
+      "alt-shift-right": "editor::SelectToNextWordEnd",
+      "ctrl-shift-up": "editor::SelectToStartOfParagraph",
+      "ctrl-shift-down": "editor::SelectToEndOfParagraph",
+      "cmd-shift-up": "editor::SelectToBeginning",
+      "cmd-shift-down": "editor::SelectToEnd",
+      "cmd-a": "editor::SelectAll",
+      "cmd-l": "editor::SelectLine",
+      "cmd-shift-i": "editor::Format",
+      "cmd-shift-left": ["editor::SelectToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": true }],
+      "shift-home": ["editor::SelectToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": true }],
+      "ctrl-shift-a": ["editor::SelectToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": true }],
+      "cmd-shift-right": ["editor::SelectToEndOfLine", { "stop_at_soft_wraps": true }],
+      "shift-end": ["editor::SelectToEndOfLine", { "stop_at_soft_wraps": true }],
+      "ctrl-shift-e": ["editor::SelectToEndOfLine", { "stop_at_soft_wraps": true }],
+      "ctrl-v": ["editor::MovePageDown", { "center_cursor": true }],
+      "ctrl-shift-v": ["editor::MovePageUp", { "center_cursor": true }],
+      "cmd-;": "editor::ToggleLineNumbers"
+    }
+  },
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "shift-enter": "editor::Newline",
+      "enter": "editor::Newline",
+      "cmd-enter": "editor::NewlineBelow",
+      "cmd-shift-enter": "editor::NewlineAbove",
+      "cmd-k z": "editor::ToggleSoftWrap",
+      "cmd-f": "buffer_search::Deploy"
+    }
+  },
+  {
+    "context": "Editor && mode == auto_height",
+    "bindings": {
+      "ctrl-enter": "editor::Newline",
+      "shift-enter": "editor::Newline",
+      "ctrl-shift-enter": "editor::NewlineBelow"
+    }
+  },
+  {
+    "context": "BufferSearchBar",
+    "bindings": {
+      "escape": "buffer_search::Dismiss",
+      "tab": "buffer_search::FocusEditor",
+      "enter": "search::SelectNextMatch",
+      "shift-enter": "search::SelectPreviousMatch",
+      "alt-enter": "search::SelectAllMatches",
+      "cmd-f": "search::FocusSearch",
+      "cmd-shift-o": "outline::Toggle"
+    }
+  },
+  {
+    "context": "BufferSearchBar && in_replace > Editor",
+    "bindings": {
+      "enter": "search::ReplaceNext",
+      "cmd-enter": "search::ReplaceAll"
+    }
+  },
+  {
+    "context": "BufferSearchBar && !in_replace > Editor",
+    "bindings": {
+      "shift-enter": "search::SelectPreviousMatch",
+      "up": "search::PreviousHistoryQuery",
+      "down": "search::NextHistoryQuery"
+    }
+  },
+  {
+    "context": "ProjectSearchBar",
+    "bindings": {
+      "escape": "project_search::ToggleFocus",
+      "cmd-shift-f": "search::FocusSearch",
+      "cmd-shift-h": "search::ToggleReplace",
+      "alt-cmd-g": "search::ToggleRegex",
+      "alt-cmd-x": "search::ToggleRegex"
+    }
+  },
+  {
+    "context": "ProjectSearchBar > Editor",
+    "bindings": {
+      "up": "search::PreviousHistoryQuery",
+      "down": "search::NextHistoryQuery"
+    }
+  },
+  {
+    "context": "ProjectSearchBar && in_replace > Editor",
+    "bindings": {
+      "enter": "search::ReplaceNext",
+      "cmd-enter": "search::ReplaceAll"
+    }
+  },
+  {
+    "context": "ProjectSearchView",
+    "bindings": {
+      "escape": "project_search::ToggleFocus",
+      "cmd-shift-h": "search::ToggleReplace",
+      "alt-cmd-g": "search::ToggleRegex",
+      "alt-cmd-x": "search::ToggleRegex"
+    }
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "alt-cmd-left": "pane::ActivatePreviousItem",
+      "cmd-{": "pane::ActivatePreviousItem",
+      "alt-cmd-right": "pane::ActivateNextItem",
+      "cmd-}": "pane::ActivateNextItem",
+      "ctrl-shift-pageup": "pane::SwapItemLeft",
+      "ctrl-shift-pagedown": "pane::SwapItemRight",
+      "cmd-w": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "cmd-k e": ["pane::CloseItemsToTheLeft", { "close_pinned": false }],
+      "cmd-k t": ["pane::CloseItemsToTheRight", { "close_pinned": false }],
+      "cmd-k u": ["pane::CloseCleanItems", { "close_pinned": false }],
+      "cmd-k w": ["pane::CloseAllItems", { "close_pinned": false }],
+      "cmd-k o": ["pane::CloseOtherItems", { "close_pinned": false }],
+      "cmd-k cmd-w": "workspace::CloseAllItemsAndPanes",
+      "cmd-f": "project_search::ToggleFocus",
+      "cmd-shift-g": "search::SelectPreviousMatch",
+      "cmd-shift-h": "search::ToggleReplace",
+      "alt-enter": "search::SelectAllMatches",
+      "alt-cmd-c": "search::ToggleCaseSensitive",
+      "alt-cmd-w": "search::ToggleWholeWord",
+      "alt-cmd-x": "search::ToggleRegex"
+    }
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "cmd-[": "editor::Outdent",
+      "cmd-]": "editor::Indent",
+      "cmd-ctrl-p": ["editor::AddSelectionAbove", { "skip_soft_wrap": false }],
+      "cmd-alt-up": ["editor::AddSelectionAbove", { "skip_soft_wrap": true }],
+      "cmd-ctrl-n": ["editor::AddSelectionBelow", { "skip_soft_wrap": false }],
+      "cmd-alt-down": ["editor::AddSelectionBelow", { "skip_soft_wrap": true }],
+      "cmd-shift-k": "editor::DeleteLine",
+      "alt-up": "editor::MoveLineUp",
+      "alt-down": "editor::MoveLineDown",
+      "alt-shift-up": "editor::DuplicateLineUp",
+      "alt-shift-down": "editor::DuplicateLineDown",
+      "cmd-ctrl-left": "editor::SelectSmallerSyntaxNode",
+      "cmd-ctrl-right": "editor::SelectLargerSyntaxNode",
+      "ctrl-shift-right": "editor::SelectLargerSyntaxNode",
+      "ctrl-shift-left": "editor::SelectSmallerSyntaxNode",
+      "cmd-d": ["editor::SelectNext", { "replace_newest": false }],
+      "cmd-shift-l": "editor::SelectAllMatches",
+      "cmd-f2": "editor::SelectAllMatches",
+      "cmd-k cmd-d": ["editor::SelectNext", { "replace_newest": true }],
+      "ctrl-cmd-d": ["editor::SelectPrevious", { "replace_newest": false }],
+      "cmd-k ctrl-cmd-d": ["editor::SelectPrevious", { "replace_newest": true }],
+      "cmd-/": ["editor::ToggleComments", { "advance_downwards": false, "comment_empty_lines": true }],
+      "cmd-k cmd-/": "editor::ToggleBlockComments",
+      "shift-alt-a": "editor::ToggleBlockComments",
+      "cmd-|": "editor::MoveToEnclosingBracket",
+      "ctrl-m": "editor::MoveToEnclosingBracket",
+      "cmd-k r": "editor::RevealInFileManager",
+      "cmd-k p": "editor::CopyPath"
+    }
+  },
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "cmd-shift-o": "outline::Toggle",
+      "ctrl-g": "go_to_line::Toggle"
+    }
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "ctrl-1": ["pane::ActivateItem", 0],
+      "ctrl-2": ["pane::ActivateItem", 1],
+      "ctrl-3": ["pane::ActivateItem", 2],
+      "ctrl-4": ["pane::ActivateItem", 3],
+      "ctrl-5": ["pane::ActivateItem", 4],
+      "ctrl-6": ["pane::ActivateItem", 5],
+      "ctrl-7": ["pane::ActivateItem", 6],
+      "ctrl-8": ["pane::ActivateItem", 7],
+      "ctrl-9": ["pane::ActivateItem", 8],
+      "ctrl-0": "pane::ActivateLastItem",
+      "ctrl--": "pane::GoBack",
+      "ctrl-_": "pane::GoForward",
+      "cmd-shift-f": "pane::DeploySearch"
+    }
+  },
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-o": "workspace::Open",
+      "alt-cmd-o": "projects::OpenRecent",
+      "cmd-ctrl-b": "branches::OpenRecent",
+      "ctrl-~": "workspace::NewTerminal",
+      "cmd-s": "workspace::Save",
+      "cmd-k s": "workspace::SaveWithoutFormat",
+      "cmd-shift-s": "workspace::SaveAs",
+      "ctrl-`": "terminal_panel::Toggle",
+      "cmd-b": "workspace::ToggleLeftDock",
+      "cmd-alt-b": "workspace::ToggleRightDock",
+      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-j": "workspace::ToggleBottomDock",
+      "alt-cmd-y": "workspace::ToggleAllDocks",
+      "ctrl-alt-0": "workspace::ResetActiveDockSize",
+      "ctrl-alt--": ["workspace::DecreaseActiveDockSize", { "px": 0 }],
+      "ctrl-alt-=": ["workspace::IncreaseActiveDockSize", { "px": 0 }],
+      "cmd-shift-f": "pane::DeploySearch",
+      "cmd-shift-h": ["pane::DeploySearch", { "replace_enabled": true }],
+      "cmd-shift-t": "pane::ReopenClosedItem",
+      "cmd-k cmd-s": "zed::OpenKeymap",
+      "cmd-p": "file_finder::Toggle",
+      "ctrl-shift-tab": ["tab_switcher::Toggle", { "select_last": true }],
+      "ctrl-tab": "tab_switcher::Toggle",
+      "cmd-shift-p": "command_palette::Toggle",
+      "cmd-shift-e": "project_panel::ToggleFocus",
+      "ctrl-shift-g": "git_panel::ToggleFocus",
+      "cmd-alt-s": "workspace::SaveAll",
+      "cmd-w": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "ctrl-alt-w": "workspace::CloseActiveDock"
+    }
+  },
+  {
+    "context": "Workspace && !Terminal",
+    "bindings": {
+      "cmd-n": "workspace::NewFile"
+    }
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "cmd-u": "editor::UndoSelection",
+      "cmd-shift-u": "editor::RedoSelection",
+      "ctrl-j": "editor::JoinLines",
+      "ctrl-alt-backspace": "editor::DeleteToPreviousSubwordStart",
+      "ctrl-alt-h": "editor::DeleteToPreviousSubwordStart",
+      "ctrl-alt-delete": "editor::DeleteToNextSubwordEnd",
+      "ctrl-alt-d": "editor::DeleteToNextSubwordEnd",
+      "ctrl-alt-left": "editor::MoveToPreviousSubwordStart",
+      "ctrl-alt-b": "editor::MoveToPreviousSubwordStart",
+      "ctrl-alt-right": "editor::MoveToNextSubwordEnd",
+      "ctrl-alt-f": "editor::MoveToNextSubwordEnd",
+      "ctrl-alt-shift-left": "editor::SelectToPreviousSubwordStart",
+      "ctrl-alt-shift-b": "editor::SelectToPreviousSubwordStart",
+      "ctrl-alt-shift-right": "editor::SelectToNextSubwordEnd",
+      "ctrl-alt-shift-f": "editor::SelectToNextSubwordEnd"
+    }
+  },
+  {
+    "context": "Prompt",
+    "bindings": {
+      "left": "menu::SelectPrevious",
+      "right": "menu::SelectNext",
+      "h": "menu::SelectPrevious",
+      "l": "menu::SelectNext"
+    }
+  },
+  {
+    "context": "ProjectPanel",
+    "bindings": {
+      "left": "project_panel::CollapseSelectedEntry",
+      "cmd-left": "project_panel::CollapseAllEntries",
+      "right": "project_panel::ExpandSelectedEntry",
+      "cmd-right": "project_panel::ExpandAllEntries",
+      "cmd-n": "project_panel::NewFile",
+      "cmd-d": "project_panel::Duplicate",
+      "alt-cmd-n": "project_panel::NewDirectory",
+      "cmd-x": "project_panel::Cut",
+      "cmd-c": "project_panel::Copy",
+      "cmd-v": "project_panel::Paste",
+      "cmd-alt-c": "workspace::CopyPath",
+      "alt-cmd-shift-c": "workspace::CopyRelativePath",
+      "enter": "project_panel::Rename",
+      "f2": "project_panel::Rename",
+      "backspace": ["project_panel::Trash", { "skip_prompt": false }],
+      "delete": ["project_panel::Trash", { "skip_prompt": false }],
+      "cmd-backspace": ["project_panel::Trash", { "skip_prompt": true }],
+      "cmd-delete": ["project_panel::Delete", { "skip_prompt": false }],
+      "cmd-alt-backspace": ["project_panel::Delete", { "skip_prompt": false }],
+      "alt-cmd-r": "project_panel::RevealInFileManager",
+      "ctrl-shift-enter": "workspace::OpenWithSystem",
+      "cmd-alt-shift-f": "project_panel::NewSearchInDirectory",
+      "shift-down": "menu::SelectNext",
+      "shift-up": "menu::SelectPrevious",
+      "escape": "menu::Cancel"
+    }
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "space": "project_panel::Open"
+    }
+  },
+  {
+    "context": "GitPanel && ChangesList",
+    "bindings": {
+      "up": "git_panel::PreviousEntry",
+      "down": "git_panel::NextEntry",
+      "shift-up": "git_panel::PreviousEntry",
+      "shift-down": "git_panel::NextEntry",
+      "cmd-up": "git_panel::FirstEntry",
+      "cmd-down": "git_panel::LastEntry",
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+      "cmd-alt-y": "git::ToggleStaged",
+      "space": "git::ToggleStaged",
+      "cmd-y": "git::StageFile",
+      "cmd-shift-y": "git::UnstageFile",
+      "cmd-alt-c": "workspace::CopyPath",
+      "alt-cmd-shift-c": "workspace::CopyRelativePath",
+      "alt-down": "git_panel::FocusEditor",
+      "tab": "git_panel::FocusEditor",
+      "shift-tab": "git_panel::FocusEditor",
+      "backspace": ["git::RestoreFile", { "skip_prompt": false }],
+      "delete": ["git::RestoreFile", { "skip_prompt": false }],
+      "cmd-backspace": ["git::RestoreFile", { "skip_prompt": true }],
+      "cmd-delete": ["git::RestoreFile", { "skip_prompt": true }]
+    }
+  },
+  {
+    "context": "GitPanel && CommitEditor",
+    "bindings": {
+      "escape": "git::Cancel"
+    }
+  },
+  {
+    "context": "CommitEditor > Editor",
+    "bindings": {
+      "enter": "editor::Newline",
+      "cmd-enter": "git::Commit",
+      "cmd-shift-enter": "git::Amend",
+      "tab": "git_panel::FocusChanges",
+      "shift-tab": "git_panel::FocusChanges",
+      "alt-up": "git_panel::FocusChanges"
+    }
+  },
+  {
+    "context": "GitPanel",
+    "bindings": {
+      "ctrl-g ctrl-g": "git::Fetch",
+      "ctrl-g up": "git::Push",
+      "ctrl-g down": "git::Pull",
+      "ctrl-g shift-down": "git::PullRebase",
+      "ctrl-g shift-up": "git::ForcePush",
+      "ctrl-g d": "git::Diff",
+      "ctrl-g backspace": "git::RestoreTrackedFiles",
+      "ctrl-g shift-backspace": "git::TrashUntrackedFiles",
+      "cmd-ctrl-y": "git::StageAll",
+      "cmd-ctrl-shift-y": "git::UnstageAll",
+      "cmd-enter": "git::Commit",
+      "cmd-shift-enter": "git::Amend"
+    }
+  },
+  // The project diff (git::Diff). In Zed this is an editor; here it is a read-only view
+  // with its own short list of keys.
+  {
+    "context": "ProjectDiff",
+    "bindings": {
+      "up": "project_diff::LineUp",
+      "down": "project_diff::LineDown",
+      "k": "project_diff::LineUp",
+      "j": "project_diff::LineDown",
+      "pageup": "project_diff::PageUp",
+      "pagedown": "project_diff::PageDown",
+      "ctrl-u": "project_diff::HalfPageUp",
+      "ctrl-d": "project_diff::HalfPageDown",
+      "cmd-up": "project_diff::Top",
+      "cmd-down": "project_diff::Bottom",
+      "g g": "project_diff::Top",
+      "shift-g": "project_diff::Bottom",
+      "]": "project_diff::NextHunk",
+      "[": "project_diff::PreviousHunk",
+      "n": "project_diff::NextHunk",
+      "shift-n": "project_diff::PreviousHunk",
+      "}": "project_diff::NextFile",
+      "{": "project_diff::PreviousFile",
+      "enter": "project_diff::OpenFile",
+      "space": "git::ToggleStaged",
+      "cmd-y": "git::StageFile",
+      "cmd-shift-y": "git::UnstageFile",
+      "cmd-alt-z": "git::RestoreAndNext",
+      "cmd-ctrl-y": "git::StageAll",
+      "cmd-ctrl-shift-y": "git::UnstageAll",
+      "cmd-enter": "git::Commit",
+      "cmd-shift-enter": "git::Amend"
+    }
+  },
+  {
+    "context": "Picker > Editor",
+    "bindings": {
+      "escape": "menu::Cancel",
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "tab": "picker::ConfirmCompletion",
+      "alt-enter": ["picker::ConfirmInput", { "secondary": false }]
+    }
+  },
+  {
+    "context": "FileFinder || (FileFinder > Picker > Editor)",
+    "bindings": {
+      "cmd-shift-i": "search::ToggleIncludeIgnored"
+    }
+  },
+  {
+    "context": "TabSwitcher",
+    "bindings": {
+      "ctrl-tab": "menu::SelectNext",
+      "ctrl-shift-tab": "menu::SelectPrevious",
+      "ctrl-up": "menu::SelectPrevious",
+      "ctrl-down": "menu::SelectNext",
+      "ctrl-backspace": "tab_switcher::CloseSelectedItem"
+    }
+  },
+  // Zed's terminal conveniences: the Mac line-editing keys become what a shell expects.
+  {
+    "context": "Terminal",
+    "bindings": {
+      "cmd-c": "terminal::Copy",
+      "cmd-v": "terminal::Paste",
+      "cmd-k": "terminal::Clear",
+      "cmd-n": "workspace::NewTerminal",
+      "cmd-backspace": ["terminal::SendKeystroke", "ctrl-u"],
+      "alt-delete": ["terminal::SendText", "\u001bd"],
+      "cmd-delete": ["terminal::SendKeystroke", "ctrl-k"],
+      "cmd-right": ["terminal::SendKeystroke", "ctrl-e"],
+      "cmd-left": ["terminal::SendKeystroke", "ctrl-a"],
+      "alt-left": ["terminal::SendText", "\u001bb"],
+      "alt-right": ["terminal::SendText", "\u001bf"],
+      "alt-b": ["terminal::SendText", "\u001bb"],
+      "alt-f": ["terminal::SendText", "\u001bf"],
+      "ctrl-delete": ["terminal::SendText", "\u001b[3;5~"],
+      "ctrl-backspace": ["terminal::SendKeystroke", "ctrl-w"],
+      "shift-pageup": "terminal::ScrollPageUp",
+      "cmd-up": "terminal::ScrollPageUp",
+      "shift-pagedown": "terminal::ScrollPageDown",
+      "cmd-down": "terminal::ScrollPageDown",
+      "shift-up": "terminal::ScrollLineUp",
+      "shift-down": "terminal::ScrollLineDown",
+      "shift-home": "terminal::ScrollToTop",
+      "cmd-home": "terminal::ScrollToTop",
+      "shift-end": "terminal::ScrollToBottom",
+      "cmd-end": "terminal::ScrollToBottom"
+    }
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // 2. Nathan's bindings (from ~/.config/zed/keymap.json)
+  // ─────────────────────────────────────────────────────────────────────────────────────
+
+  // Panels: cmd-<letter> shows a panel, cmd-alt-<letter> is its fullscreen form.
+  //   cmd-t        terminal            cmd-alt-t   terminal, fullscreen
+  //   cmd-g        git panel           cmd-alt-g   project diff, fullscreen
+  //   cmd-shift-e  file tree (closes it when pressed inside the tree)
+  //   cmd-e        the editor          cmd-alt-e   the editor, all docks hidden
+  //   cmd-alt-f    fullscreen whatever has the focus (editor: hide all docks; terminal: zoom)
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-t": "terminal_panel::Toggle",
+      // In Zed this is workspace::ToggleZoom, which from the editor loses to a default
+      // binding (close other tabs). Here it always means "the terminal, fullscreen".
+      "cmd-alt-t": "terminal_panel::ToggleZoom",
+      "cmd-g": "git_panel::Toggle",
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleAllDocks",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]]
+    }
+  },
+  {
+    "context": "Editor || Pane",
+    "bindings": {
+      "cmd-alt-t": "terminal_panel::ToggleZoom",
+      "cmd-g": "git_panel::Toggle",
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": "pane::RevealInProjectPanel",
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleAllDocks",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]]
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "cmd-alt-t": "workspace::ToggleZoom",
+      "cmd-g": "git_panel::Toggle",
+      "cmd-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "cmd-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "cmd-e": "workspace::FocusCenterPane",
+      "cmd-alt-f": "workspace::ToggleZoom",
+      "cmd-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]]
+    }
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      // Copy a GitHub permalink to the current line or selection.
+      "ctrl-alt-g": "editor::CopyPermalinkToLine",
+      // cmd-up/down jump 5 lines instead of going to the start/end of the file.
+      "cmd-up": ["editor::MoveUpByLines", { "lines": 5 }],
+      "cmd-down": ["editor::MoveDownByLines", { "lines": 5 }],
+      "cmd-shift-up": ["editor::SelectUpByLines", { "lines": 5 }],
+      "cmd-shift-down": ["editor::SelectDownByLines", { "lines": 5 }],
+      // cmd-k + delimiter: select the text inside the enclosing pair (again to grow to the
+      // next pair out), or jump inside the first pair in the file.
+      "cmd-k (": ["editor::SelectBetween", { "kind": "paren" }],
+      "cmd-k )": ["editor::SelectBetween", { "kind": "paren" }],
+      "cmd-k [": ["editor::SelectBetween", { "kind": "bracket" }],
+      "cmd-k ]": ["editor::SelectBetween", { "kind": "bracket" }],
+      "cmd-k {": ["editor::SelectBetween", { "kind": "brace" }],
+      "cmd-k }": ["editor::SelectBetween", { "kind": "brace" }],
+      "cmd-k \"": ["editor::SelectBetween", { "kind": "dquote" }],
+      "cmd-k '": ["editor::SelectBetween", { "kind": "squote" }],
+      "cmd-k `": ["editor::SelectBetween", { "kind": "backtick" }],
+      "cmd-k <": ["editor::SelectBetween", { "kind": "angle" }],
+      "cmd-k >": ["editor::SelectBetween", { "kind": "angle" }]
+    }
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "cmd-shift-e": "workspace::CloseActiveDock",
+      "cmd-k 0": "project_panel::CollapseAllEntries",
+      "cmd-k cmd-0": "project_panel::CollapseAllEntries",
+      "space": "project_panel::Open",
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "enter": "project_panel::OpenPermanent"
+    }
+  },
+  // Arrowing through the changes shows each file's diff and reveals it in the tree, while
+  // the focus stays in the list.
+  {
+    "context": "GitPanel && ChangesList",
+    "bindings": {
+      "down": [
+        "action::Sequence",
+        ["menu::SelectNext", "menu::Confirm", "pane::RevealInProjectPanel", "git_panel::FocusChanges"]
+      ],
+      "up": [
+        "action::Sequence",
+        ["menu::SelectPrevious", "menu::Confirm", "pane::RevealInProjectPanel", "git_panel::FocusChanges"]
+      ]
+    }
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // 3. Nav mode and edit mode
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // With "vim_mode": true the editor opens in nav mode: keys move and act, nothing types.
+  // i / a / o (and friends) switch to edit mode, escape comes back. That is all of vim
+  // there is: no operators, counts, registers, macros or : commands. Every cmd/alt/ctrl
+  // binding above works the same in both modes.
+  {
+    "context": "Editor && mode == full && vim_mode == insert",
+    "bindings": {
+      "escape": "vim::NormalBefore"
+    }
+  },
+  {
+    "context": "Editor && mode == full && vim_mode == normal",
+    "bindings": {
+      // Move
+      "h": "editor::MoveLeft",
+      "j": "editor::MoveDown",
+      "k": "editor::MoveUp",
+      "l": "editor::MoveRight",
+      "w": "editor::MoveToNextWordStart",
+      "b": "editor::MoveToPreviousWordStart",
+      "e": "editor::MoveToNextWordEnd",
+      "0": ["editor::MoveToBeginningOfLine", { "stop_at_soft_wraps": true, "stop_at_indent": false }],
+      "^": "editor::MoveToFirstNonBlank",
+      "$": ["editor::MoveToEndOfLine", { "stop_at_soft_wraps": true }],
+      "g g": "editor::MoveToBeginning",
+      "shift-g": "editor::MoveToEnd",
+      "{": "editor::MoveToStartOfParagraph",
+      "}": "editor::MoveToEndOfParagraph",
+      "%": "editor::MoveToEnclosingBracket",
+      "ctrl-d": "vim::ScrollDown",
+      "ctrl-u": "vim::ScrollUp",
+      "ctrl-f": "editor::MovePageDown",
+      "ctrl-b": "editor::MovePageUp",
+      "z z": "editor::ScrollCursorCenter",
+      // Into edit mode
+      "i": "vim::InsertBefore",
+      "a": "vim::InsertAfter",
+      "shift-i": "vim::InsertFirstNonWhitespace",
+      "shift-a": "vim::InsertEndOfLine",
+      "o": "vim::InsertLineBelow",
+      "shift-o": "vim::InsertLineAbove",
+      // Select: v then move; y copies, d cuts, c cuts and edits, escape lets go.
+      "v": "vim::ToggleVisual",
+      "shift-v": "vim::ToggleVisualLine",
+      "y": "editor::Copy",
+      "d": "editor::Cut",
+      "c": ["action::Sequence", ["editor::Cut", "vim::InsertBefore"]],
+      "p": "editor::Paste",
+      "x": "editor::Delete",
+      // Undo, lines, indent
+      "u": "editor::Undo",
+      "shift-u": "editor::Redo",
+      "ctrl-r": "editor::Redo",
+      "shift-j": "editor::JoinLines",
+      ">": "editor::Indent",
+      "<": "editor::Outdent",
+      // Find
+      "/": "buffer_search::Deploy",
+      "n": "search::SelectNextMatch",
+      "shift-n": "search::SelectPreviousMatch",
+      "*": ["editor::SelectNext", { "replace_newest": false }],
+      // Around
+      "shift-h": "pane::ActivatePreviousItem",
+      "shift-l": "pane::ActivateNextItem",
+      "ctrl-o": "pane::GoBack",
+      "ctrl-i": "pane::GoForward",
+      ":": "command_palette::Toggle",
+      "escape": "editor::Cancel",
+      // space is a leader for the things used most
+      "space f": "file_finder::Toggle",
+      "space /": "pane::DeploySearch",
+      "space e": "pane::RevealInProjectPanel",
+      "space t": "terminal_panel::Toggle",
+      "space g": "git_panel::Toggle",
+      "space d": "git::Diff",
+      "space o": "outline::Toggle",
+      "space b": "tab_switcher::Toggle",
+      "space w": "workspace::Save",
+      "space q": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "space z": "workspace::ToggleAllDocks",
+      "space p": "command_palette::Toggle"
+    }
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // 4. bakedit extras
+  // ─────────────────────────────────────────────────────────────────────────────────────
+
+  // herdr, when it runs in the terminal panel. These are the chords that used to live in
+  // Zed's keymap as ctrl-b sequences typed into the terminal.
+  //   cmd-alt-arrows         focus the pane that way; at the edge hop tab (left/right) or workspace (up/down)
+  //   cmd-alt-shift-arrows   move the focused pane
+  //   ctrl-alt-cmd-up/down   previous / next workspace
+  //   cmd-alt-1..9           workspace 1..9
+  //   cmd-alt-z              zoom the pane          cmd-alt-c   collapse it
+  //   cmd-alt-a              expand it to 90%
+  //   shift-up/down          scroll the pane 3 lines        cmd-shift-up/down   9 lines
+  {
+    "context": "Terminal",
+    "bindings": {
+      "cmd-alt-left": ["herdr::Navigate", "left"],
+      "cmd-alt-right": ["herdr::Navigate", "right"],
+      "cmd-alt-up": ["herdr::Navigate", "up"],
+      "cmd-alt-down": ["herdr::Navigate", "down"],
+      "cmd-alt-shift-left": ["herdr::MovePane", "left"],
+      "cmd-alt-shift-right": ["herdr::MovePane", "right"],
+      "cmd-alt-shift-up": ["herdr::MovePane", "up"],
+      "cmd-alt-shift-down": ["herdr::MovePane", "down"],
+      "ctrl-alt-cmd-up": "herdr::PreviousWorkspace",
+      "ctrl-alt-cmd-down": "herdr::NextWorkspace",
+      "cmd-alt-1": ["herdr::FocusWorkspace", 1],
+      "cmd-alt-2": ["herdr::FocusWorkspace", 2],
+      "cmd-alt-3": ["herdr::FocusWorkspace", 3],
+      "cmd-alt-4": ["herdr::FocusWorkspace", 4],
+      "cmd-alt-5": ["herdr::FocusWorkspace", 5],
+      "cmd-alt-6": ["herdr::FocusWorkspace", 6],
+      "cmd-alt-7": ["herdr::FocusWorkspace", 7],
+      "cmd-alt-8": ["herdr::FocusWorkspace", 8],
+      "cmd-alt-9": ["herdr::FocusWorkspace", 9],
+      "cmd-alt-z": "herdr::ToggleZoom",
+      "cmd-alt-c": "herdr::ToggleCollapse",
+      "cmd-alt-a": "herdr::ToggleExpand",
+      "shift-up": ["herdr::Scroll", { "direction": "up", "lines": 3 }],
+      "shift-down": ["herdr::Scroll", { "direction": "down", "lines": 3 }],
+      "cmd-shift-up": ["herdr::Scroll", { "direction": "up", "lines": 9 }],
+      "cmd-shift-down": ["herdr::Scroll", { "direction": "down", "lines": 9 }],
+      // Pick a file path or URL shown in the terminal and open it, without the mouse.
+      "cmd-o": "terminal::OpenLinks"
+    }
+  },
+  // The nav layer (hold ; for arrows on S E D F and modifiers on J K L H).
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-k ;": "bakedit::ToggleNavLayer"
+    }
+  },
+  // ctrl-] is a prefix that reaches bakedit from any terminal, including ones that keep
+  // the cmd key for themselves and from inside the terminal panel.
+  {
+    "context": "Workspace",
+    "bindings": {
+      "ctrl-] t": "terminal_panel::Toggle",
+      "ctrl-] shift-t": "terminal_panel::ToggleZoom",
+      "ctrl-] g": "git_panel::Toggle",
+      "ctrl-] d": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "ctrl-] e": "project_panel::Toggle",
+      "ctrl-] c": "workspace::FocusCenterPane",
+      "ctrl-] ctrl-]": "workspace::FocusCenterPane",
+      "ctrl-] z": "workspace::ToggleZoom",
+      "ctrl-] a": "workspace::ToggleAllDocks",
+      "ctrl-] p": "file_finder::Toggle",
+      "ctrl-] shift-p": "command_palette::Toggle",
+      "ctrl-] f": "pane::DeploySearch",
+      "ctrl-] s": "workspace::Save",
+      "ctrl-] w": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "ctrl-] o": "terminal::OpenLinks",
+      "ctrl-] ;": "bakedit::ToggleNavLayer",
+      "ctrl-] ?": "bakedit::ShowKeybindings",
+      "ctrl-] q": "zed::Quit"
+    }
+  }
+]
