@@ -5,6 +5,7 @@ mod flush;
 mod fuzz;
 mod paste;
 mod table;
+mod terminals;
 mod text;
 
 use bakedit_core::{
