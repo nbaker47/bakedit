@@ -106,6 +106,15 @@ impl Language {
         names
     }
 
+    /// Compile the language's outline rules now instead of on the first [`outline`] call.
+    ///
+    /// [`outline`]: crate::outline
+    pub(crate) fn prepare_outline(&self) {
+        if let Some(spec) = self.grammar {
+            spec.outline_query();
+        }
+    }
+
     /// Whether `ch` is part of a word in this language: a letter, a digit, `_`, or one of
     /// [`Language::word_chars`].
     pub fn is_word_char(&self, ch: char) -> bool {

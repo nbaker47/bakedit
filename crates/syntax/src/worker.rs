@@ -270,6 +270,9 @@ fn highlight_job(
     } else {
         Vec::new()
     };
+    // While we are off the UI thread anyway: the first outline of a language has rules to
+    // compile, and the user will ask for one with a key press.
+    job.language.prepare_outline();
     Some((lines, brackets))
 }
 
@@ -478,6 +481,69 @@ mod tests {
             }
         }
         assert!(delivered < 5, "{delivered} results arrived after the drop");
+    }
+
+    #[test]
+    fn highlighting_a_language_also_prepares_its_outline() {
+        // A language of its own, so no other test can have prepared the outline already.
+        static LANGUAGE: Language = Language {
+            id: "untouched",
+            name: "Untouched",
+            extensions: &[],
+            file_names: &[],
+            interpreters: &[],
+            aliases: &[],
+            line_comment: None,
+            block_comment: None,
+            brackets: &[],
+            autoclose: &[],
+            tab_size: 4,
+            hard_tabs: false,
+            soft_wrap: false,
+            indent_after: "",
+            word_chars: "",
+            grammar: Some(&crate::grammar::UNTOUCHED),
+        };
+        assert!(!crate::grammar::UNTOUCHED.outline_is_loaded());
+        let job = Job {
+            version: 1,
+            language: &LANGUAGE,
+            text: "{\"key\": [1, true]}".to_owned(),
+        };
+        let cancel = AtomicBool::new(false);
+        let (lines, brackets) =
+            highlight_job(&mut Highlighter::new(), &job, &cancel, LineBreaks::Unicode).unwrap();
+        assert!(!lines.is_empty());
+        assert_eq!(brackets.len(), 4);
+        assert!(crate::grammar::UNTOUCHED.outline_is_loaded());
+    }
+
+    #[test]
+    fn a_cancelled_job_gives_no_answer() {
+        let job = Job {
+            version: 1,
+            language: rust(),
+            text: long_source(10),
+        };
+        let cancelled = AtomicBool::new(true);
+        let outcome = highlight_job(
+            &mut Highlighter::new(),
+            &job,
+            &cancelled,
+            LineBreaks::Unicode,
+        );
+        assert!(outcome.is_none());
+    }
+
+    #[test]
+    fn the_types_cross_threads_as_documented() {
+        fn sendable<T: Send>() {}
+        fn shareable<T: Send + Sync>() {}
+        sendable::<Highlighter>();
+        shareable::<SyntaxWorker>();
+        shareable::<SyntaxResult>();
+        shareable::<LineHighlights>();
+        shareable::<&'static Language>();
     }
 
     #[test]

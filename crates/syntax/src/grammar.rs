@@ -166,6 +166,12 @@ impl std::fmt::Debug for GrammarSpec {
 }
 
 impl GrammarSpec {
+    /// Whether the outline query has been compiled (or found not to exist) already.
+    #[cfg(test)]
+    pub(crate) fn outline_is_loaded(&self) -> bool {
+        self.outline_loaded.get().is_some()
+    }
+
     /// The outline query, compiled on first use. `None` when the grammar has no outline or
     /// its rules fail to compile.
     pub(crate) fn outline_query(&'static self) -> Option<&'static outline::OutlineQuery> {
@@ -928,6 +934,22 @@ pub(crate) static REGEX: GrammarSpec = GrammarSpec {
     precedence: Precedence::LastWins,
     children: InjectedChildren::ExcludeAll,
     outline: &[],
+    loaded: OnceLock::new(),
+    outline_loaded: OnceLock::new(),
+};
+
+/// A grammar no language uses, so a test can watch it being loaded without another test
+/// loading it first.
+#[cfg(test)]
+pub(crate) static UNTOUCHED: GrammarSpec = GrammarSpec {
+    name: "untouched",
+    language: || tree_sitter_json::LANGUAGE.into(),
+    highlights: &[tree_sitter_json::HIGHLIGHTS_QUERY],
+    injections: &[],
+    locals: &[],
+    precedence: Precedence::FirstWins,
+    children: InjectedChildren::ExcludeAll,
+    outline: outline::RUST,
     loaded: OnceLock::new(),
     outline_loaded: OnceLock::new(),
 };
