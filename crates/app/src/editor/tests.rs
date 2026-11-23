@@ -1032,9 +1032,7 @@ fn the_keymap_drives_nav_mode_edit_mode_and_the_find_bar() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = file(&dir, "a.txt", "hello world\nsecond foo line\nthird foo\n");
-    let mut settings = Settings::default();
-    settings.vim_mode = true;
-    settings.breadcrumbs = false;
+    let settings = Settings { vim_mode: true, breadcrumbs: false, ..Settings::default() };
     let mut shell = Shell::new(
         settings,
         bakedit_core::Theme::builtin(),
