@@ -29,7 +29,9 @@ impl Pair {
 pub struct Language {
     /// A stable lower-case identifier, such as `rust` or `git_commit`.
     pub id: &'static str,
-    /// The name shown to the user, as Zed spells it: `Rust`, `Shell Script`, `Git Commit`.
+    /// The language's name exactly as Zed spells it (`Rust`, `Shell Script`, `Git Commit`,
+    /// `CSharp`), so it can be shown to the user and used to look up the per-language
+    /// sections of a Zed settings file.
     pub name: &'static str,
     /// File extensions without the dot, lower-case, matched ignoring case. An entry may
     /// contain dots to match a compound extension (`d.ts`).
@@ -561,6 +563,10 @@ mod tests {
             ("Shell Script", "shell"),
             ("c++", "cpp"),
             ("C#", "csharp"),
+            ("csharp", "csharp"),
+            ("CSharp", "csharp"),
+            ("Go Mod", "gomod"),
+            ("Vue.js", "vue"),
             ("yml", "yaml"),
             ("md", "markdown"),
             ("golang", "go"),

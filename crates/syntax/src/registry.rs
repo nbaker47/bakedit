@@ -443,7 +443,7 @@ pub(crate) static LANGUAGES: [Language; 39] = [
     },
     Language {
         id: "csharp",
-        name: "C#",
+        name: "CSharp",
         extensions: &["cs", "csx"],
         aliases: &["c#", "cs", "c_sharp", "dotnet"],
         line_comment: Some("// "),
