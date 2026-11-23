@@ -466,6 +466,12 @@ fn go_to_line_and_back() {
     shell.handle_paste("abc");
     act(&mut shell, "menu::Confirm");
     assert!(frame(&mut shell, 100, 20).contains("Not a line number: abc"));
+    // A negative line counts from the end; the stand-in item has no line count, so -1
+    // lands as far down as it goes.
+    act(&mut shell, "go_to_line::Toggle");
+    shell.handle_paste("-1");
+    act(&mut shell, "menu::Confirm");
+    assert_eq!(fake(&shell, 0).line, u32::MAX);
 }
 
 #[test]

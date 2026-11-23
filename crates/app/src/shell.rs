@@ -1405,7 +1405,8 @@ impl Shell {
                         self.pane.record_jump(from);
                     }
                     if let Some(item) = self.pane.active_mut() {
-                        item.go_to(target.line as u32, target.column.map(|c| c as u32));
+                        let count = item.line_count().unwrap_or(u32::MAX as usize);
+                        item.go_to(target.resolve(count) as u32, target.column.map(|c| c as u32));
                     }
                 }
                 None => self.set_status(format!("Not a line number: {text}"), true),

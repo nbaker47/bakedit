@@ -40,18 +40,30 @@ pub fn which_key(canvas: &mut Canvas<'_>, area: Rect, prefix: &str, entries: &[(
     }
 }
 
-/// What "go to line" was asked for: a 1-based line and optional 1-based column.
+/// What "go to line" was asked for: a 1-based line and optional 1-based column. A negative
+/// line counts from the end of the file: -1 is the last line, -2 the one before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineTarget {
-    pub line: usize,
+    pub line: i64,
     pub column: Option<usize>,
 }
 
-/// Parse `12`, `12:5`, `12,5` or `12 5`. `None` for anything else (including line 0).
+impl LineTarget {
+    /// The 1-based line in a file of `line_count` lines, with negatives counted from the end
+    /// and anything past either end clamped to it.
+    pub fn resolve(&self, line_count: usize) -> usize {
+        let count = line_count.max(1) as i64;
+        let line = if self.line < 0 { count + 1 + self.line } else { self.line };
+        line.clamp(1, count) as usize
+    }
+}
+
+/// Parse `12`, `12:5`, `12,5`, `12 5` or `-1` (from the end). `None` for anything else
+/// (including line 0).
 pub fn parse_line_target(text: &str) -> Option<LineTarget> {
     let text = text.trim();
     let mut parts = text.split(|c: char| c == ':' || c == ',' || c.is_whitespace()).filter(|p| !p.is_empty());
-    let line: usize = parts.next()?.parse().ok().filter(|n| *n > 0)?;
+    let line: i64 = parts.next()?.parse().ok().filter(|n| *n != 0)?;
     let column = match parts.next() {
         Some(column) => Some(column.parse::<usize>().ok().filter(|n| *n > 0)?),
         None => None,
@@ -73,7 +85,16 @@ mod tests {
         assert_eq!(parse_line_target(" 12:5 "), Some(LineTarget { line: 12, column: Some(5) }));
         assert_eq!(parse_line_target("12,5"), Some(LineTarget { line: 12, column: Some(5) }));
         assert_eq!(parse_line_target("12 5"), Some(LineTarget { line: 12, column: Some(5) }));
-        for bad in ["", "0", "abc", "12:", "12:0", "12:x", "1:2:3", "-4"] {
+        assert_eq!(parse_line_target("-1"), Some(LineTarget { line: -1, column: None }));
+        assert_eq!(parse_line_target("-3:2"), Some(LineTarget { line: -3, column: Some(2) }));
+        let at = |line| LineTarget { line, column: None };
+        assert_eq!(at(-1).resolve(40), 40);
+        assert_eq!(at(-2).resolve(40), 39);
+        assert_eq!(at(-99).resolve(40), 1);
+        assert_eq!(at(99).resolve(40), 40);
+        assert_eq!(at(5).resolve(40), 5);
+        assert_eq!(at(-1).resolve(0), 1);
+        for bad in ["", "0", "abc", "12:", "12:0", "12:x", "1:2:3", "-0", "--1"] {
             let expected = if bad == "12:" { Some(LineTarget { line: 12, column: None }) } else { None };
             assert_eq!(parse_line_target(bad), expected, "{bad:?}");
         }

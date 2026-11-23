@@ -397,6 +397,11 @@ pub trait Item: View {
         None
     }
 
+    /// How many lines the item has, for "go to line" counting from the end.
+    fn line_count(&self) -> Option<usize> {
+        None
+    }
+
     /// The first line shown (0-based), for the session file.
     fn scroll_top(&self) -> Option<u32> {
         None

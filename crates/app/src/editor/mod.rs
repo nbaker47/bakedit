@@ -419,6 +419,10 @@ impl Item for EditorItem {
         self.reveal = Reveal::Center;
     }
 
+    fn line_count(&self) -> Option<usize> {
+        Some(self.editor.buffer().len_lines())
+    }
+
     fn position(&self) -> Option<(u32, u32)> {
         let point = self.editor.buffer().char_to_point(self.cursor());
         Some((point.line as u32 + 1, point.col as u32 + 1))
