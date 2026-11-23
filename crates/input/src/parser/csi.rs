@@ -256,11 +256,15 @@ fn modify_other_keys(params: &Params) -> Option<KeyEvent> {
     Some(ev)
 }
 
-/// `CSI < button ; column ; row M` (press, motion, wheel) or `m` (release).
+/// `CSI < button ; column ; row M` (press, motion, wheel) or `m` (release). A stray `;`
+/// after the row, which some terminals have sent, is tolerated.
 fn sgr_mouse(params: &Params, release: bool) -> Option<Decoded> {
     let simple = params.simple()?;
-    let [Some(code), Some(column), Some(row)] = simple[..] else {
-        return None;
+    let (code, column, row) = match simple[..] {
+        [Some(code), Some(column), Some(row)] | [Some(code), Some(column), Some(row), None] => {
+            (code, column, row)
+        }
+        _ => return None,
     };
     let event = mouse::decode(code, mouse::cell(column), mouse::cell(row), release)?;
     Some(Decoded::Event(InputEvent::Mouse(event)))

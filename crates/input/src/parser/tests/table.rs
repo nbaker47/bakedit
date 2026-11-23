@@ -466,6 +466,9 @@ fn sgr_mouse_cases() -> Vec<Case> {
         case(csi("<128;3;4m"), vec![mouse(MouseKind::Release(Back), 2, 3, none)]),
         case(csi("<129;3;4m"), vec![mouse(MouseKind::Release(Forward), 2, 3, none)]),
         case(csi("<160;3;4M"), vec![mouse(MouseKind::Drag(Back), 2, 3, none)]),
+        // A stray `;` before the final byte, as some terminals have sent.
+        case(csi("<0;20;10;M"), vec![mouse(MouseKind::Press(Left), 19, 9, none)]),
+        case(csi("<0;20;10;m"), vec![mouse(MouseKind::Release(Left), 19, 9, none)]),
         // Coordinates are 1-based on the wire; nonsense is clamped, not trusted.
         case(csi("<0;0;0M"), vec![mouse(MouseKind::Press(Left), 0, 0, none)]),
         case(csi("<0;300;200M"), vec![mouse(MouseKind::Press(Left), 299, 199, none)]),
