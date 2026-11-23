@@ -367,20 +367,42 @@ fn custom_predicates(query: &Query, pattern: usize) -> Option<Vec<Predicate>> {
 // where the first one does.
 // ---------------------------------------------------------------------------------------
 
-/// tree-sitter-rust:
+/// tree-sitter-rust, brought into line with the query Zed uses for Rust:
 ///
 /// * Numbers and booleans are filed under `constant.builtin`; Zed has `number` and `boolean`.
 /// * The all-caps pattern never matches because of a stray quote in its regex
 ///   (`"^[A-Z][A-Z\\d_]+$'"`), so constants come out as constructors. As in Zed, the pattern
 ///   here also takes a single capital (`N`) and leading underscores (`_UNUSED`).
+/// * A capitalised name is a type even where it is called: `Ok(value)` and `Some(value)` are
+///   the colour of a type, not of a function. So is a variant in an enum's definition,
+///   whatever its capitalisation. These come after the macro patterns and before the one
+///   for parameters, as in Zed, so `DEFINE_GUID!` is a constant and a parameter a parameter.
+/// * A macro invoked through a path (`log::info!`), the name of a `macro_rules!` definition
+///   and the fragment specifiers in one are not captured at all.
 /// * Only `*`, `&` and `'` are captured as operators. The list here is the one Zed uses. It
 ///   includes `<` and `>`, so the patterns that make them brackets around generics are
 ///   repeated after it.
-const RUST_EXTRA: &str = r#"
+/// * The apostrophe of a lifetime is captured as an operator and its name as a label; Zed
+///   calls both `lifetime`.
+/// * A whole attribute is captured as one `attribute`. In Zed only its name and its plain
+///   top-level arguments are: the `#`, the path before a `::`, and arguments nested inside
+///   another (`test` in `#[cfg(not(test))]`) are left plain.
+const RUST_EXTRA: &str = r##"
 [(integer_literal) (float_literal)] @number
 (boolean_literal) @boolean
+
+(macro_invocation macro: (scoped_identifier name: (identifier) @function.macro))
+(macro_invocation "!" @function.macro)
+(macro_definition name: (identifier) @function.macro)
+(fragment_specifier) @type
+
+((identifier) @type
+ (#match? @type "^[A-Z]"))
 ((identifier) @constant
  (#match? @constant "^_*[A-Z][A-Z\\d_]*$"))
+(enum_variant name: (identifier) @type)
+(parameter (identifier) @variable.parameter)
+(shorthand_field_identifier) @property
 
 [
   "!=" "%" "%=" "&" "&=" "&&" "*" "*=" "+" "+=" "-" "-=" "->" ".." "..=" "..." "/="
@@ -393,7 +415,18 @@ const RUST_EXTRA: &str = r#"
 (type_parameters "<" @punctuation.bracket ">" @punctuation.bracket)
 (bracketed_type "<" @punctuation.bracket ">" @punctuation.bracket)
 (for_lifetimes "<" @punctuation.bracket ">" @punctuation.bracket)
-"#;
+
+"'" @lifetime
+(lifetime (identifier) @lifetime)
+
+(attribute_item "#" @punctuation.special)
+(inner_attribute_item "#" @punctuation.special)
+(inner_attribute_item "!" @none)
+(attribute (scoped_identifier path: (_) @none))
+(attribute (token_tree (token_tree) @none))
+((attribute (token_tree (identifier) @none . "::"))
+ (#match? @none "^[a-z\\d_]*$"))
+"##;
 
 /// `true` and `false` are filed under `constant.builtin` by the bundled queries of the
 /// languages that use this; Zed colours them as booleans.
@@ -1008,15 +1041,16 @@ mod tests {
     ///
     /// * `embedded` and `none` mark code inside a string or a fence that is *not* string:
     ///   they exist to stop the surrounding colour, so they must not have one.
-    /// * `label` (lifetimes, YAML anchors, goto labels) and `link_text` (the text of a
-    ///   Markdown link, a branch name in a commit message) are in Zed's vocabulary but the
-    ///   theme does not colour them.
+    /// * `label` (YAML anchors, goto labels), `lifetime` (Rust's) and `link_text` (the text
+    ///   of a Markdown link, a branch name in a commit message) are in Zed's vocabulary but
+    ///   the theme does not colour them.
     /// * `error` and `text.*` are tree-sitter-make's: a stray `/` in an automatic variable
     ///   and the message of `$(error ...)`, `$(warning ...)` and `$(info ...)`.
     const UNSTYLED: &[&str] = &[
         "embedded",
         "none",
         "label",
+        "lifetime",
         "link_text",
         "error",
         "text.danger",

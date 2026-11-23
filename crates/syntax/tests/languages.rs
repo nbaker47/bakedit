@@ -38,7 +38,7 @@ fn rust() {
             ("x: «T»,", "type"),
             ("«usize» = 10", "type.builtin"),
             ("«label»: &", "property"),
-            ("'«static»", "label"),
+            ("'«static»", "lifetime"),
             ("const «LIMIT»", "constant"),
             ("by > «LIMIT»", "constant"),
             ("= «10»;", "number"),
@@ -58,7 +58,7 @@ fn rust() {
             ("\"hi«\\n»\"", "string.escape"),
             ("\"{} {}\"", "string"),
             ("\"p\"", "string"),
-            ("«#»[derive", "attribute"),
+            ("«#»[derive", "punctuation.special"),
             ("#[«derive»", "attribute"),
             ("total «=» 1.5", "operator"),
             ("1.5 «+» 2", "operator"),
@@ -80,9 +80,66 @@ fn rust_macro_arguments_are_highlighted_as_rust() {
     check(
         "rust",
         &[
-            ("vec![«Some»(1)", "function"),
+            ("vec![«Some»(1)", "type"),
             ("Some(«1»)", "number"),
-            ("«None»]", "constructor"),
+            ("«None»]", "type"),
+        ],
+    );
+}
+
+#[test]
+fn rust_follows_zed_where_the_bundled_query_does_not() {
+    let text = r#"#![allow(clippy::needless_return)]
+#[cfg(not(test))]
+#[derive(Debug)]
+enum Shape { Dot, WIDE(u8) }
+
+macro_rules! twice {
+    ($value:expr) => { $value * 2 };
+}
+
+fn pick<'a>(first: &'a str, Limit: usize) -> Result<Shape, &'a str> {
+    log::info!("picking {}", first);
+    let Wrapper { inner, .. } = wrap(first);
+    if first.len() > Limit { return Err(inner); }
+    Ok(Shape::WIDE(twice!(4)))
+}
+"#;
+    check_captures(
+        "rust",
+        text,
+        &[
+            // Only an attribute's name and its plain top-level arguments are attributes.
+            ("«#»!", "punctuation.special"),
+            ("#«!»[", "none"),
+            ("«allow»(", "attribute"),
+            ("«clippy»::", "none"),
+            ("::«needless_return»", "attribute"),
+            ("«cfg»(", "attribute"),
+            ("(«not»(", "attribute"),
+            ("not(«test»)", "none"),
+            ("derive(«Debug»)", "type"),
+            // A variant is a type where it is defined, whatever its capitals.
+            ("{ «Dot»,", "type"),
+            ("«WIDE»(u8)", "type"),
+            // Macros: the definition, what it matches, and a call through a path.
+            ("macro_rules! «twice»", "function.macro"),
+            ("$value:«expr»", "type"),
+            ("log::«info»", "function.macro"),
+            ("info«!»", "function.macro"),
+            ("«twice»!(4)", "function.macro"),
+            // A lifetime is one thing, and not an operator.
+            ("pick<«'»a>", "lifetime"),
+            ("pick<'«a»>", "lifetime"),
+            ("&«'»a str, L", "lifetime"),
+            // A parameter is a parameter even with a capital; elsewhere a capital is a type,
+            // also when it is called.
+            ("«Limit»: usize", "variable.parameter"),
+            ("«Err»(inner)", "type"),
+            ("«Ok»(Shape", "type"),
+            ("Shape::«WIDE»(twice", "constant"),
+            ("«wrap»(first)", "function"),
+            ("{ «inner», ..", "property"),
         ],
     );
 }
