@@ -10,7 +10,8 @@ pub enum TermEvent {
     /// once per [`TermConfig::wakeup_interval`](crate::TermConfig::wakeup_interval), and
     /// always once more after the last change.
     Wakeup,
-    /// The child set the window title (OSC 0 or 2).
+    /// The child set the window title (OSC 0 or 2). Control characters are removed, and
+    /// setting the title to what it already is reports nothing.
     Title(String),
     /// The child went back to having no title of its own.
     ResetTitle,

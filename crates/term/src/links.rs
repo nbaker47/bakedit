@@ -24,7 +24,10 @@ pub enum LinkTarget {
         /// The 1-based column the reference names, if any.
         col: Option<u32>,
     },
-    /// An `http` or `https` URL, or the target of a Markdown link with another scheme.
+    /// A URL. Found in running text it is always `http` or `https`. As the target of a
+    /// Markdown link or of a hyperlink a program made (OSC 8) it can have any scheme at
+    /// all, and it comes from whatever wrote to the terminal: check the scheme before
+    /// handing it to the system to open.
     Url(String),
 }
 

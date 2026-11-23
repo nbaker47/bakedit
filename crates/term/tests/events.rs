@@ -170,6 +170,18 @@ fn titles_are_reported_once_each() {
 }
 
 #[test]
+fn titles_carry_no_control_characters() {
+    // DEL and a C1 control (which some terminals take for the start of an escape sequence)
+    // would otherwise travel from the child into whatever the application draws.
+    let mut session = start(echo(""));
+    session.wait_ready();
+    session.child_writes("\x1b]0;safe\x7f \u{9b}31mtitle\x07");
+    let event = session.wait_for_event("the title", |event| matches!(event, TermEvent::Title(_)));
+    assert_eq!(event, TermEvent::Title("safe 31mtitle".to_string()));
+    assert_eq!(session.term.title().as_deref(), Some("safe 31mtitle"));
+}
+
+#[test]
 fn a_title_can_be_reset() {
     // Pushed before any title was set, so popping goes back to having none.
     let mut session = start(echo("\\x1b[22t\\x1b]0;temporary\\x07"));

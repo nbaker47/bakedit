@@ -157,6 +157,8 @@ impl EventListener for Listener {
                 Internal::Wakeup
             }
             Event::Title(title) => {
+                // A title is shown as it is, so it must not carry control characters.
+                let title: String = title.chars().filter(|c| !c.is_control()).collect();
                 let mut current = lock(&self.shared.title);
                 if current.as_deref() == Some(title.as_str()) {
                     return;
