@@ -28,7 +28,13 @@ const MAX_TRACKED_KEYS: usize = 64;
 /// Which keys the [`NavLayer`] uses and how long a tap may last. `Default` is the mapping
 /// in the module documentation.
 ///
-/// Every key is given as the unshifted character it types, the way [`Key::Char`] holds it.
+/// Every key is given as the unshifted character it has on the US layout, the way
+/// [`Key::Char`] holds it. Like the Karabiner rule, the layer goes by the position of a
+/// key, not by what it types: when the terminal reports a key's base-layout key (kitty's
+/// alternate-keys flag), that is what is matched, so the layer stays on the same physical
+/// keys under another keyboard layout. Without that report the key's own character is
+/// matched.
+///
 /// If one character is given two jobs, the trigger wins, then the modifiers, then the
 /// arrows, then the tap keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,13 +103,17 @@ enum Role {
 }
 
 impl NavLayerConfig {
-    fn role(&self, ev: &KeyEvent) -> Option<Role> {
-        let Key::Char(c) = ev.key else {
-            return None;
-        };
-        if ev.keypad {
-            return None;
+    /// The character a key has for the layer: its base-layout key if the terminal
+    /// reported one, else its own. Keypad keys and keys that are not characters have none.
+    fn layer_char(ev: &KeyEvent) -> Option<char> {
+        match ev.key {
+            Key::Char(c) if !ev.keypad => Some(ev.base.unwrap_or(c)),
+            _ => None,
         }
+    }
+
+    fn role(&self, ev: &KeyEvent) -> Option<Role> {
+        let c = NavLayerConfig::layer_char(ev)?;
         let roles = [
             (self.shift, Role::Modifier(Mods::SHIFT)),
             (self.cmd, Role::Modifier(Mods::SUPER)),
@@ -123,7 +133,7 @@ impl NavLayerConfig {
     }
 
     fn is_trigger(&self, ev: &KeyEvent) -> bool {
-        !ev.keypad && ev.key == Key::Char(self.trigger)
+        NavLayerConfig::layer_char(ev) == Some(self.trigger)
     }
 
     fn taps_pass_through(&self, mods: Mods) -> bool {

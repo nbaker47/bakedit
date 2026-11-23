@@ -653,6 +653,46 @@ fn text_that_belongs_to_no_key_passes_through_and_counts_for_nothing() {
 }
 
 #[test]
+fn keys_are_matched_by_position_when_the_terminal_reports_it() {
+    // A Russian layout: the key at the US `;` position types ж, the one at `e` types у.
+    // The terminal reports the US key as the base-layout key.
+    let cyrillic = |c: char, base: char| {
+        let mut ev = KeyEvent::typed(c);
+        ev.base = Some(base);
+        ev
+    };
+    let released = |c: char, base: char| {
+        let mut ev = KeyEvent::new(Key::Char(c), NONE).with_kind(KeyKind::Release);
+        ev.base = Some(base);
+        ev
+    };
+    let mut rig = Rig::new();
+    assert_eq!(rig.send(cyrillic('ж', ';')), vec![]);
+    assert!(rig.layer.active());
+    assert_eq!(rig.send(cyrillic('у', 'e')), vec![sent(Key::Up, NONE)]);
+    assert_eq!(
+        rig.send(released('у', 'e')),
+        vec![sent_release(Key::Up, NONE)]
+    );
+    assert_eq!(rig.send(cyrillic('о', 'j')), vec![]);
+    assert_eq!(rig.layer.virtual_mods(), Mods::SHIFT);
+    assert_eq!(rig.send(released('о', 'j')), vec![]);
+    assert_eq!(rig.send(released('ж', ';')), vec![]);
+
+    // Tapped alone it types what the key types on that layout.
+    assert_eq!(rig.send(cyrillic('ж', ';')), vec![]);
+    assert_eq!(
+        rig.send(released('ж', ';')),
+        vec![cyrillic('ж', ';'), released('ж', ';')]
+    );
+
+    // And the other way round: a key that types `;` somewhere else on the keyboard (the
+    // US `z` position on Dvorak) is not the trigger.
+    assert_eq!(rig.send(cyrillic(';', 'z')), vec![cyrillic(';', 'z')]);
+    assert!(!rig.layer.active());
+}
+
+#[test]
 fn keypad_keys_are_never_layer_keys() {
     let mut rig = Rig::with(NavLayerConfig {
         trigger: '/',
