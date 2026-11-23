@@ -178,6 +178,8 @@ pub struct Settings {
 
     // bakedit's own
     pub nav_layer: bool,
+    /// Show the usage strip (AI subscription quotas) on the bottom row.
+    pub usage_meter: bool,
     pub link_click_modifier: LinkModifier,
     /// Language name -> the command that formats that language (reads stdin, writes stdout).
     pub formatters: HashMap<String, Vec<String>>,
@@ -272,6 +274,7 @@ impl Default for Settings {
             },
 
             nav_layer: true,
+            usage_meter: true,
             link_click_modifier: LinkModifier::Cmd,
             formatters: HashMap::new(),
 
@@ -664,6 +667,16 @@ impl Settings {
             None | Some(Value::Null) => {}
             Some(_) => r.warn("nav_layer", "true, false or {\"enabled\": bool}"),
         }
+        match map.get("usage_meter") {
+            Some(Value::Bool(b)) => self.usage_meter = *b,
+            Some(Value::Object(meter)) => {
+                if let Some(show) = meter.get("show").and_then(Value::as_bool) {
+                    self.usage_meter = show;
+                }
+            }
+            None | Some(Value::Null) => {}
+            Some(_) => r.warn("usage_meter", "true, false or {\"show\": bool}"),
+        }
         if let Some(modifier) = r.choice("link_click_modifier", "\"cmd\", \"alt\", \"ctrl\" or \"none\"", |v| match v {
             "cmd" => Some(LinkModifier::Cmd),
             "alt" => Some(LinkModifier::Alt),
@@ -927,6 +940,9 @@ mod tests {
         assert_eq!(s.autosave, Autosave::AfterDelay { milliseconds: 750 });
         let (s, _) = parse(r#"{"nav_layer": {"enabled": false}}"#);
         assert!(!s.nav_layer);
+        assert!(s.usage_meter, "on unless switched off");
+        assert!(!parse(r#"{"usage_meter": false}"#).0.usage_meter);
+        assert!(!parse(r#"{"usage_meter": {"show": false}}"#).0.usage_meter);
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub struct Divider {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Layout {
     pub status: Rect,
+    /// The usage strip, the bottom-most row, when it is shown.
+    pub usage: Option<Rect>,
     /// `None` while a panel is zoomed over it.
     pub center: Option<Rect>,
     pub docks: Vec<DockArea>,
@@ -53,9 +55,20 @@ impl Layout {
 /// Lay the workspace out on a screen of the given size. `default_width` is the width a side
 /// panel takes until the user resizes it.
 pub fn compute(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId) -> u16) -> Layout {
+    compute_with(ws, screen, default_width, false)
+}
+
+/// [`compute`], optionally keeping the last row for the usage strip (with the status bar
+/// just above it). The strip is dropped on screens too short to spare a row.
+pub fn compute_with(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId) -> u16, usage_strip: bool) -> Layout {
     let mut layout = Layout::default();
     if screen.width == 0 || screen.height == 0 {
         return layout;
+    }
+    let mut screen = screen;
+    if usage_strip && screen.height >= 8 {
+        layout.usage = Some(Rect::new(screen.x, screen.bottom() - 1, screen.width, 1));
+        screen.height -= 1;
     }
     let status_height = 1.min(screen.height);
     layout.status = Rect::new(screen.x, screen.bottom() - status_height, screen.width, status_height);
@@ -304,6 +317,18 @@ mod tests {
         assert_eq!(center.height + 1 + bottom.height, 49);
         assert_eq!(layout.panel(Git).unwrap().height, 49, "side docks run the full height");
         assert_eq!(layout.dock(Bottom).unwrap().panel, Terminal);
+    }
+
+    #[test]
+    fn the_usage_strip_takes_the_last_row() {
+        let mut ws = workspace();
+        ws.open_panel(Terminal);
+        let layout = compute_with(&ws, screen(120, 40), widths, true);
+        assert_eq!(layout.usage, Some(Rect::new(0, 39, 120, 1)));
+        assert_eq!(layout.status, Rect::new(0, 38, 120, 1));
+        assert_eq!(layout.panel(Terminal).unwrap().height, 38);
+        assert_eq!(compute_with(&ws, screen(120, 40), widths, false).usage, None);
+        assert_eq!(compute_with(&ws, screen(120, 6), widths, true).usage, None, "too short to spare a row");
     }
 
     #[test]
