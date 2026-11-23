@@ -46,6 +46,3 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-zig = "1.1.2"
-
-[dev-dependencies]
-tempfile.workspace = true
