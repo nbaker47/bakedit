@@ -7,6 +7,7 @@ use crate::command::{Clipboard, ClipboardPiece};
 use crate::edit::{Bias, Change, EditSummary};
 use crate::file;
 use crate::indent;
+use crate::pairs;
 use crate::selection::{Selection, Selections};
 
 use super::Editor;
@@ -162,7 +163,9 @@ impl Editor {
     /// with its closer when what follows allows it (a quote is not closed next to a word
     /// character); typing a closer that is already the next character steps over it; and
     /// typing an opener with something selected wraps the selection instead of replacing
-    /// it. Line endings in `text` become `\n`.
+    /// it. With `auto_indent` on, a closing bracket typed as the first thing on its line
+    /// moves back to the indentation of the line that opened it. Line endings in `text`
+    /// become `\n`.
     pub(crate) fn insert(&mut self, text: &str) -> EditSummary {
         let text = file::normalize_newlines(text);
         let typed = {
@@ -196,7 +199,7 @@ impl Editor {
                 InsertPlan::Plain => edits.push((selection.range(), text.to_string())),
             }
         }
-        let summary = self.buffer.edit(&edits);
+        let mut summary = self.buffer.edit(&edits);
         let changes = changes_of(&summary);
         let replacements: Vec<Selection> = old
             .iter()
@@ -222,6 +225,62 @@ impl Editor {
             )
             .collect();
         self.replace_selections(replacements);
+        let typed_closer = typed.filter(|c| BRACKETS.iter().any(|pair| pair.1 == *c));
+        if let (true, Some(closer)) = (self.settings.auto_indent, typed_closer) {
+            let stepped_over = plans
+                .iter()
+                .any(|plan| matches!(plan, InsertPlan::StepOver));
+            if !stepped_over {
+                summary.extend(self.outdent_typed_closers(closer));
+            }
+        }
+        summary
+    }
+
+    /// After a closing bracket was typed as the first thing on its line, give the line the
+    /// indentation of the line its opening bracket is on, when that is less. Typing `}`
+    /// under an indented block closes the block where it started.
+    fn outdent_typed_closers(&mut self, closer: char) -> EditSummary {
+        let buffer = &self.buffer;
+        let tab_size = self.tab_size();
+        let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+        for selection in self
+            .selections
+            .iter()
+            .filter(|selection| selection.is_empty())
+        {
+            let Some(at) = selection.head.checked_sub(1) else {
+                continue;
+            };
+            let line = buffer.char_to_line(at);
+            let line_start = buffer.line_to_char(line);
+            let indent = indent::indent_of_line(buffer, line, tab_size);
+            if buffer.char_at(at) != Some(closer) || line_start + indent.chars != at {
+                continue;
+            }
+            let Some((open, _)) = pairs::bracket_pair_at(buffer, at) else {
+                continue;
+            };
+            let open_line = buffer.char_to_line(open);
+            let open_indent = indent::indent_of_line(buffer, open_line, tab_size);
+            if open_line == line || open_indent.width >= indent.width {
+                continue;
+            }
+            let open_start = buffer.line_to_char(open_line);
+            let text = buffer
+                .slice(open_start..open_start + open_indent.chars)
+                .to_string();
+            if edits
+                .last()
+                .is_none_or(|previous| previous.0.end <= line_start)
+            {
+                edits.push((line_start..at, text));
+            }
+        }
+        let summary = self.buffer.edit(&edits);
+        let mut selections = self.selections.clone();
+        selections.transform(|selection| selection.map_through(&summary));
+        self.selections = selections;
         summary
     }
 

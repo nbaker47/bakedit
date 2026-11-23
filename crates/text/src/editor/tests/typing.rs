@@ -191,6 +191,65 @@ fn each_cursor_decides_for_itself() {
 }
 
 #[test]
+fn a_closing_bracket_on_its_own_line_lines_up_with_its_opener() {
+    check(
+        "if x {\n    foo();\n    ˇ",
+        insert("}"),
+        "if x {\n    foo();\n}ˇ",
+    );
+    check(
+        "fn f() {\n    if x {\n        y();\n        ˇ",
+        insert("}"),
+        "fn f() {\n    if x {\n        y();\n    }ˇ",
+    );
+    check("foo(\n    a,\n    ˇ", insert(")"), "foo(\n    a,\n)ˇ");
+    check("x = [\n    1,\n        ˇ", insert("]"), "x = [\n    1,\n]ˇ");
+    check_with(
+        &hard_tabs(),
+        "\tif x {\n\t\ty\n\t\tˇ",
+        insert("}"),
+        "\tif x {\n\t\ty\n\t}ˇ",
+    );
+    // Several cursors, each with its own opener.
+    check(
+        "a {\n    x\n    ˇ\nb {\n        y\n        ˇ",
+        insert("}"),
+        "a {\n    x\n}ˇ\nb {\n        y\n}ˇ",
+    );
+    // It is one undo step with the typing.
+    let mut e = editor("if x {\n    ˇ");
+    apply_all(&mut e, [insert("}"), Command::Undo]);
+    assert_eq!(state(&e), "if x {\n    ˇ");
+}
+
+#[test]
+fn a_closing_bracket_stays_where_it_is_typed_otherwise() {
+    // Text before it on the line.
+    check("if x {\n    foo ˇ", insert("}"), "if x {\n    foo }ˇ");
+    // Nothing to close, or the opener is on the same line.
+    check("    ˇ", insert("}"), "    }ˇ");
+    check("    {ˇ", insert("}"), "    {}ˇ");
+    // The opener is indented at least as much.
+    check("    if x {\n    ˇ", insert("}"), "    if x {\n    }ˇ");
+    check(
+        "        if x {\n    ˇ",
+        insert("}"),
+        "        if x {\n    }ˇ",
+    );
+    // Stepping over an existing closer edits nothing.
+    check("{\n    ˇ}", insert("}"), "{\n    }ˇ");
+    // Auto indent is off.
+    check_with(
+        &no_auto_indent(),
+        "if x {\n    ˇ",
+        insert("}"),
+        "if x {\n    }ˇ",
+    );
+    // Other characters are not affected.
+    check("if x {\n    ˇ", insert("x"), "if x {\n    xˇ");
+}
+
+#[test]
 fn newline_keeps_the_indentation() {
     check("abˇc", Command::Newline, "ab\nˇc");
     check("ˇ", Command::Newline, "\nˇ");
