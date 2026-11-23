@@ -182,8 +182,9 @@ fn is_vendor(vendor: &Vendor, short: &str, name: &str) -> bool {
 }
 
 /// The four subscriptions of [`ALWAYS_SHOWN`] first and in that order, each with its numbers
-/// from `found` or, when `found` has none for it, with none (drawn as a dash); then
-/// anything else `found` lists.
+/// from `found` or, when `found` has none for it, with none (drawn as a dash); then any other
+/// subscription `found` has numbers for. (ai-usagebar lists every service it knows, set up
+/// or not: those without numbers would only be dashes.)
 pub fn with_every_vendor(found: Vec<Vendor>) -> Vec<Vendor> {
     let mut rest = found;
     let mut out = Vec::new();
@@ -197,7 +198,7 @@ pub fn with_every_vendor(found: Vec<Vendor>) -> Vec<Vendor> {
             None => out.push(Vendor { short: short.into(), name: name.into(), meters: Vec::new(), error: Some("no numbers".into()) }),
         }
     }
-    out.extend(rest);
+    out.extend(rest.into_iter().filter(|vendor| !vendor.meters.is_empty()));
     out
 }
 
@@ -557,12 +558,14 @@ mod tests {
     #[test]
     fn the_four_subscriptions_are_always_there_in_order() {
         let found = parse_usagebar(USAGEBAR).unwrap();
-        let extra = Vendor { short: "zzz".into(), name: "Other".into(), meters: Vec::new(), error: None };
-        let mut reordered = vec![extra.clone(), found[2].clone(), found[0].clone()];
+        let meter = Meter { window: "5h".into(), percent: 3.0, reset_at: None };
+        let extra = Vendor { short: "zzz".into(), name: "Other".into(), meters: vec![meter], error: None };
+        let unused = Vendor { short: "opr".into(), name: "Not set up".into(), meters: Vec::new(), error: Some("no key".into()) };
+        let mut reordered = vec![extra.clone(), found[2].clone(), unused, found[0].clone()];
         reordered.push(found[1].clone());
         let vendors = with_every_vendor(reordered);
         let shorts: Vec<&str> = vendors.iter().map(|v| v.short.as_str()).collect();
-        assert_eq!(shorts, ["cld", "agy", "cur", "cdx", "zzz"]);
+        assert_eq!(shorts, ["cld", "agy", "cur", "cdx", "zzz"], "others only with numbers");
         assert_eq!(vendors[0].meters.len(), 2, "Claude keeps its numbers");
         assert!(vendors[3].meters.is_empty(), "Codex, not reported, is there without numbers");
         let (text, _) = draw(&with_every_vendor(Vec::new()), 60);
