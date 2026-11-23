@@ -181,7 +181,6 @@ impl EditorItem {
             self.mouse.drag = Some(Drag::Select { unit, anchor });
         }
         self.reveal = Reveal::No;
-        self.clamp_nav_cursor();
         true
     }
 

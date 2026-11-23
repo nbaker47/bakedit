@@ -21,7 +21,7 @@ text xy
 expect /// xyCounts how
 expect  3:7  Rust
 snap edit
-# cmd-i again: nav mode, and no step to the left as escape takes.
+# cmd-i again: nav mode, the cursor where it was.
 key cmd-i
 expect NAV
 expect-not EDIT
@@ -29,6 +29,13 @@ expect  3:7  Rust
 text q
 expect-not xyqCounts
 snap nav
+
+# escape leaves edit mode too, and the cursor stays put (no vim step to the left).
+key cmd-i
+expect EDIT
+key escape
+expect NAV
+expect  3:7  Rust
 
 # ctrl-] i, both ways.
 key ctrl-] i

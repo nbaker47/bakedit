@@ -671,14 +671,16 @@
   // ─────────────────────────────────────────────────────────────────────────────────────
   // With "vim_mode": true the editor opens in nav mode, where no plain key changes the text:
   // letters, digits, space and the other text keys type nothing (they are swallowed
-  // quietly), and enter, tab, backspace and delete do nothing either. Everything else works
-  // as in edit mode: the arrows and the ; nav layer move, shift-arrows select, and every
-  // cmd/alt/ctrl binding above (saving, pickers, cmd-x/cmd-v, cmd-z) does what it always
-  // does. There are no vim letter keys, operators, counts, registers or : commands.
-  // cmd-i switches between the two (so do ctrl-] i, in any terminal, and a click on the
-  // mode in the status bar): into edit mode with the cursor where it is, back to nav mode
-  // without escape's step to the left. Escape also leaves edit mode; in nav mode it only
-  // lets go of a selection. With the modes off cmd-i turns them on, as
+  // quietly), and enter, tab, backspace and delete do nothing either, nor do their emacs
+  // ctrl aliases (ctrl-h, ctrl-d, ctrl-w, ctrl-k, ctrl-y, ctrl-t). Everything else works as
+  // in edit mode, the cursor included (it goes past the end of a line as edit mode's does):
+  // the arrows and the ; nav layer move, shift-arrows select, and the cmd and alt shortcuts
+  // above do what they always do, so saving and the pickers work, and so do the ones that
+  // edit on purpose (cmd-x, cmd-v and a terminal paste, cmd-z, cmd-backspace,
+  // alt-backspace, cmd-enter). There are no vim letter keys, operators, counts, registers
+  // or : commands. cmd-i switches between the two (so do ctrl-] i, in any terminal, and a
+  // click on the mode in the status bar), the cursor and any selection kept; escape also
+  // leaves edit mode, and in nav mode it only lets go of a selection. With the modes off cmd-i turns them on, as
   // bakedit::ToggleEditMode does (settings.json is left alone). From the find bar it switches
   // the text's mode and the bar keeps the keys.
   {
@@ -703,14 +705,21 @@
     "context": "Editor && mode == full && vim_mode == normal",
     "bindings": {
       "escape": "editor::Cancel",
-      // The plain keys that edit: off in nav mode (null, so a key nobody takes is dropped).
+      // The plain keys that edit, and their emacs ctrl aliases: off in nav mode (null, so a
+      // key nobody takes is dropped). A legacy terminal sends ctrl-h for backspace.
       "enter": null,
       "shift-enter": null,
       "tab": null,
       "shift-tab": null,
       "backspace": null,
       "shift-backspace": null,
-      "delete": null
+      "delete": null,
+      "ctrl-h": null,
+      "ctrl-d": null,
+      "ctrl-w": null,
+      "ctrl-k": null,
+      "ctrl-y": null,
+      "ctrl-t": null
     }
   },
 

@@ -269,10 +269,21 @@ fn nav_mode_types_nothing_and_the_toggle_goes_to_edit_mode() {
     assert_eq!(text_of(&item), "hXello\nworld\n");
     let (_, cursor, _) = harness.draw(&mut item, 40, 5);
     assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Bar));
-    // Escape goes back and steps left onto the character.
+    // Escape goes back, the cursor left where it is (no vim step to the left).
     act(&mut item, &mut harness, "vim::NormalBefore");
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    assert_eq!(item.position(), Some((1, 2)));
+    assert_eq!(item.position(), Some((1, 3)));
+}
+
+#[test]
+fn a_terminal_paste_pastes_in_nav_mode_as_cmd_v_does() {
+    let mut harness = Harness::new("/project");
+    let mut item = modal(&mut harness, "hello\n");
+    act(&mut item, &mut harness, "editor::MoveToEndOfLine");
+    assert!(item.handle_paste(" world", &mut harness.cx()));
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
+    assert_eq!(text_of(&item), "hello world\n");
+    assert_eq!(item.position(), Some((1, 12)));
 }
 
 #[test]
@@ -326,32 +337,42 @@ fn one_undo_takes_back_a_whole_edit_mode_session() {
 }
 
 #[test]
-fn undo_in_nav_mode_leaves_no_selection() {
-    let mut harness = Harness::new("/project");
-    let mut item = modal(&mut harness, "one\ntwo\nthree\n");
-    act(&mut item, &mut harness, "editor::MoveDown");
-    act(&mut item, &mut harness, "editor::SelectLine");
-    act(&mut item, &mut harness, "editor::Cut");
-    assert_eq!(text_of(&item), "one\nthree\n");
-    act(&mut item, &mut harness, "editor::Undo");
-    assert_eq!(text_of(&item), "one\ntwo\nthree\n");
-    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    assert_eq!(item.status().position, Some((2, 1, 0)), "on the line that came back, nothing selected");
-    act(&mut item, &mut harness, "editor::Redo");
-    assert_eq!(text_of(&item), "one\nthree\n");
-    assert_eq!(item.status().position.map(|p| p.2), Some(0));
+fn undo_in_nav_mode_leaves_what_edit_mode_leaves() {
+    let run = |vim_mode: bool| {
+        let mut harness = Harness::new("/project");
+        let mut item = if vim_mode { modal(&mut harness, "one\ntwo\nthree\n") } else { plain(&mut harness, "one\ntwo\nthree\n") };
+        act(&mut item, &mut harness, "editor::MoveDown");
+        act(&mut item, &mut harness, "editor::SelectLine");
+        act(&mut item, &mut harness, "editor::Cut");
+        assert_eq!(text_of(&item), "one\nthree\n");
+        act(&mut item, &mut harness, "editor::Undo");
+        assert_eq!(text_of(&item), "one\ntwo\nthree\n");
+        let after_undo = item.editor.selections().clone();
+        act(&mut item, &mut harness, "editor::Redo");
+        assert_eq!(text_of(&item), "one\nthree\n");
+        (item.status().mode, after_undo, item.editor.selections().clone())
+    };
+    let (mode, nav_undo, nav_redo) = run(true);
+    assert_eq!(mode, Some(ModeIndicator::Nav));
+    let (_, edit_undo, edit_redo) = run(false);
+    assert_eq!((nav_undo, nav_redo), (edit_undo, edit_redo));
 }
 
 #[test]
-fn the_nav_cursor_stays_on_a_character_and_remembers_its_column() {
+fn the_nav_cursor_moves_as_edit_modes_does() {
     let mut harness = Harness::new("/project");
     let mut item = modal(&mut harness, "a long line\nab\nanother long\n");
     act_with(&mut item, &mut harness, "editor::MoveToEndOfLine", json!({ "stop_at_soft_wraps": true }));
-    assert_eq!(item.position(), Some((1, 11)), "on the last character, not past it");
+    assert_eq!(item.position(), Some((1, 12)), "past the last character, as in edit mode");
+    act(&mut item, &mut harness, "editor::MoveRight");
+    assert_eq!(item.position(), Some((2, 1)), "right at the end of a line goes on to the next");
+    act(&mut item, &mut harness, "editor::MoveLeft");
+    assert_eq!(item.position(), Some((1, 12)));
     act(&mut item, &mut harness, "editor::MoveDown");
-    assert_eq!(item.position(), Some((2, 2)));
+    assert_eq!(item.position(), Some((2, 3)));
     act(&mut item, &mut harness, "editor::MoveDown");
-    assert_eq!(item.position(), Some((3, 12)), "back to the end of the line, as `$` then `j` does in vim");
+    assert_eq!(item.position(), Some((3, 12)), "back to the column it was heading for");
+    assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
 }
 
 #[test]
@@ -419,10 +440,10 @@ fn the_mode_toggle_goes_to_edit_mode_and_back_leaving_the_cursor() {
     assert_eq!(contexts[0].values[1], ("vim_mode", "insert".to_string()));
     type_text(&mut item, &mut harness, "XY");
     assert_eq!(text_of(&item), "heXYllo\nworld\n");
-    // And back: unlike escape, no step to the left.
+    // And back, the cursor left where it is.
     assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav));
-    assert_eq!(item.position(), Some((1, 5)), "still on the l after what was typed");
+    assert_eq!(item.position(), Some((1, 5)), "still after what was typed");
     let (_, cursor, _) = harness.draw(&mut item, 40, 5);
     assert_eq!(cursor.map(|c| c.shape), Some(CursorShape::Block));
     type_text(&mut item, &mut harness, "z");
@@ -430,12 +451,12 @@ fn the_mode_toggle_goes_to_edit_mode_and_back_leaving_the_cursor() {
     // What was typed is one undo step, as after escape.
     act(&mut item, &mut harness, "editor::Undo");
     assert_eq!(text_of(&item), "hello\nworld\n");
-    // At the end of a line the block cannot sit past the last character: it goes onto it.
+    // At the end of a line too: nav mode's cursor goes past the last character, as edit mode's.
     act(&mut item, &mut harness, "bakedit::ToggleMode");
     act_with(&mut item, &mut harness, "editor::MoveToEndOfLine", json!({ "stop_at_soft_wraps": true }));
     assert_eq!(item.position(), Some((1, 6)));
     act(&mut item, &mut harness, "bakedit::ToggleMode");
-    assert_eq!(item.position(), Some((1, 5)));
+    assert_eq!(item.position(), Some((1, 6)));
     assert!(harness.take_effects().is_empty(), "the modes were on: nothing for the shell to do");
     // From the find bar it switches the text's mode; the bar keeps the keys.
     act(&mut item, &mut harness, "buffer_search::Deploy");
@@ -475,7 +496,7 @@ fn the_mode_toggle_turns_the_modes_on_when_they_are_off() {
     assert_eq!(item.status().mode, None);
     assert!(act(&mut item, &mut harness, "bakedit::ToggleMode"));
     assert_eq!(item.status().mode, Some(ModeIndicator::Nav), "lands in nav mode");
-    assert_eq!(item.position(), Some((1, 3)), "on the last character, not past it");
+    assert_eq!(item.position(), Some((1, 4)), "the cursor stays past the last character");
     let effects = harness.take_effects();
     assert_eq!(effects, vec![Effect::Dispatch(Action::new("bakedit::ToggleEditMode"))], "the setting goes on too");
     // Once the shell has done that, the next tick leaves it on.
@@ -613,12 +634,10 @@ fn the_last_search_repeats_in_nav_mode_as_in_edit_mode() {
     assert!(harness.take_effects().iter().any(|e| matches!(e, Effect::Status { text, .. } if text.contains("Nothing to search"))));
     act(&mut item, &mut harness, "buffer_search::Deploy");
     type_text(&mut item, &mut harness, "foo");
-    // Closing the bar leaves the cursor at the start of the match it found, nothing selected.
+    // Closing the bar leaves the match it found selected, as in edit mode.
     act(&mut item, &mut harness, "buffer_search::Dismiss");
-    assert_eq!(item.editor.selections().primary().range(), 2..2);
-    // Next and previous match select the match, as in edit mode.
-    act(&mut item, &mut harness, "search::SelectNextMatch");
     assert_eq!(item.editor.selections().primary().range(), 2..5);
+    // Next and previous match select the match, as in edit mode.
     act(&mut item, &mut harness, "search::SelectNextMatch");
     assert_eq!(item.editor.selections().primary().range(), 6..9);
     act(&mut item, &mut harness, "search::SelectNextMatch");
@@ -1421,6 +1440,12 @@ fn nav_mode_keys_change_nothing_but_the_rest_work_as_in_edit_mode() {
     router.key(&mut shell, &with_text(Key::Enter, "\r"));
     router.key(&mut shell, &with_text(Key::Tab, "\t"));
     assert_eq!((text(&shell), status(&shell)), (start.clone(), (1, 2, 0)));
+    // Nor do their emacs ctrl aliases (ctrl-h is also what a legacy terminal sends for
+    // backspace); ctrl-d no longer scrolls either.
+    for c in "hdwkyt".chars() {
+        router.key(&mut shell, &key(Key::Char(c), Mods::CTRL));
+        assert_eq!((text(&shell), status(&shell)), (start.clone(), (1, 2, 0)), "ctrl-{c}");
+    }
     assert!(!shell.pane.active().unwrap().is_dirty());
 
     // Arrows, shift-arrows and cmd-up/down work as in edit mode.

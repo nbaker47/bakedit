@@ -145,9 +145,12 @@ names where Zed has the action. A few that matter most:
 | `ctrl-]` then `?` | show all keybindings |
 | `cmd-i` | switch between NAV and EDIT mode |
 
-In NAV mode nothing you press changes the text: letters and the other text keys are ignored,
-and so are enter, tab, backspace and delete. The arrows, the `;` layer, shift-arrows and every
-cmd, alt and ctrl shortcut work exactly as in EDIT mode. There are no vim letter keys.
+In NAV mode no plain key types or edits: letters and the other text keys are ignored, and so
+are enter, tab, backspace and delete and their ctrl aliases (`ctrl-h`, `ctrl-d`, `ctrl-w`,
+`ctrl-k`, `ctrl-y`, `ctrl-t`). Everything else works exactly as in EDIT mode: the arrows, the
+`;` layer and shift-arrows move and select, and the cmd and alt shortcuts still do what they
+always do, including the ones that edit on purpose (cut, paste, undo, `cmd-backspace`,
+`alt-backspace`, `cmd-enter`). There are no vim letter keys.
 
 ## Built to stay fast
 

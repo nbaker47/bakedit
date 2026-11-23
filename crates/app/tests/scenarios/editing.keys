@@ -26,8 +26,13 @@ expect  3:5  Rust
 key enter tab backspace delete space x
 expect  3:5  Rust
 expect /// Counts how often
+# cmd-right goes past the last character and right on to the next line, as in edit mode.
 key cmd-right
-expect  3:39  Rust
+expect  3:40  Rust
+key right
+expect  4:1  Rust
+key left
+expect  3:40  Rust
 key cmd-left
 expect  3:1  Rust
 key cmd-down
@@ -47,9 +52,14 @@ expect NAV
 key cmd-x
 expect-not Counts how
 key cmd-z
-expect Counts how
+# What came back is selected, as in edit mode (a selection shows its spaces as dots).
+expect Counts·how
+expect (40 selected)
+key left
 key shift-right shift-right
+expect (2 selected)
 key escape
+expect-not selected
 expect NAV
 snap undo
 

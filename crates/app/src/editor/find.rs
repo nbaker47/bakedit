@@ -322,12 +322,6 @@ impl EditorItem {
                 if let Some(bar) = self.find.take() {
                     cx.project.remember_search(SearchKind::Buffer, bar.query.text());
                     self.last_search = bar.search;
-                    // Nav mode starts with a cursor, not a selection: it is left at the start
-                    // of the match that was found.
-                    if self.in_nav_mode() {
-                        let start = self.editor.selections().primary().start();
-                        self.editor.set_cursor(start);
-                    }
                 }
                 open
             }

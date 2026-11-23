@@ -16,7 +16,7 @@ text count
 expect 2 of 8
 snap find
 # enter and shift-enter step through the matches; escape closes the bar and leaves the
-# cursor on the match.
+# match selected, as in edit mode.
 key enter
 expect 3 of 8
 key shift-enter
@@ -24,10 +24,10 @@ expect 2 of 8
 key escape
 expect-not 2 of 8
 expect NAV
-expect  4:13  Rust
+expect 4:18 (5 selected)
 # n is not a key in nav mode: nothing moves.
 key n
-expect  4:13  Rust
+expect 4:18 (5 selected)
 
 # cmd-f again; alt-enter selects every match.
 key cmd-f

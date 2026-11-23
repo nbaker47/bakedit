@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 
 use bakedit_core::{Action, KeyEvent};
-use bakedit_text::{Clipboard, ClipboardPiece, Command, Selection, Selections};
+use bakedit_text::{Clipboard, ClipboardPiece, Command, Selection};
 
 use super::layout::Reveal;
 use super::EditorItem;
@@ -56,32 +56,6 @@ impl EditorItem {
         out.push(context);
     }
 
-    /// Nav mode.
-    pub(super) fn in_nav_mode(&self) -> bool {
-        self.modal && !self.insert
-    }
-
-    /// Nav mode: the cursor sits on a character, not past the end of the line. The column
-    /// vertical motion is heading for is kept.
-    pub(super) fn clamp_nav_cursor(&mut self) {
-        if !self.in_nav_mode() {
-            return;
-        }
-        let selections = self.editor.selections();
-        if !selections.is_single_cursor() {
-            return;
-        }
-        let selection = selections.primary();
-        let buffer = self.editor.buffer();
-        let line = buffer.char_to_line(selection.head);
-        if buffer.line_len(line) == 0 || selection.head != buffer.line_end(line) {
-            return;
-        }
-        let goal = selection.goal.unwrap_or_else(|| self.editor.display_position(selection.head).col);
-        let back = buffer.prev_grapheme(selection.head);
-        self.editor.set_selections(Selections::single(Selection::cursor(back).with_goal(Some(goal))));
-    }
-
     fn enter_insert(&mut self) {
         self.insert = true;
         self.editor.break_undo_group();
@@ -101,13 +75,12 @@ impl EditorItem {
         self.modal = on;
         self.end_insert_run();
         self.insert = false;
-        self.clamp_nav_cursor();
     }
 
     /// `bakedit::ToggleMode` (cmd-i, or a click on the mode in the status bar): edit mode
-    /// goes to nav mode as escape does, except that the cursor stays put; nav mode goes to
-    /// edit mode, the cursor and any selection kept. With the modes off it switches them on
-    /// for the session, which lands in nav mode.
+    /// goes to nav mode as escape does; nav mode goes to edit mode, the cursor and any
+    /// selection kept. With the modes off it switches them on for the session, which lands
+    /// in nav mode.
     fn toggle_mode(&mut self, cx: &mut Cx<'_>) {
         if !self.modal {
             // The setting, not just this editor: the next tick would undo it otherwise.
@@ -116,14 +89,7 @@ impl EditorItem {
             }
             self.set_modal(true);
         } else if self.insert {
-            self.leave_insert();
-            // Nav mode starts with cursors, not a selection: each collapses onto its head
-            // before the block is clamped onto a character.
-            if !self.editor.selections().is_single_cursor() {
-                let mut selections = self.editor.selections().clone();
-                selections.transform(|selection| Selection::cursor(selection.head));
-                self.editor.set_selections(selections);
-            }
+            self.back_to_nav();
         } else {
             let mark = self.editor.undo_steps();
             self.enter_insert();
@@ -192,20 +158,11 @@ impl EditorItem {
                 true
             }
             "vim::NormalBefore" => {
-                self.normal_before();
+                self.back_to_nav();
                 true
             }
             _ => self.run_action_command(action, cx),
         };
-        if handled && self.in_nav_mode() && matches!(name, "editor::Undo" | "editor::Redo") {
-            // As in vim: what came back is not left selected; the cursor goes to its start.
-            let mut selections = self.editor.selections().clone();
-            selections.transform(|selection| Selection::cursor(selection.start()));
-            self.editor.set_selections(selections);
-        }
-        if handled {
-            self.clamp_nav_cursor();
-        }
         handled
     }
 
@@ -216,14 +173,14 @@ impl EditorItem {
         }
     }
 
-    /// Escape in edit mode: back to nav mode, the block stepping left onto the character
-    /// before the bar, as vim does.
-    fn normal_before(&mut self) {
+    /// Escape or cmd-i in edit mode: back to nav mode, every cursor where it is. A selection
+    /// collapses onto its head, as escape does in edit mode.
+    fn back_to_nav(&mut self) {
         self.leave_insert();
-        let buffer = self.editor.buffer();
-        let head = self.cursor();
-        if self.editor.selections().is_single_cursor() && head > buffer.line_to_char(buffer.char_to_line(head)) {
-            self.editor.set_cursor(buffer.prev_grapheme(head));
+        if !self.editor.selections().is_single_cursor() {
+            let mut selections = self.editor.selections().clone();
+            selections.transform(|selection| Selection::cursor(selection.head));
+            self.editor.set_selections(selections);
         }
     }
 
@@ -298,9 +255,8 @@ impl EditorItem {
             self.find_insert(text, cx);
             return true;
         }
-        if self.modal && !self.insert {
-            return true;
-        }
+        // Nav mode pastes too: cmd-v reaches here as a terminal paste in Ghostty, and as
+        // editor::Paste elsewhere; both paste in either mode.
         self.run_command(Command::Paste(Clipboard::plain(text)), cx);
         true
     }

@@ -93,10 +93,12 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
   `minimap.rs`, `hints.rs` (which-key), `usage.rs` (the usage strip).
 - **Nav mode and edit mode** (`"vim_mode": true`): nav mode is edit mode minus every plain
-  key that edits. Letters and other text keys are swallowed; enter, tab, backspace and delete
-  are `null` in nav mode; arrows, the `;` layer, shift-arrows and every cmd/alt/ctrl binding
-  work as in edit mode. `cmd-i` (`bakedit::ToggleMode`) switches, escape leaves edit mode
-  (`vim::NormalBefore`). There are no vim letter keys or leader: do not add any.
+  key that edits. Letters and other text keys are swallowed; enter, tab, backspace, delete and
+  their emacs ctrl aliases (ctrl-h/d/w/k/y/t) are `null` in nav mode; arrows, the `;` layer,
+  shift-arrows and the cmd/alt bindings (cut, paste, undo and cmd/alt deletes included) work
+  as in edit mode, and so does the cursor: no vim block clamp, no step left on escape, no
+  selection dropped after undo or find. `cmd-i` (`bakedit::ToggleMode`) switches, escape
+  leaves edit mode (`vim::NormalBefore`). There are no vim letter keys or leader: do not add any.
 - **Keymap.** `assets/keymaps/default.json` is Zed's format and semantics. Action names are
   Zed's where Zed has the action; bakedit's own are `bakedit::*`, `herdr::*`,
   `project_diff::*`, `terminal_panel::ToggleZoom`, `terminal::OpenLinks`,
