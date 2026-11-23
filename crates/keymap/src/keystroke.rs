@@ -274,10 +274,10 @@ impl Keystroke {
         }
     }
 
-    /// Mac style glyphs: `⌃` ctrl, `⌥` alt, `⇧` shift, `⌘` cmd in that order, then the key as
-    /// its symbol (`↑ ↓ ← → ⏎ ⇥ ⌫ ⌦ ⎋ ␣ ↖ ↘ ⇞ ⇟`) or upper-cased (`K`, `F5`). `cmd-shift-p`
-    /// is `⇧⌘P`. The modifiers without a Mac glyph are spelled out in front (`fn-`, `hyper-`,
-    /// `meta-`).
+    /// Mac style glyphs: `⌃` ctrl, `⌥` alt, `⌘` cmd, `⇧` shift in that order, which is the
+    /// order Zed shows them in, then the key as its symbol (`↑ ↓ ← → ⏎ ⇥ ⌫ ⌦ ⎋ ␣ ↖ ↘ ⇞ ⇟`) or
+    /// upper-cased (`K`, `F5`). `cmd-shift-p` is `⌘⇧P`. The modifiers without a Mac glyph are
+    /// spelled out in front (`fn-`, `hyper-`, `meta-`).
     pub fn display_mac(&self) -> String {
         let mut out = String::new();
         if self.function {
@@ -291,8 +291,8 @@ impl Keystroke {
         for (flag, glyph) in [
             (Mods::CTRL, '⌃'),
             (Mods::ALT, '⌥'),
-            (Mods::SHIFT, '⇧'),
             (Mods::SUPER, '⌘'),
+            (Mods::SHIFT, '⇧'),
         ] {
             if self.mods.contains(flag) {
                 out.push(glyph);
@@ -303,15 +303,28 @@ impl Keystroke {
     }
 }
 
-/// The keymap spelling, modifiers in the order `bakedit_core::Mods::prefix` prints them:
-/// `ctrl-alt-shift-cmd-p`, `cmd--`, `shift-g`, `space`. `fn-` comes first when present.
-/// Parsing the result gives the keystroke back.
+/// The keymap spelling, with the modifiers in the order gpui's `Keystroke::unparse` writes
+/// them: `fn-ctrl-alt-cmd-shift-`, then `hyper-` and `meta-`, which gpui does not have. So
+/// `ctrl-alt-cmd-shift-p`, `cmd--`, `shift-g`, `space`. Parsing the result gives the keystroke
+/// back.
 impl fmt::Display for Keystroke {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.function {
             f.write_str("fn-")?;
         }
-        write!(f, "{}{}", self.mods.prefix(), self.key.name())
+        for (flag, name) in [
+            (Mods::CTRL, "ctrl-"),
+            (Mods::ALT, "alt-"),
+            (Mods::SUPER, "cmd-"),
+            (Mods::SHIFT, "shift-"),
+            (Mods::HYPER, "hyper-"),
+            (Mods::META, "meta-"),
+        ] {
+            if self.mods.contains(flag) {
+                f.write_str(name)?;
+            }
+        }
+        f.write_str(&self.key.name())
     }
 }
 
@@ -453,6 +466,11 @@ mod tests {
             ("alt-/", Mods::ALT, Key::Char('/')),
             (
                 "ctrl-alt-shift-cmd-p",
+                Mods::CTRL | Mods::ALT | Mods::SHIFT | Mods::SUPER,
+                Key::Char('p'),
+            ),
+            (
+                "ctrl-alt-cmd-shift-p",
                 Mods::CTRL | Mods::ALT | Mods::SHIFT | Mods::SUPER,
                 Key::Char('p'),
             ),
@@ -623,7 +641,8 @@ mod tests {
         for text in [
             "a",
             "cmd-k",
-            "ctrl-alt-shift-cmd-p",
+            "ctrl-alt-cmd-shift-p",
+            "cmd-shift-p",
             "cmd--",
             "ctrl-alt--",
             "-",
@@ -649,7 +668,9 @@ mod tests {
             "cmd-f6",
             "fn-f",
             "fn-ctrl-f",
+            "fn-ctrl-alt-cmd-shift-f",
             "cmd-hyper-meta-a",
+            "cmd-shift-hyper-meta-a",
             "ä",
             "Ä",
             "¥",
@@ -663,8 +684,9 @@ mod tests {
     fn every_spelling_parses_back_to_the_same_keystroke() {
         for (text, canonical) in [
             ("G", "shift-g"),
-            ("cmd-K", "shift-cmd-k"),
-            ("cmd-shift-p", "shift-cmd-p"),
+            ("cmd-K", "cmd-shift-k"),
+            ("shift-cmd-p", "cmd-shift-p"),
+            ("ctrl-alt-shift-cmd-p", "ctrl-alt-cmd-shift-p"),
             ("cmd-alt-t", "alt-cmd-t"),
             ("option-x", "alt-x"),
             ("win-x", "cmd-x"),
@@ -691,8 +713,8 @@ mod tests {
     fn displays_mac_glyphs() {
         for (text, glyphs) in [
             ("cmd-k", "⌘K"),
-            ("cmd-shift-p", "⇧⌘P"),
-            ("ctrl-alt-shift-cmd-p", "⌃⌥⇧⌘P"),
+            ("cmd-shift-p", "⌘⇧P"),
+            ("ctrl-alt-shift-cmd-p", "⌃⌥⌘⇧P"),
             ("G", "⇧G"),
             ("ctrl-`", "⌃`"),
             ("cmd--", "⌘-"),
@@ -725,8 +747,8 @@ mod tests {
     #[test]
     fn sequences_are_shown_space_separated() {
         let keys = Keystroke::parse_sequence("cmd-k cmd-S").unwrap();
-        assert_eq!(sequence_text(&keys), "cmd-k shift-cmd-s");
-        assert_eq!(sequence_display_mac(&keys), "⌘K ⇧⌘S");
+        assert_eq!(sequence_text(&keys), "cmd-k cmd-shift-s");
+        assert_eq!(sequence_display_mac(&keys), "⌘K ⌘⇧S");
         assert_eq!(sequence_text(&[]), "");
     }
 

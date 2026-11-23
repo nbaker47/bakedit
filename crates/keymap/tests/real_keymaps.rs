@@ -550,7 +550,7 @@ fn shortcuts_for_the_command_palette() {
             "workspace::CloseActiveDock",
             &project_panel_stack()
         ),
-        ["⇧⌘E"]
+        ["⌘⇧E"]
     );
     assert_eq!(
         shortcut(&keymap, "workspace::CloseActiveDock", &editor_stack()),

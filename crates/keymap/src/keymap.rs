@@ -655,7 +655,7 @@ mod tests {
             .iter()
             .map(Binding::keystroke_text)
             .collect();
-        assert_eq!(written, ["shift-cmd-[", "cmd-{", "z b", "z", "a", "a b"]);
+        assert_eq!(written, ["cmd-shift-[", "cmd-{", "z b", "z", "a", "a b"]);
         assert_eq!(
             resolved(&keymap, "cmd-{", ""),
             (names(&["Latest", "Later"]), false)
