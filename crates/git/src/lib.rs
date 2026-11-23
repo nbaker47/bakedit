@@ -1,6 +1,7 @@
 //! Git backend over the git command line: status, diff, stage, commit, permalinks.
 
 mod branch;
+mod content;
 mod error;
 mod exec;
 mod index;
