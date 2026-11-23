@@ -14,7 +14,7 @@ snap terminal
 text echo src/lib.rs:2
 key enter
 wait 0.8
-click 3 1 cmd
+click 3 2 cmd
 wait 1.2
 snap link
 

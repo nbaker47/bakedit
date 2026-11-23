@@ -203,6 +203,8 @@ pub struct RenderCx<'a> {
     pub now: Instant,
     /// This view has the keyboard focus.
     pub focused: bool,
+    /// This view's panel (or the centre) is zoomed: it covers the whole workspace.
+    pub zoomed: bool,
     pub held_mods: Mods,
 }
 
@@ -476,6 +478,7 @@ pub(crate) mod test_support {
                 active_path: None,
                 now: Instant::now(),
                 focused,
+                zoomed: false,
                 held_mods: self.held_mods,
             }
         }

@@ -12,185 +12,54 @@
 //! * `TerminalPanel::new(launch: TerminalLaunch) -> TerminalPanel`. Nothing runs until the
 //!   panel is first drawn, so the program starts at the size it is shown at.
 //! * `TerminalPanel::is_running(&self) -> bool` and `TerminalPanel::program(&self) -> &str`,
-//!   for the app's messages and tests.
+//!   for the app's messages and tests (both about the terminal tab in front).
 //!
 //! Everything else goes through `View`: keys and pastes go to the program (a key the keymap
 //! did not take, releases included, in the encoding the program asked for); the mouse goes
 //! to the program when it asked for it, else selects and scrolls; the link modifier
 //! (`link_click_modifier`, cmd by default) plus a click on a path:line or URL opens it,
-//! whatever the program does with the mouse; `picker_rows(PickerKind::Links)` lists the
-//! paths and URLs on screen for `terminal::OpenLinks`; `terminal::*` and `herdr::*` actions.
+//! whatever the program does with the mouse, and underlines it while hovering;
+//! `picker_rows(PickerKind::Links)` lists the paths and URLs on screen for
+//! `terminal::OpenLinks`; `terminal::*` and `herdr::*` actions.
 //!
-//! herdr operations run one at a time on a worker thread: each is a few socket round trips
-//! and must never hold up drawing.
+//! # Layout
+//!
+//! One header row (the terminal tabs, a `+` button, and "fullscreen" while the panel is
+//! zoomed), then the program. `workspace::NewTerminal` adds a terminal (a shell: herdr is
+//! one program, started once), `pane::ActivateItem` / `ActivateNextItem` /
+//! `ActivatePreviousItem` / `ActivateLastItem` switch between them and
+//! `pane::CloseActiveItem` closes the one in front (the last one closes the panel).
+//!
+//! # herdr
+//!
+//! `herdr::*` actions run natively through `bakedit_herdr` on a worker thread (see
+//! `herdr.rs`) so the UI never waits. When the socket is not there they type the user's
+//! ctrl-b chord into the terminal instead, as the Zed keymap did.
+
+mod header;
+mod herdr;
+mod launch;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use bakedit_core::{Action, Key, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb, Theme};
-use bakedit_herdr::{launch, Client, CollapseMode, Direction, HerdrError};
 use bakedit_term::{
     default_search_bases, LinkTarget, ResolvedPath, Scroll, SelectionKind, TermColors, TermConfig, TermError, TermEvent, Terminal,
 };
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
 use crate::background::Waker;
 use crate::picker::PickerItem;
-use crate::settings::{LinkModifier, Settings, TerminalCommand};
+use crate::settings::{LinkModifier, Settings};
 use crate::ui::{self, Canvas, Style};
 use crate::view::{Context, Cursor, CursorShape, Cx, Effect, PickerKind, RenderCx, View};
 
+pub use launch::{LaunchEnv, TerminalLaunch};
+
 /// Lines one wheel step scrolls the scrollback.
 const WHEEL_LINES: i32 = 3;
-/// How long the click handler waits for herdr to say which pane a click is in.
-const PANE_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
-
-/// What the terminal panel runs.
-#[derive(Debug, Clone)]
-pub struct TerminalLaunch {
-    /// What to start, without its size (that is the panel's).
-    pub config: TermConfig,
-    /// What to start instead when `config` cannot be started (the program is not
-    /// installed): the login shell. `None` when `config` is the shell already.
-    pub fallback: Option<TermConfig>,
-    /// The herdr session the panel shows, for the `herdr::*` actions. `None` when the panel
-    /// does not run herdr's interface.
-    pub herdr: Option<Client>,
-    /// Why the panel does not run what the settings ask for, shown once when it starts.
-    pub notice: Option<String>,
-    /// A short name for what runs: "herdr", "zsh", "tmux".
-    pub program: String,
-}
-
-/// The parts of the environment that decide what the panel runs.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LaunchEnv {
-    pub path: Option<std::ffi::OsString>,
-    pub home: Option<PathBuf>,
-    /// `HERDR_ENV`: set to 1 inside a herdr pane.
-    pub herdr_env: Option<std::ffi::OsString>,
-    pub xdg_config_home: Option<std::ffi::OsString>,
-    /// `SHELL`, for naming the shell in messages.
-    pub shell: Option<String>,
-    /// Where herdr is installed, if it is (`launch::find_binary` over `PATH` and the usual
-    /// places).
-    pub herdr_binary: Option<PathBuf>,
-}
-
-impl LaunchEnv {
-    /// This process's environment.
-    pub fn current() -> LaunchEnv {
-        let path = std::env::var_os("PATH");
-        let home = dirs::home_dir();
-        let herdr_binary = launch::find_binary(path.as_deref(), home.as_deref());
-        LaunchEnv {
-            path,
-            home,
-            herdr_env: std::env::var_os(launch::INSIDE_ENV_VAR),
-            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
-            shell: std::env::var("SHELL").ok(),
-            herdr_binary,
-        }
-    }
-}
-
-impl TerminalLaunch {
-    /// Work out what to run for `command` in this process's environment. Starts nothing.
-    pub fn resolve(command: &TerminalCommand, settings: &Settings, theme: &Theme, root: &Path) -> TerminalLaunch {
-        TerminalLaunch::resolve_in(command, settings, theme, root, &LaunchEnv::current())
-    }
-
-    /// [`TerminalLaunch::resolve`] in a given environment.
-    pub fn resolve_in(command: &TerminalCommand, settings: &Settings, theme: &Theme, root: &Path, env: &LaunchEnv) -> TerminalLaunch {
-        let base = TermConfig {
-            cwd: Some(root.to_path_buf()),
-            env: settings.terminal.env.clone(),
-            scrollback: settings.terminal.scrollback,
-            colors: TermColors::from_theme(theme),
-            ..TermConfig::shell()
-        };
-        let home = env.home.clone();
-        let shell_name = || {
-            env.shell
-                .as_deref()
-                .and_then(|shell| Path::new(shell).file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "shell".to_string())
-        };
-        let shell = |notice: Option<String>| TerminalLaunch { config: base.clone(), fallback: None, herdr: None, notice, program: shell_name() };
-        let herdr_client = |session: launch::Session| -> Option<Client> {
-            let config_dir = launch::config_dir(env.xdg_config_home.as_deref(), home.as_deref())?;
-            Some(Client::from_env_or_default().with_socket_path(session.socket_path(&config_dir)).allow_live_mutations(true))
-        };
-        match command {
-            TerminalCommand::Shell => shell(None),
-            TerminalCommand::Herdr => {
-                if launch::running_inside_herdr(env.herdr_env.as_deref()) {
-                    return shell(Some("Already inside herdr: the terminal runs your shell (herdr does not nest)".to_string()));
-                }
-                match env.herdr_binary.clone() {
-                    None => shell(Some("herdr is not installed: the terminal runs your shell".to_string())),
-                    Some(binary) => TerminalLaunch {
-                        config: TermConfig { program: Some(binary.to_string_lossy().into_owned()), ..base.clone() },
-                        fallback: Some(base.clone()),
-                        herdr: herdr_client(launch::Session::Default),
-                        notice: None,
-                        program: "herdr".to_string(),
-                    },
-                }
-            }
-            TerminalCommand::Custom(words) => {
-                let Some((program, args)) = words.split_first() else { return shell(None) };
-                let name = Path::new(program).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| program.clone());
-                TerminalLaunch {
-                    config: TermConfig { program: Some(program.clone()), args: args.to_vec(), ..base.clone() },
-                    fallback: Some(base.clone()),
-                    herdr: launch::session_of_command(words).and_then(herdr_client),
-                    notice: None,
-                    program: name,
-                }
-            }
-        }
-    }
-}
-
-/// A herdr operation for the worker.
-type HerdrJob = Box<dyn FnOnce(&Client) -> Result<(), HerdrError> + Send>;
-
-/// Runs herdr operations one at a time on a thread of its own, and reports failures.
-struct HerdrWorker {
-    jobs: Sender<HerdrJob>,
-    failures: Receiver<String>,
-}
-
-impl HerdrWorker {
-    fn start(client: Client, waker: Waker) -> Option<HerdrWorker> {
-        let (jobs, inbox) = unbounded::<HerdrJob>();
-        let (report, failures) = unbounded();
-        let spawned = std::thread::Builder::new().name("bakedit-herdr".into()).spawn(move || {
-            for job in inbox {
-                match job(&client) {
-                    Ok(()) => {}
-                    // No server yet (or any more): the keys simply do nothing.
-                    Err(error) if error.is_not_running() => {}
-                    Err(error) => {
-                        let _ = report.send(format!("herdr: {error}"));
-                        waker.wake();
-                    }
-                }
-            }
-        });
-        match spawned {
-            Ok(_) => Some(HerdrWorker { jobs, failures }),
-            Err(error) => {
-                log::error!("could not start the herdr worker: {error}");
-                None
-            }
-        }
-    }
-}
 
 /// A link the link picker offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,9 +68,15 @@ enum LinkChoice {
     Url(String),
 }
 
-/// The terminal panel.
-pub struct TerminalPanel {
-    launch: TerminalLaunch,
+/// One terminal: a program on a pty, and what the panel remembers about it.
+struct Tab {
+    /// Runs herdr's interface (the `herdr::*` actions are about this one).
+    herdr: bool,
+    /// A short name for what runs in it.
+    program: String,
+    /// What to start in it.
+    config: Option<TermConfig>,
+    fallback: Option<TermConfig>,
     terminal: Option<Terminal>,
     /// Events from the terminal's thread, collected in `tick`.
     events: Arc<Mutex<Vec<TermEvent>>>,
@@ -211,17 +86,66 @@ pub struct TerminalPanel {
     exited: Option<Option<i32>>,
     /// The working directory the program last reported (OSC 7).
     cwd: Option<PathBuf>,
+    /// What the program set as its title.
+    title: Option<String>,
     /// The terminal's generation at the last draw.
     drawn: Option<u64>,
-    /// Where the panel was last drawn.
+}
+
+impl Tab {
+    fn new(program: String, config: TermConfig, fallback: Option<TermConfig>, herdr: bool) -> Tab {
+        Tab {
+            herdr,
+            program,
+            config: Some(config),
+            fallback,
+            terminal: None,
+            events: Arc::new(Mutex::new(Vec::new())),
+            failed: None,
+            exited: None,
+            cwd: None,
+            title: None,
+            drawn: None,
+        }
+    }
+
+    fn title(&self) -> &str {
+        self.title.as_deref().filter(|title| !title.trim().is_empty()).unwrap_or(&self.program)
+    }
+
+    /// Whether the tab was never started (and did not fail or end): the next draw starts it.
+    fn pending(&self) -> bool {
+        self.terminal.is_none() && self.failed.is_none() && self.exited.is_none()
+    }
+}
+
+/// The terminal panel.
+pub struct TerminalPanel {
+    launch: TerminalLaunch,
+    tabs: Vec<Tab>,
+    active: usize,
+    /// The workspace shows the panel fullscreen (as told at the last draw).
+    zoomed: bool,
+    /// Where the panel was last drawn, header included.
     area: Rect,
+    /// Where the program was last drawn.
+    body: Rect,
+    header_hits: header::Hits,
     focused: bool,
-    /// A link click went down: its release is ours too, not the program's.
+    /// A press went down that is not the program's (a link, the header): the drags and the
+    /// release that follow are ours too.
     swallow_release: bool,
     /// The mouse went down for a local selection (the program does not want the mouse).
     selecting: bool,
+    /// The cell (in the program's coordinates) the pointer is over.
+    hover: Option<(u16, u16)>,
+    /// Whether what is under the pointer opens: asked once per link, not per frame.
+    hover_opens: Option<(LinkTarget, bool)>,
     links: Vec<LinkChoice>,
-    herdr: Option<HerdrWorker>,
+    worker: Option<herdr::Worker>,
+    pane_dirs: herdr::PaneDirs,
+    /// Why the panel does not run what the settings ask for: shown in the header.
+    note: Option<String>,
     /// A line for the status bar, pushed at the next chance.
     notice: Option<(String, bool)>,
 }
@@ -229,43 +153,84 @@ pub struct TerminalPanel {
 impl TerminalPanel {
     /// A panel that will run `launch` when it is first drawn.
     pub fn new(launch: TerminalLaunch) -> TerminalPanel {
+        let note = launch.notice.clone();
         let notice = launch.notice.clone().map(|text| (text, false));
+        let first = Tab::new(launch.program.clone(), launch.config.clone(), launch.fallback.clone(), launch.herdr.is_some());
         TerminalPanel {
             launch,
-            terminal: None,
-            events: Arc::new(Mutex::new(Vec::new())),
-            failed: None,
-            exited: None,
-            cwd: None,
-            drawn: None,
+            tabs: vec![first],
+            active: 0,
+            zoomed: false,
             area: Rect::default(),
+            body: Rect::default(),
+            header_hits: Vec::new(),
             focused: false,
             swallow_release: false,
             selecting: false,
+            hover: None,
+            hover_opens: None,
             links: Vec::new(),
-            herdr: None,
+            worker: None,
+            pane_dirs: herdr::PaneDirs::default(),
+            note,
             notice,
         }
     }
 
-    /// Whether the panel shows a running program: it started and its exit has not been
-    /// seen (by `tick`) yet.
+    /// Whether the terminal in front shows a running program: it started and its exit has
+    /// not been seen (by `tick`) yet.
     pub fn is_running(&self) -> bool {
-        self.terminal.is_some() && self.exited.is_none()
+        let tab = self.tab();
+        tab.terminal.is_some() && tab.exited.is_none()
     }
 
-    /// A short name for what the panel runs ("herdr", "zsh").
+    /// A short name for what the terminal in front runs ("herdr", "zsh").
     pub fn program(&self) -> &str {
-        &self.launch.program
+        &self.tab().program
     }
 
-    /// The text on the terminal's screen, for tests and diagnostics. Empty before it starts.
+    /// The text on the screen of the terminal in front, for tests and diagnostics. Empty
+    /// before it starts.
     pub fn screen_text(&self) -> String {
-        self.terminal.as_ref().map(Terminal::screen_text).unwrap_or_default()
+        self.tab().terminal.as_ref().map(Terminal::screen_text).unwrap_or_default()
     }
 
-    fn start(&mut self, cols: u16, rows: u16, waker: &Waker) {
-        let events = self.events.clone();
+    /// How many terminals the panel holds.
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// Which terminal is in front (0-based).
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
+    fn tab(&self) -> &Tab {
+        &self.tabs[self.active]
+    }
+
+    fn tab_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.active]
+    }
+
+    fn terminal(&self) -> Option<&Terminal> {
+        self.tab().terminal.as_ref()
+    }
+
+    /// Where the program is drawn in a panel drawn in `area`: below the header row.
+    fn body_of(area: Rect) -> Rect {
+        let header = area.height.min(1);
+        Rect::new(area.x, area.y + header, area.width, area.height - header)
+    }
+
+    // ---- starting and stopping ---------------------------------------------------------
+
+    /// Start the program of tab `index` at `cols` x `rows`.
+    fn start(&mut self, index: usize, cols: u16, rows: u16, waker: &Waker) {
+        let focused = self.focused && index == self.active;
+        let tab = &mut self.tabs[index];
+        let Some(config) = tab.config.clone() else { return };
+        let events = tab.events.clone();
         let wake = waker.clone();
         let on_event = Box::new(move |event: TermEvent| {
             if let Ok(mut queue) = events.lock() {
@@ -274,117 +239,185 @@ impl TerminalPanel {
             wake.wake();
         });
         let sized = |config: &TermConfig| TermConfig { cols: cols.max(2), rows: rows.max(1), ..config.clone() };
-        let started = match &self.launch.fallback {
-            Some(fallback) => Terminal::spawn_with_fallback(sized(&self.launch.config), sized(fallback), on_event),
-            None => Terminal::spawn(sized(&self.launch.config), on_event).map(|terminal| (terminal, None)),
+        let started = match &tab.fallback {
+            Some(fallback) => Terminal::spawn_with_fallback(sized(&config), sized(fallback), on_event),
+            None => Terminal::spawn(sized(&config), on_event).map(|terminal| (terminal, None)),
         };
         match started {
             Ok((terminal, problem)) => {
                 if let Some(problem) = problem {
-                    self.notice = Some((format!("{}: the terminal runs your shell instead", describe_spawn_error(&problem)), false));
+                    let text = format!("{}: the terminal runs your shell instead", describe_spawn_error(&problem));
+                    self.note = Some(text.clone());
+                    self.notice = Some((text, false));
+                    tab.herdr = false;
                     self.launch.herdr = None;
                 }
-                self.terminal = Some(terminal);
-                self.failed = None;
-                self.exited = None;
-                if self.focused {
-                    if let Some(terminal) = &self.terminal {
-                        terminal.send_focus(true);
-                    }
+                if focused {
+                    terminal.send_focus(true);
                 }
+                tab.terminal = Some(terminal);
+                tab.failed = None;
+                tab.exited = None;
             }
             Err(error) => {
                 let text = format!("The terminal could not start: {}", describe_spawn_error(&error));
                 self.notice = Some((text.clone(), true));
-                self.failed = Some(text);
+                tab.failed = Some(text);
             }
         }
-        self.drawn = None;
+        tab.drawn = None;
     }
 
-    /// Start the program again after it exited.
+    /// Start the program of the terminal in front again after it exited.
     fn restart(&mut self, waker: &Waker) {
-        self.terminal = None;
-        self.exited = None;
-        let (cols, rows) = (self.area.width, self.area.height);
+        let (cols, rows) = (self.body.width, self.body.height);
+        let index = self.active;
+        let tab = self.tab_mut();
+        tab.terminal = None;
+        tab.exited = None;
         if cols > 0 && rows > 0 {
-            self.start(cols, rows, waker);
+            self.start(index, cols, rows, waker);
         }
     }
 
-    fn herdr_job(&mut self, cx: &mut Cx<'_>, job: HerdrJob) -> bool {
-        let Some(client) = self.launch.herdr.clone() else { return false };
-        if self.herdr.is_none() {
-            self.herdr = HerdrWorker::start(client, cx.project.waker().clone());
+    /// Add a terminal running the user's shell, in the directory the one in front is in,
+    /// and bring it to the front. It starts at the next draw.
+    fn new_tab(&mut self, cx: &Cx<'_>) {
+        let mut config = self.launch.fallback.clone().unwrap_or_else(|| self.launch.config.clone());
+        // The shell, not the program that may be the panel's own (a custom command).
+        if self.launch.fallback.is_none() && self.launch.config.program.is_some() {
+            config.program = None;
+            config.args.clear();
         }
-        match &self.herdr {
-            Some(worker) => worker.jobs.send(job).is_ok(),
-            None => false,
+        config.cwd = Some(self.tab().cwd.clone().unwrap_or_else(|| cx.root.to_path_buf()));
+        let program = std::env::var("SHELL")
+            .ok()
+            .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "shell".to_string());
+        self.tabs.push(Tab::new(program, config, None, false));
+        let last = self.tabs.len() - 1;
+        self.activate(last);
+    }
+
+    /// Bring terminal `index` to the front, moving the focus report with it.
+    fn activate(&mut self, index: usize) {
+        if index >= self.tabs.len() || index == self.active {
+            return;
+        }
+        if let Some(terminal) = self.terminal() {
+            terminal.send_focus(false);
+            terminal.selection_clear();
+        }
+        self.active = index;
+        self.selecting = false;
+        self.swallow_release = false;
+        self.hover = None;
+        self.hover_opens = None;
+        if self.focused {
+            if let Some(terminal) = self.terminal() {
+                terminal.send_focus(true);
+            }
         }
     }
 
-    fn herdr_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
-        let direction = || action.args.as_ref().and_then(|args| args.as_str()).and_then(|text| text.parse::<Direction>().ok());
-        let job: HerdrJob = match action.name.as_str() {
-            "herdr::Navigate" => {
-                let Some(direction) = direction() else { return false };
-                Box::new(move |client| bakedit_herdr::navigate(client, direction).map(|_| ()))
-            }
-            "herdr::MovePane" => {
-                let Some(direction) = direction() else { return false };
-                Box::new(move |client| bakedit_herdr::move_pane(client, direction).map(|_| ()))
-            }
-            "herdr::PreviousWorkspace" => Box::new(|client| bakedit_herdr::previous_workspace(client).map(|_| ())),
-            "herdr::NextWorkspace" => Box::new(|client| bakedit_herdr::next_workspace(client).map(|_| ())),
-            "herdr::FocusWorkspace" => {
-                let Some(number) = action.args.as_ref().and_then(|args| args.as_u64()) else { return false };
-                Box::new(move |client| bakedit_herdr::focus_workspace_number(client, number as usize).map(|_| ()))
-            }
-            "herdr::ToggleZoom" => Box::new(|client| bakedit_herdr::zoom_toggle(client).map(|_| ())),
-            "herdr::ToggleCollapse" => Box::new(|client| bakedit_herdr::collapse(client, CollapseMode::Toggle).map(|_| ())),
-            "herdr::ToggleExpand" => Box::new(|client| bakedit_herdr::collapse(client, CollapseMode::Expand).map(|_| ())),
-            "herdr::Scroll" => {
-                let up = action.arg_str("direction") != Some("down");
-                let lines = action.arg_i64("lines").unwrap_or(3).clamp(0, 10_000) as u32;
-                Box::new(move |client| bakedit_herdr::scroll(client, up, lines).map(|_| ()))
-            }
-            _ => return false,
-        };
-        self.herdr_job(cx, job)
-    }
-
-    /// Where to look for a relative path printed in the terminal: the directory of the
-    /// herdr pane under the click when there is one, the program's reported directory, the
-    /// project, and the usual places (`default_search_bases`).
-    fn search_bases(&self, cx: &Cx<'_>, cell: Option<(u16, u16)>) -> Vec<PathBuf> {
-        let mut bases = Vec::new();
-        if let (Some(client), Some((col, row)), Some(terminal)) = (&self.launch.herdr, cell, &self.terminal) {
-            let (cols, rows) = terminal.size();
-            let client = client.clone().with_timeout(PANE_QUERY_TIMEOUT);
-            if let Ok(Some(found)) = bakedit_herdr::pane_at(&client, bakedit_herdr::ScreenSize { cols, rows }, col, row) {
-                if let Some(dir) = found.pane.working_dir() {
-                    bases.push(dir.to_path_buf());
+    /// Close the terminal in front. The last one is not kept: the panel closes, and its
+    /// next opening starts a fresh program.
+    fn close_active(&mut self, cx: &mut Cx<'_>) {
+        if self.tabs.len() > 1 {
+            // Dropping the terminal hangs up on its program.
+            self.tabs.remove(self.active);
+            self.active = self.active.min(self.tabs.len() - 1);
+            self.selecting = false;
+            self.swallow_release = false;
+            self.hover = None;
+            self.hover_opens = None;
+            if self.focused {
+                if let Some(terminal) = self.terminal() {
+                    terminal.send_focus(true);
                 }
             }
+            return;
         }
-        let start = self.cwd.clone().unwrap_or_else(|| cx.root.to_path_buf());
+        let herdr = self.launch.herdr.is_some();
+        let fresh = Tab::new(self.launch.program.clone(), self.launch.config.clone(), self.launch.fallback.clone(), herdr);
+        self.tabs[0] = fresh;
+        self.hover = None;
+        self.hover_opens = None;
+        cx.push(Effect::Dispatch(Action::new("terminal_panel::Toggle")));
+    }
+
+    // ---- herdr -------------------------------------------------------------------------
+
+    fn herdr_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let Some(operation) = herdr::operation(action) else { return false };
+        let Some(client) = self.launch.herdr.clone() else {
+            // No session of ours to drive: the user's own herdr, if any, is in the terminal.
+            self.type_chord(operation.chord());
+            return true;
+        };
+        // The actions are about the terminal that runs herdr: show it.
+        if let Some(index) = self.tabs.iter().position(|tab| tab.herdr) {
+            self.activate(index);
+        }
+        if self.worker.is_none() {
+            self.worker = herdr::Worker::start(client, cx.project.waker().clone());
+        }
+        let chord = operation.chord().to_string();
+        match &self.worker {
+            Some(worker) if worker.send(operation) => {}
+            _ => self.type_chord(&chord),
+        }
+        true
+    }
+
+    /// Type a herdr chord into the terminal that runs herdr, or the one in front when none
+    /// does.
+    fn type_chord(&mut self, chord: &str) {
+        let index = self.tabs.iter().position(|tab| tab.herdr).unwrap_or(self.active);
+        let tab = &self.tabs[index];
+        if tab.exited.is_none() {
+            if let Some(terminal) = &tab.terminal {
+                terminal.send_text(chord);
+            }
+        }
+    }
+
+    // ---- links -------------------------------------------------------------------------
+
+    /// Where to look for a relative path printed in the terminal: the directory of the
+    /// herdr pane under the cell when there is one, the program's reported directory, the
+    /// project, and the usual places (`default_search_bases`).
+    fn search_bases(&mut self, root: &Path, cell: Option<(u16, u16)>) -> Vec<PathBuf> {
+        let mut bases = Vec::new();
+        let tab = &self.tabs[self.active];
+        if let (true, Some(client), Some((col, row)), Some(terminal)) = (tab.herdr, &self.launch.herdr, cell, &tab.terminal) {
+            if let Some(dir) = self.pane_dirs.dir_at(client, terminal.size(), col, row) {
+                bases.push(dir);
+            }
+        }
+        let start = self.tab().cwd.clone().unwrap_or_else(|| root.to_path_buf());
         bases.push(start.clone());
-        bases.push(cx.root.to_path_buf());
+        bases.push(root.to_path_buf());
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         bases.extend(default_search_bases(&start, &home));
-        bases.dedup();
+        let mut seen = std::collections::HashSet::new();
+        bases.retain(|base| seen.insert(base.clone()));
         bases
     }
 
-    fn resolve(&self, target: &LinkTarget, cx: &Cx<'_>, cell: Option<(u16, u16)>) -> Option<LinkChoice> {
+    fn resolve(&mut self, target: &LinkTarget, cx: &Cx<'_>, cell: Option<(u16, u16)>) -> Option<LinkChoice> {
         match target {
             LinkTarget::Url(url) => is_openable_url(url).then(|| LinkChoice::Url(url.clone())),
-            LinkTarget::Path { .. } => target.resolve(&self.search_bases(cx, cell)).map(LinkChoice::File),
+            LinkTarget::Path { .. } => {
+                let bases = self.search_bases(cx.root, cell);
+                target.resolve(&bases).map(LinkChoice::File)
+            }
         }
     }
 
     fn open(choice: &LinkChoice, cx: &mut Cx<'_>) {
         match choice {
+            // Focusing the editor also un-zooms the panel, so the file is visible.
             LinkChoice::File(found) => cx.push(Effect::OpenFile {
                 path: found.path.clone(),
                 line: found.line,
@@ -396,7 +429,7 @@ impl TerminalPanel {
         }
     }
 
-    fn link_modifier_held(&self, mods: Mods, settings: &Settings) -> bool {
+    fn link_modifier_held(mods: Mods, settings: &Settings) -> bool {
         match settings.link_click_modifier {
             LinkModifier::Cmd => mods.contains(Mods::SUPER),
             LinkModifier::Alt => mods.contains(Mods::ALT),
@@ -405,6 +438,37 @@ impl TerminalPanel {
         }
     }
 
+    /// The cells to underline: every row of the link under the pointer, when the link
+    /// modifier is held and what is there would open.
+    fn hovered_link_cells(&mut self, cx: &RenderCx<'_>) -> Vec<(u16, u16, u16)> {
+        let Some((col, row)) = self.hover else { return Vec::new() };
+        if !TerminalPanel::link_modifier_held(cx.held_mods, cx.settings) {
+            return Vec::new();
+        }
+        let Some(link) = self.terminal().and_then(|terminal| terminal.link_at(col, row)) else { return Vec::new() };
+        let opens = match &self.hover_opens {
+            Some((target, opens)) if *target == link.target => *opens,
+            _ => {
+                let opens = match &link.target {
+                    LinkTarget::Url(url) => is_openable_url(url),
+                    target @ LinkTarget::Path { .. } => {
+                        let bases = self.search_bases(cx.root, Some((link.col_start, link.row)));
+                        target.resolve(&bases).is_some()
+                    }
+                };
+                self.hover_opens = Some((link.target.clone(), opens));
+                opens
+            }
+        };
+        if !opens {
+            return Vec::new();
+        }
+        let Some(terminal) = self.terminal() else { return Vec::new() };
+        terminal.visible_links().into_iter().filter(|other| other.id == link.id).map(|other| (other.row, other.col_start, other.col_end)).collect()
+    }
+
+    // ---- drawing -----------------------------------------------------------------------
+
     fn draw_message(canvas: &mut Canvas<'_>, area: Rect, text: &str, theme: &Theme) {
         canvas.fill(area, theme.terminal_bg);
         if area.height == 0 || area.width < 4 {
@@ -412,6 +476,32 @@ impl TerminalPanel {
         }
         let y = area.y + area.height / 3;
         canvas.text_truncated(area.x + 2, y, text, Style::colors(theme.text_muted, theme.terminal_bg), area.width.saturating_sub(4));
+    }
+
+    fn draw_header(&mut self, canvas: &mut Canvas<'_>, area: Rect, theme: &Theme) {
+        let tabs: Vec<header::HeaderTab> =
+            self.tabs.iter().map(|tab| header::HeaderTab { title: tab.title().to_string(), exited: tab.exited.is_some() }).collect();
+        let row = Rect::new(area.x, area.y, area.width, area.height.min(1));
+        self.header_hits = header::draw(canvas, row, &tabs, self.active, self.zoomed, self.note.as_deref(), theme);
+    }
+
+    /// Switch to the terminal an action asks for. False for an action about tabs that is
+    /// not for one of them.
+    fn tab_action(&mut self, name: &str, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let count = self.tabs.len();
+        match name {
+            "workspace::NewTerminal" => self.new_tab(cx),
+            "pane::CloseActiveItem" => self.close_active(cx),
+            "pane::ActivateNextItem" => self.activate((self.active + 1) % count),
+            "pane::ActivatePreviousItem" => self.activate((self.active + count - 1) % count),
+            "pane::ActivateLastItem" => self.activate(count - 1),
+            "pane::ActivateItem" => {
+                let index = action.arg_i64("index").or_else(|| action.args.as_ref().and_then(|args| args.as_i64())).unwrap_or(0);
+                self.activate((index.max(0) as usize).min(count - 1));
+            }
+            _ => return false,
+        }
+        true
     }
 }
 
@@ -430,90 +520,105 @@ fn is_openable_url(url: &str) -> bool {
     lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("file://")
 }
 
-fn cell_color(colors: &TermColors, color: bakedit_core::Color, default: Rgb) -> Rgb {
-    colors.resolve(color, default)
+/// Draw every cell of `terminal` into `body`. `underlined` lists `(row, first col, end col)`
+/// spans to underline on top of what the program drew.
+fn draw_cells(canvas: &mut Canvas<'_>, body: Rect, terminal: &Terminal, theme: &Theme, underlined: &[(u16, u16, u16)]) {
+    canvas.fill(body, theme.terminal_bg);
+    let colors = TermColors::from_theme(theme);
+    terminal.render(&mut |col, row, cell| {
+        if cell.wide_spacer {
+            return;
+        }
+        let (x, y) = (body.x + col, body.y + row);
+        if x >= body.right() || y >= body.bottom() {
+            return;
+        }
+        let mut fg: Rgb = colors.resolve(cell.fg, colors.fg);
+        let mut bg: Rgb = colors.resolve(cell.bg, colors.bg);
+        if cell.inverse {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        if cell.selected {
+            bg = theme.selection_bg;
+        }
+        if cell.hidden {
+            fg = bg;
+        }
+        let mut symbol = String::new();
+        symbol.push(if cell.ch == '\0' { ' ' } else { cell.ch });
+        symbol.extend(cell.zerowidth.iter());
+        // A wide character needs its second cell inside the panel.
+        if cell.wide && x + 1 >= body.right() {
+            symbol = " ".to_string();
+        }
+        if let Some(target) = canvas.cell_mut(x, y) {
+            target.set_symbol(&symbol);
+            target.set_fg(ui::color(fg));
+            target.set_bg(ui::color(bg));
+            let mut modifier = Modifier::empty();
+            if cell.bold {
+                modifier |= Modifier::BOLD;
+            }
+            if cell.italic {
+                modifier |= Modifier::ITALIC;
+            }
+            if cell.dim {
+                modifier |= Modifier::DIM;
+            }
+            let hovered = underlined.iter().any(|&(r, start, end)| r == row && col >= start && col < end);
+            if cell.underline != bakedit_term::Underline::None || hovered {
+                modifier |= Modifier::UNDERLINED;
+            }
+            if cell.strikeout {
+                modifier |= Modifier::CROSSED_OUT;
+            }
+            target.modifier = modifier;
+        }
+    });
 }
 
 impl View for TerminalPanel {
     fn render(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
         let theme = cx.theme;
         self.area = area;
+        self.zoomed = cx.zoomed;
+        self.focused = cx.focused;
         if area.width == 0 || area.height == 0 {
             return None;
         }
-        if self.terminal.is_none() && self.failed.is_none() && self.exited.is_none() {
-            self.start(area.width, area.height, cx.project.waker());
+        let body = TerminalPanel::body_of(area);
+        self.body = body;
+        self.draw_header(canvas, area, theme);
+        if body.height == 0 {
+            return None;
         }
-        let Some(terminal) = &self.terminal else {
-            let text = self.failed.clone().unwrap_or_else(|| "Starting the terminal".to_string());
-            TerminalPanel::draw_message(canvas, area, &text, theme);
+        if self.tab().pending() {
+            let index = self.active;
+            self.start(index, body.width, body.height, cx.project.waker());
+        }
+        let underlined = self.hovered_link_cells(cx);
+        let program = self.tab().program.clone();
+        let exited = self.tab().exited;
+        let failed = self.tab().failed.clone();
+        let tab = &mut self.tabs[self.active];
+        let Some(terminal) = &tab.terminal else {
+            let text = failed.unwrap_or_else(|| "Starting the terminal".to_string());
+            TerminalPanel::draw_message(canvas, body, &text, theme);
             return None;
         };
-        terminal.resize(area.width, area.height);
-        self.drawn = Some(terminal.generation());
+        terminal.resize(body.width, body.height);
+        tab.drawn = Some(terminal.generation());
+        draw_cells(canvas, body, terminal, theme, &underlined);
 
-        canvas.fill(area, theme.terminal_bg);
-        let colors = TermColors::from_theme(theme);
-        let selection_bg = theme.selection_bg;
-        terminal.render(&mut |col, row, cell| {
-            if cell.wide_spacer {
-                return;
-            }
-            let (x, y) = (area.x + col, area.y + row);
-            if x >= area.right() || y >= area.bottom() {
-                return;
-            }
-            let mut fg = cell_color(&colors, cell.fg, colors.fg);
-            let mut bg = cell_color(&colors, cell.bg, colors.bg);
-            if cell.inverse {
-                std::mem::swap(&mut fg, &mut bg);
-            }
-            if cell.selected {
-                bg = selection_bg;
-            }
-            if cell.hidden {
-                fg = bg;
-            }
-            let mut symbol = String::new();
-            symbol.push(if cell.ch == '\0' { ' ' } else { cell.ch });
-            symbol.extend(cell.zerowidth.iter());
-            // A wide character needs its second cell inside the panel.
-            if cell.wide && x + 1 >= area.right() {
-                symbol = " ".to_string();
-            }
-            if let Some(target) = canvas.cell_mut(x, y) {
-                target.set_symbol(&symbol);
-                target.set_fg(ui::color(fg));
-                target.set_bg(ui::color(bg));
-                let mut modifier = Modifier::empty();
-                if cell.bold {
-                    modifier |= Modifier::BOLD;
-                }
-                if cell.italic {
-                    modifier |= Modifier::ITALIC;
-                }
-                if cell.dim {
-                    modifier |= Modifier::DIM;
-                }
-                if cell.underline != bakedit_term::Underline::None {
-                    modifier |= Modifier::UNDERLINED;
-                }
-                if cell.strikeout {
-                    modifier |= Modifier::CROSSED_OUT;
-                }
-                target.modifier = modifier;
-            }
-        });
-
-        if let Some(code) = self.exited {
+        if let Some(code) = exited {
             // The last screen stays; one quiet row at the bottom says what happened.
-            let bar = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+            let bar = Rect::new(body.x, body.bottom() - 1, body.width, 1);
             let bg = theme.elevated_surface;
             canvas.fill(bar, bg);
             let how = match code {
-                Some(0) => format!("{} exited", self.launch.program),
-                Some(code) => format!("{} exited with code {code}", self.launch.program),
-                None => format!("{} was stopped", self.launch.program),
+                Some(0) => format!("{program} exited"),
+                Some(code) => format!("{program} exited with code {code}"),
+                None => format!("{program} was stopped"),
             };
             let text = format!("{how}  ·  enter starts it again");
             canvas.text_truncated(bar.x + 1, bar.y, &text, Style::colors(theme.text_muted, bg), bar.width.saturating_sub(2));
@@ -524,8 +629,8 @@ impl View for TerminalPanel {
             return None;
         }
         let cursor = terminal.cursor()?;
-        let (col, row) = (area.x + cursor.col, area.y + cursor.row);
-        if col >= area.right() || row >= area.bottom() {
+        let (col, row) = (body.x + cursor.col, body.y + cursor.row);
+        if col >= body.right() || row >= body.bottom() {
             return None;
         }
         let shape = match cursor.shape {
@@ -546,12 +651,15 @@ impl View for TerminalPanel {
         if name.starts_with("herdr::") {
             return self.herdr_action(action, cx);
         }
-        if self.exited.is_some() && name == "menu::Confirm" {
+        if self.tab_action(name, action, cx) {
+            return true;
+        }
+        if self.tab().exited.is_some() && name == "menu::Confirm" {
             let waker = cx.project.waker().clone();
             self.restart(&waker);
             return true;
         }
-        let Some(terminal) = &self.terminal else { return false };
+        let Some(terminal) = self.terminal() else { return false };
         match name {
             "terminal::Copy" => match terminal.selection_text() {
                 Some(text) => {
@@ -606,14 +714,14 @@ impl View for TerminalPanel {
     }
 
     fn handle_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        if self.exited.is_some() {
+        if self.tab().exited.is_some() {
             if key.is_down() && key.key == Key::Enter {
                 let waker = cx.project.waker().clone();
                 self.restart(&waker);
             }
             return key.is_down();
         }
-        let Some(terminal) = &self.terminal else { return false };
+        let Some(terminal) = self.terminal() else { return false };
         if key.is_text_only() {
             return key.text.as_deref().is_some_and(|text| terminal.send_text(text));
         }
@@ -621,8 +729,8 @@ impl View for TerminalPanel {
     }
 
     fn handle_paste(&mut self, text: &str, _cx: &mut Cx<'_>) -> bool {
-        match &self.terminal {
-            Some(terminal) if self.exited.is_none() => {
+        match self.terminal() {
+            Some(terminal) if self.tab().exited.is_none() => {
                 terminal.send_paste(text);
                 true
             }
@@ -631,30 +739,49 @@ impl View for TerminalPanel {
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent, area: Rect, cx: &mut Cx<'_>) -> bool {
-        let local = MouseEvent {
-            col: event.col.saturating_sub(area.x).min(area.width.saturating_sub(1)),
-            row: event.row.saturating_sub(area.y).min(area.height.saturating_sub(1)),
-            ..*event
-        };
+        let body = TerminalPanel::body_of(area);
         if self.swallow_release && matches!(event.kind, MouseKind::Release(_) | MouseKind::Drag(_)) {
             if matches!(event.kind, MouseKind::Release(_)) {
                 self.swallow_release = false;
             }
             return true;
         }
-        let Some(terminal) = &self.terminal else { return false };
-        // A click with the link modifier opens what is under it, whatever the program
-        // does with the mouse: that is how a path an agent printed gets into the editor.
-        if event.kind == MouseKind::Press(MouseButton::Left) && self.link_modifier_held(event.mods, cx.settings) {
-            if let Some(link) = terminal.link_at(local.col, local.row) {
-                if let Some(choice) = self.resolve(&link.target, cx, Some((local.col, local.row))) {
+        // The header: tabs switch on a click and close on a middle click.
+        if event.row < body.y && !self.selecting {
+            return self.header_mouse(event, cx);
+        }
+        let local = MouseEvent {
+            col: event.col.saturating_sub(body.x).min(body.width.saturating_sub(1)),
+            row: event.row.saturating_sub(body.y).min(body.height.saturating_sub(1)),
+            ..*event
+        };
+        if self.terminal().is_none() {
+            return false;
+        }
+        let modifier = TerminalPanel::link_modifier_held(event.mods, cx.settings);
+        // A click with the link modifier opens what is under it, whatever the program does
+        // with the mouse: that is how a path an agent printed gets into the editor.
+        if event.kind == MouseKind::Press(MouseButton::Left) && modifier {
+            let link = self.terminal().and_then(|terminal| terminal.link_at(local.col, local.row));
+            if let Some(link) = link {
+                if let Some(choice) = self.resolve(&link.target, cx, Some((link.col_start, link.row))) {
                     TerminalPanel::open(&choice, cx);
                     self.swallow_release = true;
                     return true;
                 }
             }
         }
-        let terminal = self.terminal.as_ref().expect("checked above");
+        if event.kind == MouseKind::Move {
+            let cell = Some((local.col, local.row)).filter(|_| event.row >= body.y && event.row < body.bottom());
+            let changed = self.hover != cell;
+            self.hover = cell;
+            if self.terminal().is_some_and(|terminal| terminal.send_mouse(&local)) {
+                return true;
+            }
+            // Only the underline depends on where the pointer is.
+            return changed && modifier;
+        }
+        let Some(terminal) = self.tabs[self.active].terminal.as_ref() else { return false };
         if terminal.send_mouse(&local) {
             return true;
         }
@@ -685,35 +812,48 @@ impl View for TerminalPanel {
 
     fn focus_changed(&mut self, focused: bool, _cx: &mut Cx<'_>) {
         self.focused = focused;
-        if let Some(terminal) = &self.terminal {
+        if let Some(terminal) = self.terminal() {
             terminal.send_focus(focused);
         }
     }
 
     fn tick(&mut self, cx: &mut Cx<'_>) -> bool {
         let mut dirty = false;
-        let events = match self.events.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
-            Err(_) => Vec::new(),
-        };
-        for event in events {
-            match event {
-                TermEvent::Wakeup | TermEvent::Bell | TermEvent::Title(_) | TermEvent::ResetTitle => {}
-                TermEvent::Exit(code) => {
-                    self.exited = Some(code);
-                    dirty = true;
-                }
-                TermEvent::ClipboardStore(text) => {
-                    cx.clipboard.set(&text, false);
-                }
-                // Reading the clipboard is not offered to programs in the terminal.
-                TermEvent::ClipboardLoad => {}
-                TermEvent::Cwd(path) => self.cwd = Some(path),
-                TermEvent::Notification { title, body } => {
-                    let text = if body.is_empty() { title } else if title.is_empty() { body } else { format!("{title}: {body}") };
-                    cx.status(text);
+        for tab in &mut self.tabs {
+            let events = match tab.events.lock() {
+                Ok(mut queue) => std::mem::take(&mut *queue),
+                Err(_) => Vec::new(),
+            };
+            for event in events {
+                match event {
+                    TermEvent::Wakeup | TermEvent::Bell => {}
+                    TermEvent::Title(title) => {
+                        tab.title = Some(title);
+                        dirty = true;
+                    }
+                    TermEvent::ResetTitle => {
+                        tab.title = None;
+                        dirty = true;
+                    }
+                    TermEvent::Exit(code) => {
+                        tab.exited = Some(code);
+                        dirty = true;
+                    }
+                    TermEvent::ClipboardStore(text) => {
+                        cx.clipboard.set(&text, false);
+                    }
+                    // Reading the clipboard is not offered to programs in the terminal.
+                    TermEvent::ClipboardLoad => {}
+                    TermEvent::Cwd(path) => tab.cwd = Some(path),
+                    TermEvent::Notification { title, body } => {
+                        let text = if body.is_empty() { title } else if title.is_empty() { body } else { format!("{title}: {body}") };
+                        cx.status(text);
+                    }
                 }
             }
+        }
+        if let Some(terminal) = &self.tab().terminal {
+            dirty |= Some(terminal.generation()) != self.tab().drawn;
         }
         if let Some((text, error)) = self.notice.take() {
             if error {
@@ -722,13 +862,17 @@ impl View for TerminalPanel {
                 cx.status(text);
             }
         }
-        if let Some(worker) = &self.herdr {
-            while let Ok(failure) = worker.failures.try_recv() {
-                cx.error(failure);
+        let mut chords = Vec::new();
+        if let Some(worker) = &self.worker {
+            while let Ok(report) = worker.reports.try_recv() {
+                match report {
+                    herdr::Report::Failure(text) => cx.error(text),
+                    herdr::Report::Fallback(chord) => chords.push(chord),
+                }
             }
         }
-        if let Some(terminal) = &self.terminal {
-            dirty |= Some(terminal.generation()) != self.drawn;
+        for chord in chords {
+            self.type_chord(&chord);
         }
         dirty
     }
@@ -737,12 +881,12 @@ impl View for TerminalPanel {
         if kind != PickerKind::Links {
             return None;
         }
-        let terminal = self.terminal.as_ref()?;
+        let found = self.terminal()?.visible_links();
         let mut seen = std::collections::HashSet::new();
         let mut rows = Vec::new();
         self.links.clear();
         // Newest output is at the bottom: list from there up, each link once.
-        for link in terminal.visible_links().into_iter().rev() {
+        for link in found.into_iter().rev() {
             let label = match &link.target {
                 LinkTarget::Url(url) => url.clone(),
                 LinkTarget::Path { path, line, col } => match (line, col) {
@@ -754,7 +898,7 @@ impl View for TerminalPanel {
             if !seen.insert(label.clone()) {
                 continue;
             }
-            let Some(choice) = self.resolve(&link.target, cx, None) else { continue };
+            let Some(choice) = self.resolve(&link.target, cx, Some((link.col_start, link.row))) else { continue };
             let (detail, icon) = match &choice {
                 LinkChoice::File(found) => {
                     let shown = found.path.strip_prefix(cx.root).unwrap_or(&found.path).display().to_string();
@@ -779,6 +923,32 @@ impl View for TerminalPanel {
         if let Some(choice) = self.links.get(row).cloned() {
             TerminalPanel::open(&choice, cx);
         }
+    }
+}
+
+impl TerminalPanel {
+    /// A mouse event over the header.
+    fn header_mouse(&mut self, event: &MouseEvent, cx: &mut Cx<'_>) -> bool {
+        let hit = header::hit(&self.header_hits, event.col);
+        match event.kind {
+            MouseKind::Press(MouseButton::Left) => {
+                match hit {
+                    Some(header::Hit::Tab(index)) => self.activate(index),
+                    Some(header::Hit::New) => self.new_tab(cx),
+                    None => {}
+                }
+                self.swallow_release = true;
+            }
+            MouseKind::Press(MouseButton::Middle) => {
+                if let Some(header::Hit::Tab(index)) = hit {
+                    self.activate(index);
+                    self.close_active(cx);
+                }
+                self.swallow_release = true;
+            }
+            _ => {}
+        }
+        true
     }
 }
 

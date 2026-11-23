@@ -1415,6 +1415,7 @@ impl Shell {
             active_path: self.pane.active().and_then(|item| item.path()),
             now: Instant::now(),
             focused,
+            zoomed: false,
             held_mods: self.held_mods,
         }
     }
@@ -1600,6 +1601,7 @@ impl Shell {
                 active_path: self.active_path.as_deref(),
                 now,
                 focused,
+                zoomed: self.workspace.is_panel_zoomed(dock.panel),
                 held_mods: self.held_mods,
             };
             let mut sub = canvas.sub(dock.rect);
@@ -1625,6 +1627,7 @@ impl Shell {
                 active_path: self.active_path.as_deref(),
                 now,
                 focused,
+                zoomed: self.workspace.is_center_zoomed(),
                 held_mods: self.held_mods,
             };
             if self.pane.is_empty() {
