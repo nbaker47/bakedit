@@ -562,6 +562,9 @@ fn the_bar_survives_a_narrow_editor() {
         let (text, _, _) = harness.draw(&mut item, width, 6);
         let first = text.lines().next().unwrap();
         assert!(first.starts_with(" Find"), "{width}: {first:?}");
+        if width == 90 {
+            assert!(first.contains("Aa   ab   .*"), "the same marks as project search: {first:?}");
+        }
         assert!(first.chars().count() <= width as usize);
     }
 }

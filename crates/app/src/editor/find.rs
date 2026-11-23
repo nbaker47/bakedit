@@ -572,7 +572,8 @@ impl EditorItem {
         let right = area.right().saturating_sub(1);
 
         // Which groups on the right fit, most important first.
-        let toggles = [("Aa", FindHit::Case, bar.case_sensitive), ("W", FindHit::Word, bar.whole_word), (".*", FindHit::Regex, bar.regex)];
+        // The same marks as project search: Aa, an underlined ab for whole words, .*.
+        let toggles = [("Aa", FindHit::Case, bar.case_sensitive), ("ab", FindHit::Word, bar.whole_word), (".*", FindHit::Regex, bar.regex)];
         let toggles_w: u16 = toggles.iter().map(|(label, ..)| ui::width(label) as u16 + 2).sum::<u16>() + 2;
         let mut room = right.saturating_sub(field_x + 10);
         let mut take = |width: u16| {
@@ -609,7 +610,10 @@ impl EditorItem {
         }
         if show_toggles {
             for (label, hit, on) in toggles.iter().rev() {
-                let style = if *on { Style::colors(theme.text_accent, theme.element_selected) } else { Style::colors(theme.text_muted, bg) };
+                let mut style = if *on { Style::colors(theme.text_accent, theme.element_selected).bold() } else { Style::colors(theme.text_muted, bg) };
+                if *hit == FindHit::Word {
+                    style = style.underline();
+                }
                 button(canvas, &mut bar.hits, &mut x, label, *hit, style);
                 x = x.saturating_sub(1);
             }
