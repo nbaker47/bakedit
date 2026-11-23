@@ -380,8 +380,9 @@ fn custom_predicates(query: &Query, pattern: usize) -> Option<Vec<Predicate>> {
 /// * A macro invoked through a path (`log::info!`), the name of a `macro_rules!` definition
 ///   and the fragment specifiers in one are not captured at all.
 /// * Only `*`, `&` and `'` are captured as operators. The list here is the one Zed uses. It
-///   includes `<` and `>`, so the patterns that make them brackets around generics are
-///   repeated after it.
+///   includes `<`, `>` and `|`, so the patterns that make them brackets around generics and
+///   a closure's parameters come after it. They say which of the pair each one is, which is
+///   what lets [`bracket_marks`](crate::bracket_marks) colour them by depth as Zed does.
 /// * The apostrophe of a lifetime is captured as an operator and its name as a label; Zed
 ///   calls both `lifetime`.
 /// * A whole attribute is captured as one `attribute`. In Zed only its name and its plain
@@ -411,10 +412,11 @@ const RUST_EXTRA: &str = r##"
 (unary_expression "!" @operator)
 (binary_expression operator: "/" @operator)
 
-(type_arguments "<" @punctuation.bracket ">" @punctuation.bracket)
-(type_parameters "<" @punctuation.bracket ">" @punctuation.bracket)
-(bracketed_type "<" @punctuation.bracket ">" @punctuation.bracket)
-(for_lifetimes "<" @punctuation.bracket ">" @punctuation.bracket)
+(type_arguments "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(type_parameters "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(bracketed_type "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(for_lifetimes "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(closure_parameters "|" @punctuation.bracket.open "|" @punctuation.bracket.close)
 
 "'" @lifetime
 (lifetime (identifier) @lifetime)
@@ -667,8 +669,12 @@ const TYPESCRIPT_EXTRA: &str = r#"
 "#;
 
 /// TypeScript only, as in Zed: `null`, `undefined`, `true` and `false` used as types are
-/// built-in types, and so are the names in a type-only import.
+/// built-in types, and so are the names in a type-only import. The angle brackets of
+/// generics are marked as pairs here and not for TSX, because Zed colours them by depth in
+/// TypeScript and leaves every angle bracket alone where there are JSX tags.
 const TYPESCRIPT_ONLY_EXTRA: &str = r#"
+(type_arguments "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(type_parameters "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
 (literal_type [(null) (undefined) (true) (false)] @type.builtin)
 (import_specifier "type" name: (identifier) @type)
 (import_specifier "type" alias: (identifier) @type)
@@ -837,6 +843,7 @@ const C_EXTRA: &str = r##"
 ///   punctuation except in a conditional expression.
 /// * More keywords, `static_assert`, and `defined` and its argument in a preprocessor
 ///   condition.
+/// * The angle brackets of a template's parameters and arguments are a pair of brackets.
 const CPP_EXTRA: &str = r#"
 (call_expression (qualified_identifier (identifier) @function.call))
 (call_expression (qualified_identifier (qualified_identifier (identifier) @function.call)))
@@ -870,6 +877,8 @@ const CPP_EXTRA: &str = r#"
   "xor_eq"
 ] @operator
 "<=>" @operator.spaceship
+(template_argument_list "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
+(template_parameter_list "<" @punctuation.bracket.open ">" @punctuation.bracket.close)
 (conditional_expression ":" @operator)
 (user_defined_literal (literal_suffix) @operator)
 "#;

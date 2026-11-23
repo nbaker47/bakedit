@@ -145,13 +145,19 @@ fn assert_brackets_make_sense(context: &str, text: &str, marks: &[BracketMark]) 
         );
         previous = Some(mark.byte);
         let character = bytes[mark.byte];
-        assert_eq!(
-            mark.open,
-            matches!(character, b'(' | b'[' | b'{'),
-            "{context}: {mark:?}"
-        );
+        // A bar opens or closes depending on where it stands; the rest face one way.
+        if character != b'|' {
+            assert_eq!(
+                mark.open,
+                matches!(character, b'(' | b'[' | b'{' | b'<'),
+                "{context}: {mark:?}"
+            );
+        }
         assert!(
-            matches!(character, b'(' | b')' | b'[' | b']' | b'{' | b'}'),
+            matches!(
+                character,
+                b'(' | b')' | b'[' | b']' | b'{' | b'}' | b'<' | b'>' | b'|'
+            ),
             "{context}: {mark:?}"
         );
         if mark.open && mark.matched {
@@ -162,7 +168,7 @@ fn assert_brackets_make_sense(context: &str, text: &str, marks: &[BracketMark]) 
                 .unwrap_or_else(|| panic!("{context}: {mark:?} has no opener"));
             let pairs = matches!(
                 (opener, character),
-                (b'(', b')') | (b'[', b']') | (b'{', b'}')
+                (b'(', b')') | (b'[', b']') | (b'{', b'}') | (b'<', b'>') | (b'|', b'|')
             );
             assert!(pairs, "{context}: {mark:?} closes a {:?}", opener as char);
             assert_eq!(

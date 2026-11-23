@@ -11,7 +11,8 @@ pub struct BracketMark {
     /// How many pairs enclose it, from 0. An opener and its closer have the same depth, so
     /// `depth % colours` gives both the same colour.
     pub depth: u16,
-    /// Whether it is an opener (`(`, `[`, `{`) rather than a closer.
+    /// Whether it is an opener (`(`, `[`, `{`, or a `<` or `|` the grammar says opens a
+    /// pair) rather than a closer.
     pub open: bool,
     /// Whether its partner was found. An unmatched bracket still has the depth it sits at.
     pub matched: bool,
@@ -25,6 +26,12 @@ pub struct BracketMark {
 /// grammar calls a delimiter (the `)` after a shell `case` pattern, the brackets of a
 /// Markdown link). With no spans every bracket character counts.
 ///
+/// `<`, `>` and `|` are brackets only where the highlights say so, with the captures
+/// `punctuation.bracket.open` and `punctuation.bracket.close`: the angle brackets of
+/// generics in Rust, TypeScript and C++ and the bars around a Rust closure's parameters,
+/// which are the pairs Zed colours in those languages. A comparison or a bitwise or is
+/// never one.
+///
 /// Pairing is the usual stack. A closer that does not match the innermost open bracket
 /// closes the nearest one of its own kind, and the openers skipped over are left unmatched;
 /// a closer with nothing to close is unmatched and changes nothing. The marks come back in
@@ -33,20 +40,27 @@ pub fn bracket_marks(text: &str, spans: &[HighlightSpan]) -> Vec<BracketMark> {
     let mut marks: Vec<BracketMark> = Vec::new();
     // The brackets still open, as (index into `marks`, kind), and how many of each kind.
     let mut open: Vec<(usize, usize)> = Vec::new();
-    let mut open_of_kind = [0usize; 3];
-    let mut opaque = OpaqueCaptures::default();
+    let mut open_of_kind = [0usize; KINDS];
+    let mut roles = CaptureRoles::default();
     let mut span_index = 0;
     for (byte, &character) in text.as_bytes().iter().enumerate() {
-        let Some((kind, is_open)) = classify(character) else {
+        let Some((kind, direction)) = classify(character) else {
             continue;
         };
         while spans.get(span_index).is_some_and(|span| span.end <= byte) {
             span_index += 1;
         }
         let covering = spans.get(span_index).filter(|span| span.start <= byte);
-        if covering.is_some_and(|span| opaque.contains(span.capture)) {
-            continue;
-        }
+        let role = covering.map_or(Role::Plain, |span| roles.of(span.capture));
+        let is_open = match (direction, role) {
+            (_, Role::Opaque) => continue,
+            // `(`, `[`, `{` and their closers say which way they face.
+            (Some(is_open), _) => is_open,
+            // `<`, `>` and `|` are brackets only where the grammar marked them.
+            (None, Role::Opens) => true,
+            (None, Role::Closes) => false,
+            (None, Role::Plain) => continue,
+        };
         if is_open {
             open.push((marks.len(), kind));
             open_of_kind[kind] += 1;
@@ -85,15 +99,22 @@ pub fn bracket_marks(text: &str, spans: &[HighlightSpan]) -> Vec<BracketMark> {
     marks
 }
 
-/// The kind of bracket a byte is (0 round, 1 square, 2 curly) and whether it opens.
-fn classify(byte: u8) -> Option<(usize, bool)> {
+/// How many kinds of bracket there are.
+const KINDS: usize = 5;
+
+/// The kind of bracket a byte may be (0 round, 1 square, 2 curly, 3 angle, 4 bar) and, for
+/// the first three, whether it opens. An angle bracket or a bar does not say on its own
+/// whether it is a bracket at all, let alone which way it faces.
+fn classify(byte: u8) -> Option<(usize, Option<bool>)> {
     match byte {
-        b'(' => Some((0, true)),
-        b')' => Some((0, false)),
-        b'[' => Some((1, true)),
-        b']' => Some((1, false)),
-        b'{' => Some((2, true)),
-        b'}' => Some((2, false)),
+        b'(' => Some((0, Some(true))),
+        b')' => Some((0, Some(false))),
+        b'[' => Some((1, Some(true))),
+        b']' => Some((1, Some(false))),
+        b'{' => Some((2, Some(true))),
+        b'}' => Some((2, Some(false))),
+        b'<' | b'>' => Some((3, None)),
+        b'|' => Some((4, None)),
         _ => None,
     }
 }
@@ -102,26 +123,45 @@ fn depth_of(open: usize) -> u16 {
     u16::try_from(open).unwrap_or(u16::MAX)
 }
 
-/// Remembers, per capture, whether brackets under it are text rather than brackets.
-#[derive(Default)]
-struct OpaqueCaptures {
-    known: Vec<Option<bool>>,
+/// What a capture says about a bracket character under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// Nothing in particular.
+    Plain,
+    /// It is text or a separator: no character under it is a bracket.
+    Opaque,
+    /// The grammar says the token opens a pair.
+    Opens,
+    /// The grammar says the token closes a pair.
+    Closes,
 }
 
-impl OpaqueCaptures {
-    fn contains(&mut self, capture: CaptureId) -> bool {
+/// Remembers each capture's [`Role`], so a name is looked at once.
+#[derive(Default)]
+struct CaptureRoles {
+    known: Vec<Option<Role>>,
+}
+
+impl CaptureRoles {
+    fn of(&mut self, capture: CaptureId) -> Role {
         let index = capture.index();
         if index >= self.known.len() {
             self.known.resize(index + 1, None);
         }
-        *self.known[index].get_or_insert_with(|| is_opaque(capture.name()))
+        *self.known[index].get_or_insert_with(|| role_of(capture.name()))
     }
 }
 
-/// Whether a capture marks text in which a bracket character is not a bracket.
-fn is_opaque(name: &str) -> bool {
+/// The role of a capture by its name.
+fn role_of(name: &str) -> Role {
     let root = name.split('.').next().unwrap_or(name);
-    matches!(root, "string" | "comment" | "number" | "link_uri") || name == "punctuation.delimiter"
+    match name {
+        "punctuation.bracket.open" => Role::Opens,
+        "punctuation.bracket.close" => Role::Closes,
+        "punctuation.delimiter" => Role::Opaque,
+        _ if matches!(root, "string" | "comment" | "number" | "link_uri") => Role::Opaque,
+        _ => Role::Plain,
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +210,58 @@ mod tests {
         );
         assert_eq!(marks("no brackets here", &[]), []);
         assert_eq!(marks("", &[]), []);
+    }
+
+    #[test]
+    fn angle_brackets_and_bars_count_only_where_the_grammar_says_so() {
+        let text = "f::<Vec<(u8, T)>>(|a| a < 1 | 2 > b)";
+        let at = |needle: &str, nth: usize| -> HighlightSpan {
+            let start = text.match_indices(needle).nth(nth).unwrap().0;
+            let opens = needle == "<" || (needle == "|" && nth == 0);
+            let capture = if opens {
+                "punctuation.bracket.open"
+            } else {
+                "punctuation.bracket.close"
+            };
+            HighlightSpan {
+                start,
+                end: start + 1,
+                capture: intern(capture).unwrap(),
+            }
+        };
+        // The generics' brackets and the closure's bars, in text order; the comparison's
+        // `<` and `>` and the bitwise `|` get nothing.
+        let spans = [
+            at("<", 0),
+            at("<", 1),
+            at(">", 0),
+            at(">", 1),
+            at("|", 0),
+            at("|", 1),
+        ];
+        assert_eq!(
+            marks(text, &spans),
+            [
+                (3, 0, true, true),   // <
+                (7, 1, true, true),   // <
+                (8, 2, true, true),   // (
+                (14, 2, false, true), // )
+                (15, 1, false, true), // >
+                (16, 0, false, true), // >
+                (17, 0, true, true),  // (
+                (18, 1, true, true),  // |
+                (20, 1, false, true), // |
+                (35, 0, false, true), // )
+            ]
+        );
+        // Without the highlights only the round brackets are brackets.
+        assert_eq!(marks(text, &[]).len(), 4);
+        // An ordinary bracket capture does not make an angle bracket one.
+        let plain = HighlightSpan {
+            capture: intern("punctuation.bracket").unwrap(),
+            ..at("<", 0)
+        };
+        assert_eq!(marks(text, &[plain]).len(), 4);
     }
 
     #[test]
