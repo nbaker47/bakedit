@@ -64,7 +64,7 @@ impl DotsOverlay {
         }
         self.enabled = enabled;
         if enabled {
-            self.ensure_started(theme);
+            self.ensure_started(theme, false);
         } else {
             self.hide();
         }
@@ -102,7 +102,7 @@ impl DotsOverlay {
         if suppressed() {
             return;
         }
-        self.ensure_started(theme);
+        self.ensure_started(theme, true);
         self.visible = true;
         #[cfg(target_os = "macos")]
         {
@@ -137,7 +137,7 @@ impl DotsOverlay {
         }
     }
 
-    fn ensure_started(&mut self, theme: &Theme) {
+    fn ensure_started(&mut self, theme: &Theme, show_when_ready: bool) {
         if suppressed() {
             return;
         }
@@ -154,7 +154,7 @@ impl DotsOverlay {
             std::thread::Builder::new()
                 .name("bakedit-dots-overlay-init".into())
                 .spawn(move || {
-                    if let Err(err) = ensure_macos_overlay_running(&state_dir, &sock, theme_json.as_deref()) {
+                    if let Err(err) = ensure_macos_overlay_running(&state_dir, &sock, theme_json.as_deref(), show_when_ready) {
                         log::warn!("bakedit dots overlay: {err}");
                     }
                 })
@@ -229,6 +229,7 @@ fn ensure_macos_overlay_running(
     state_dir: &Path,
     sock_path: &Path,
     theme_json: Option<&str>,
+    show_when_ready: bool,
 ) -> Result<(), String> {
     use std::os::unix::net::UnixStream;
 
@@ -247,6 +248,8 @@ fn ensure_macos_overlay_running(
 
     if !up_to_date {
         std::fs::write(&src_path, MACOS_OVERLAY_SWIFT).map_err(|e| format!("write swift: {e}"))?;
+        // Remove the old binary first so macOS AMFI doesn't SIGKILL an overwritten inode.
+        let _ = std::fs::remove_file(&bin_path);
         let status = Command::new("swiftc")
             .args(["-O", "-parse-as-library"])
             .arg(&src_path)
@@ -269,15 +272,19 @@ fn ensure_macos_overlay_running(
         if let Some(theme_json) = theme_json {
             send_control_line(sock_path, theme_json);
         }
+        if show_when_ready {
+            send_control_line(sock_path, r#"{"cmd":"show"}"#);
+        }
         return Ok(());
     }
 
     let _ = std::fs::remove_file(sock_path);
-    Command::new(&bin_path)
-        .arg("--control-socket")
-        .arg(sock_path)
-        .arg("--start-hidden")
-        .stdin(Stdio::null())
+    let mut cmd = Command::new(&bin_path);
+    cmd.arg("--control-socket").arg(sock_path);
+    if !show_when_ready {
+        cmd.arg("--start-hidden");
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
