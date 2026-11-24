@@ -824,5 +824,125 @@
       "ctrl-] ?": "bakedit::ShowKeybindings",
       "ctrl-] q": "zed::Quit"
     }
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  // 5. Portable Ctrl bindings (works in any terminal on macOS, Linux, or SSH with zero
+  //    terminal config — leaves Cmd free for the host terminal's tabs/copy/paste)
+  // ─────────────────────────────────────────────────────────────────────────────────────
+  {
+    "context": "Workspace && !Terminal",
+    "bindings": {
+      "ctrl-p": "file_finder::Toggle",
+      "ctrl-shift-p": "command_palette::Toggle",
+      "ctrl-s": "workspace::Save",
+      "ctrl-shift-s": "workspace::SaveAs",
+      "ctrl-alt-s": "workspace::SaveAll",
+      "ctrl-w": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "ctrl-shift-t": "pane::ReopenClosedItem",
+      "ctrl-n": "workspace::NewFile",
+      "ctrl-o": "workspace::Open",
+      "ctrl-shift-f": "pane::DeploySearch",
+      "ctrl-shift-h": ["pane::DeploySearch", { "replace_enabled": true }],
+      "ctrl-j": "terminal_panel::Toggle",
+      "ctrl-alt-j": "terminal_panel::ToggleZoom",
+      "ctrl-g": "git_panel::Toggle",
+      "ctrl-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "ctrl-b": "workspace::ToggleLeftDock",
+      "ctrl-r": "workspace::ToggleRightDock",
+      "ctrl-alt-f": "workspace::ToggleAllDocks",
+      "ctrl-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
+      "ctrl-alt-r": "git::SelectRepository",
+      "ctrl-alt-d": "git::ToggleBranchDiff",
+      "ctrl-alt-b": "branches::OpenRecent"
+    }
+  },
+  {
+    "context": "Pane && !Terminal",
+    "bindings": {
+      "ctrl-f": "project_search::ToggleFocus",
+      "ctrl-alt-1": ["pane::ActivateItem", 0],
+      "ctrl-alt-2": ["pane::ActivateItem", 1],
+      "ctrl-alt-3": ["pane::ActivateItem", 2],
+      "ctrl-alt-4": ["pane::ActivateItem", 3],
+      "ctrl-alt-5": ["pane::ActivateItem", 4],
+      "ctrl-alt-6": ["pane::ActivateItem", 5],
+      "ctrl-alt-7": ["pane::ActivateItem", 6],
+      "ctrl-alt-8": ["pane::ActivateItem", 7],
+      "ctrl-alt-9": ["pane::ActivateItem", 8]
+    }
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "ctrl-j": "terminal_panel::Toggle",
+      "ctrl-g": "git_panel::Toggle",
+      "ctrl-p": "file_finder::Toggle",
+      "ctrl-n": "workspace::NewFile",
+      "ctrl-b": "workspace::ToggleLeftDock",
+      "ctrl-w": ["pane::CloseActiveItem", { "close_pinned": false }],
+      "ctrl-f": "buffer_search::Deploy",
+      "ctrl-c": "editor::Copy",
+      "ctrl-v": "editor::Paste",
+      "ctrl-x": "editor::Cut",
+      "ctrl-z": "editor::Undo",
+      "ctrl-shift-z": "editor::Redo",
+      "ctrl-a": "editor::SelectAll",
+      "ctrl-d": ["editor::SelectNext", { "replace_newest": false }],
+      "ctrl-/": ["editor::ToggleComments", { "advance_downwards": false, "comment_empty_lines": true }],
+      "ctrl-up": ["editor::MoveUpByLines", { "lines": 5 }],
+      "ctrl-down": ["editor::MoveDownByLines", { "lines": 5 }],
+      "ctrl-shift-up": ["editor::SelectUpByLines", { "lines": 5 }],
+      "ctrl-shift-down": ["editor::SelectDownByLines", { "lines": 5 }]
+    }
+  },
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "ctrl-g": "git_panel::Toggle"
+    }
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "ctrl-n": "project_panel::NewFile",
+      "ctrl-alt-n": "project_panel::NewDirectory",
+      "ctrl-shift-e": "workspace::CloseActiveDock",
+      "ctrl-up": ["menu::SelectPrevious", { "lines": 5 }],
+      "ctrl-down": ["menu::SelectNext", { "lines": 5 }]
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-alt-left": ["herdr::Navigate", "left"],
+      "ctrl-alt-right": ["herdr::Navigate", "right"],
+      "ctrl-alt-up": ["herdr::Navigate", "up"],
+      "ctrl-alt-down": ["herdr::Navigate", "down"],
+      "ctrl-alt-shift-left": ["herdr::MovePane", "left"],
+      "ctrl-alt-shift-right": ["herdr::MovePane", "right"],
+      "ctrl-alt-shift-up": ["herdr::MovePane", "up"],
+      "ctrl-alt-shift-down": ["herdr::MovePane", "down"],
+      "ctrl-alt-1": ["herdr::FocusWorkspace", 1],
+      "ctrl-alt-2": ["herdr::FocusWorkspace", 2],
+      "ctrl-alt-3": ["herdr::FocusWorkspace", 3],
+      "ctrl-alt-4": ["herdr::FocusWorkspace", 4],
+      "ctrl-alt-5": ["herdr::FocusWorkspace", 5],
+      "ctrl-alt-6": ["herdr::FocusWorkspace", 6],
+      "ctrl-alt-7": ["herdr::FocusWorkspace", 7],
+      "ctrl-alt-8": ["herdr::FocusWorkspace", 8],
+      "ctrl-alt-9": ["herdr::FocusWorkspace", 9],
+      "ctrl-alt-z": "herdr::ToggleZoom",
+      "ctrl-alt-c": "herdr::ToggleCollapse",
+      "ctrl-alt-a": "herdr::ToggleExpand",
+      "ctrl-alt-j": "workspace::ToggleZoom",
+      "ctrl-shift-g": "git_panel::Toggle",
+      "ctrl-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
+      "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "ctrl-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
+      "ctrl-alt-f": "workspace::ToggleZoom",
+      "ctrl-shift-f": ["terminal::SendText", "\u0002[/"]
+    }
   }
 ]
