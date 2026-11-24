@@ -58,6 +58,8 @@ const ESCAPE_TIMEOUT: Duration = Duration::from_millis(25);
 const SESSION_DEBOUNCE: Duration = Duration::from_millis(1500);
 /// How often the settings and keymap files are looked at for changes.
 const CONFIG_CHECK: Duration = Duration::from_millis(1500);
+/// How fast the Agent Dots working spinner and unread badge pulse inside bakedit.
+const DOTS_PULSE: Duration = Duration::from_millis(550);
 
 /// Something for the main loop, from another thread.
 #[derive(Debug)]
@@ -164,6 +166,7 @@ pub struct App {
     escape_deadline: Option<Instant>,
     session_deadline: Option<Instant>,
     config_deadline: Instant,
+    dots_pulse_deadline: Instant,
     config: ConfigFiles,
     /// The session as last written, to skip writing the same again.
     saved_session: Option<String>,
@@ -362,6 +365,7 @@ impl App {
             escape_deadline: None,
             session_deadline: None,
             config_deadline: Instant::now() + CONFIG_CHECK,
+            dots_pulse_deadline: Instant::now() + DOTS_PULSE,
             config: ConfigFiles::new(),
             saved_session: None,
             terminal_palette: bakedit_core::TerminalPalette::default(),
@@ -418,6 +422,18 @@ impl App {
         }
     }
 
+    /// Whether any Agent Dots indicator currently needs the 550ms pulse animation.
+    fn needs_dots_pulse(&self) -> bool {
+        if matches!(self.shell.modal, Some(Modal::Onboarding(_))) {
+            return true;
+        }
+        self.shell.settings.agent_dots
+            && self.shell.dots.as_ref().is_some_and(|s| {
+                !s.unread.is_empty()
+                    || s.agents.iter().any(|a| a.status == bakedit_herdr::AgentStatus::Working)
+            })
+    }
+
     /// The earliest moment the loop has to wake up without an event.
     fn next_deadline(&self) -> Option<Instant> {
         // While the which-key popup lists a chord's completions it waits for the user, as
@@ -430,6 +446,7 @@ impl App {
             self.shell.message_deadline(),
             self.waker.deadline(),
             self.session_deadline,
+            self.needs_dots_pulse().then_some(self.dots_pulse_deadline),
             Some(self.config_deadline),
         ]
         .into_iter()
@@ -501,6 +518,11 @@ impl App {
             if self.config.changed() {
                 self.reload_config(false);
             }
+        }
+        if self.needs_dots_pulse() && self.dots_pulse_deadline <= now {
+            self.dots_pulse_deadline = now + DOTS_PULSE;
+            self.shell.dots_pulse = !self.shell.dots_pulse;
+            self.dirty = true;
         }
     }
 
