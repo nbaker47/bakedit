@@ -240,7 +240,7 @@ impl Default for Settings {
             breadcrumbs: true,
             inline_blame: true,
 
-            vim_mode: false,
+            vim_mode: true,
             tab_size: 4,
             hard_tabs: false,
             soft_wrap: SoftWrap::None,
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn defaults_mirror_zed() {
         let s = Settings::default();
-        assert!(!s.vim_mode);
+        assert!(s.vim_mode);
         assert_eq!(s.autosave, Autosave::Off);
         assert_eq!(s.minimap, MinimapShow::Never);
         assert_eq!(s.soft_wrap, SoftWrap::None);
@@ -1013,7 +1013,7 @@ mod tests {
             }"#,
         );
         assert_eq!(s.tab_size, 4);
-        assert!(!s.vim_mode);
+        assert!(s.vim_mode);
         assert_eq!(s.minimap, MinimapShow::Never);
         assert_eq!(s.terminal.dock, DockPosition::Left);
         assert_eq!(s.terminal.command, TerminalCommand::Herdr);
