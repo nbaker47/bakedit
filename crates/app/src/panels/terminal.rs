@@ -378,7 +378,7 @@ impl TerminalPanel {
     /// Where to look for a relative path printed in the terminal: the directory of the
     /// herdr pane under the cell when there is one, the program's reported directory, the
     /// project, and the usual places (`default_search_bases`).
-    fn search_bases(&mut self, root: &Path, cell: Option<(u16, u16)>) -> Vec<PathBuf> {
+    fn search_bases(&mut self, root: &Path, project: &crate::project::Project, cell: Option<(u16, u16)>) -> Vec<PathBuf> {
         let mut bases = Vec::new();
         let tab = &self.tabs[self.active];
         if let (true, Some(client), Some((col, row)), Some(terminal)) = (tab.herdr, &self.launch.herdr, cell, &tab.terminal) {
@@ -386,9 +386,15 @@ impl TerminalPanel {
                 bases.push(dir);
             }
         }
+        if let Some(repo) = project.repo() {
+            bases.push(repo.root().to_path_buf());
+        }
         let start = self.tab().cwd.clone().unwrap_or_else(|| root.to_path_buf());
         bases.push(start.clone());
         bases.push(root.to_path_buf());
+        for repo in project.repos() {
+            bases.push(repo.top.clone());
+        }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         bases.extend(default_search_bases(&start, &home));
         let mut seen = std::collections::HashSet::new();
@@ -400,7 +406,7 @@ impl TerminalPanel {
         match target {
             LinkTarget::Url(url) => is_openable_url(url).then(|| LinkChoice::Url(url.clone())),
             LinkTarget::Path { .. } => {
-                let bases = self.search_bases(cx.root, cell);
+                let bases = self.search_bases(cx.root, cx.project, cell);
                 target.resolve(&bases).map(LinkChoice::File)
             }
         }
@@ -428,10 +434,9 @@ impl TerminalPanel {
 
     fn link_modifier_held(mods: Mods, settings: &Settings) -> bool {
         match settings.link_click_modifier {
-            // Host terminals like Kitty often reserve Cmd+Click; accept Ctrl+Click too.
-            LinkModifier::Cmd => mods.contains(Mods::SUPER) || mods.contains(Mods::CTRL),
+            // Host terminals like Kitty often reserve Cmd+Click; accept either Ctrl or Cmd.
+            LinkModifier::Cmd | LinkModifier::Ctrl => mods.contains(Mods::SUPER) || mods.contains(Mods::CTRL),
             LinkModifier::Alt => mods.contains(Mods::ALT),
-            LinkModifier::Ctrl => mods.contains(Mods::CTRL),
             LinkModifier::None => true,
         }
     }
@@ -450,7 +455,7 @@ impl TerminalPanel {
                 let opens = match &link.target {
                     LinkTarget::Url(url) => is_openable_url(url),
                     target @ LinkTarget::Path { .. } => {
-                        let bases = self.search_bases(cx.root, Some((link.col_start, link.row)));
+                        let bases = self.search_bases(cx.root, cx.project, Some((link.col_start, link.row)));
                         target.resolve(&bases).is_some()
                     }
                 };
@@ -773,10 +778,15 @@ impl View for TerminalPanel {
         if self.terminal().is_none() {
             return false;
         }
-        let modifier = TerminalPanel::link_modifier_held(event.mods, cx.settings);
+        let mods = event.mods | cx.held_mods;
+        let modifier = TerminalPanel::link_modifier_held(mods, cx.settings);
         // A click with the link modifier opens what is under it, whatever the program does
         // with the mouse: that is how a path an agent printed gets into the editor.
-        if event.kind == MouseKind::Press(MouseButton::Left) && modifier {
+        // Also accept Right press when Ctrl is held, because macOS translates Ctrl+Click to
+        // a secondary/right click in some terminal configurations.
+        let is_link_click = modifier
+            && matches!(event.kind, MouseKind::Press(MouseButton::Left | MouseButton::Right));
+        if is_link_click {
             let link = self.terminal().and_then(|terminal| terminal.link_at(local.col, local.row));
             if let Some(link) = link {
                 if let Some(choice) = self.resolve(&link.target, cx, Some((link.col_start, link.row))) {

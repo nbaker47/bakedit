@@ -733,8 +733,193 @@ pub(crate) fn links<T>(term: &Term<T>) -> Vec<ScreenLink> {
 
         line = last + 1i32;
     }
+    collect_wrapped_underlined_links(term, top, bottom, offset, &mut found, &mut next_id);
     found.sort_by_key(|link| (link.row, link.col_start));
     found
+}
+
+/// Reconstruct underlined links that were hard-wrapped across rows inside a split pane
+/// (for example, `agy` or `claude` running inside `herdr`/`tmux`, where box-drawing pane
+/// borders break `Flags::WRAPLINE` and OSC-8 hyperlinks may not be forwarded).
+fn collect_wrapped_underlined_links<T>(
+    term: &Term<T>,
+    top: Line,
+    bottom: Line,
+    offset: i32,
+    found: &mut Vec<ScreenLink>,
+    next_id: &mut u32,
+) {
+    let grid = term.grid();
+    let cols = grid.columns();
+    if cols == 0 {
+        return;
+    }
+    let underline_flags = Flags::UNDERLINE
+        | Flags::DOUBLE_UNDERLINE
+        | Flags::UNDERCURL
+        | Flags::DOTTED_UNDERLINE
+        | Flags::DASHED_UNDERLINE;
+    let is_border = |c: char| matches!(c, '│' | '┃' | '║' | '┆' | '┇' | '┊' | '┋' | '▏' | '▕');
+
+    #[derive(Clone)]
+    struct Run {
+        line: Line,
+        /// Left and right pane boundaries (exclusive of border chars) enclosing this run.
+        pane_left: usize,
+        pane_right: usize,
+        /// True when nothing non-whitespace follows this run before `pane_right`.
+        reaches_right: bool,
+        /// True when nothing non-whitespace precedes this run after `pane_left`.
+        starts_at_left: bool,
+        text: String,
+        cells: Vec<CellRef>,
+    }
+
+    let mut runs: Vec<Run> = Vec::new();
+    let mut cur = top;
+    while cur <= bottom {
+        let row = &grid[cur];
+        let mut col = 0;
+        while col < cols {
+            let cell = &row[alacritty_terminal::index::Column(col)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                || !cell.flags.intersects(underline_flags)
+                || cell.hyperlink().is_some()
+                || shown_char(cell).is_whitespace()
+                || is_border(shown_char(cell))
+            {
+                col += 1;
+                continue;
+            }
+            let start_col = col;
+            let mut text = String::new();
+            let mut cells = Vec::new();
+            while col < cols {
+                let c = &row[alacritty_terminal::index::Column(col)];
+                if c.flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    col += 1;
+                    continue;
+                }
+                let ch = shown_char(c);
+                if !c.flags.intersects(underline_flags)
+                    || c.hyperlink().is_some()
+                    || ch.is_whitespace()
+                    || is_border(ch)
+                {
+                    break;
+                }
+                let wide = c.flags.contains(Flags::WIDE_CHAR) && col + 1 < cols;
+                let place = CellRef {
+                    line: cur,
+                    col,
+                    width: if wide { 2 } else { 1 },
+                };
+                text.push(ch);
+                cells.push(place);
+                for mark in c.zerowidth().unwrap_or(&[]) {
+                    text.push(*mark);
+                    cells.push(place);
+                }
+                col += place.width;
+            }
+            let end_col = col;
+            if text.is_empty() {
+                continue;
+            }
+            // Find enclosing vertical pane borders on this row.
+            let mut pane_left = 0;
+            for c_idx in (0..start_col).rev() {
+                if is_border(shown_char(&row[alacritty_terminal::index::Column(c_idx)])) {
+                    pane_left = c_idx + 1;
+                    break;
+                }
+            }
+            let mut pane_right = cols;
+            for c_idx in end_col..cols {
+                if is_border(shown_char(&row[alacritty_terminal::index::Column(c_idx)])) {
+                    pane_right = c_idx;
+                    break;
+                }
+            }
+            let starts_at_left = (pane_left..start_col)
+                .all(|c_idx| shown_char(&row[alacritty_terminal::index::Column(c_idx)]).is_whitespace());
+            let reaches_right = (end_col..pane_right)
+                .all(|c_idx| shown_char(&row[alacritty_terminal::index::Column(c_idx)]).is_whitespace());
+
+            runs.push(Run {
+                line: cur,
+                pane_left,
+                pane_right,
+                reaches_right,
+                starts_at_left,
+                text,
+                cells,
+            });
+        }
+        cur += 1i32;
+    }
+
+    let mut used = vec![false; runs.len()];
+    for i in 0..runs.len() {
+        if used[i] || !runs[i].reaches_right {
+            continue;
+        }
+        let mut chain = vec![i];
+        used[i] = true;
+        let mut last_idx = i;
+        while runs[last_idx].reaches_right {
+            let next_line = runs[last_idx].line + 1i32;
+            let p_left = runs[last_idx].pane_left;
+            let p_right = runs[last_idx].pane_right;
+            let Some(next_idx) = runs.iter().enumerate().position(|(j, r)| {
+                !used[j]
+                    && r.line == next_line
+                    && r.starts_at_left
+                    && r.pane_left == p_left
+                    && r.pane_right == p_right
+            }) else {
+                break;
+            };
+            used[next_idx] = true;
+            chain.push(next_idx);
+            last_idx = next_idx;
+        }
+        if chain.len() < 2 {
+            continue;
+        }
+        let mut joined = String::new();
+        let mut places = Vec::new();
+        for &idx in &chain {
+            joined.push_str(&runs[idx].text);
+            places.extend_from_slice(&runs[idx].cells);
+        }
+        for span in detect_links(&joined) {
+            let slice = &places[span.start.min(places.len())..span.end.min(places.len())];
+            let first_line = slice.first().map(|p| p.line);
+            let last_line = slice.last().map(|p| p.line);
+            if first_line.is_none() || first_line == last_line {
+                continue;
+            }
+            // Remove single-row partial links that overlap any cell of this reconstructed link.
+            found.retain(|existing| {
+                !slice.iter().any(|p| {
+                    let row = (p.line.0 + offset) as u16;
+                    existing.row == row
+                        && (p.col as u16) < existing.col_end
+                        && ((p.col + p.width) as u16) > existing.col_start
+                })
+            });
+            let before = found.len();
+            push_segments(found, slice.iter(), offset, &span.target, *next_id);
+            if found.len() > before {
+                *next_id += 1;
+            }
+        }
+    }
 }
 
 /// Turn the cells of one link into one [`ScreenLink`] per row and stretch of adjacent cells.
