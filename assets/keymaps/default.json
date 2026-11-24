@@ -1019,7 +1019,9 @@
       "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
       "ctrl-alt-shift-e": "project_panel::SwapPosition",
       "ctrl-alt-f": ["terminal::SendText", "\u0002[/"],
-      "ctrl-shift-f": ["terminal::SendText", "\u0002[/"]
+      "ctrl-shift-f": ["terminal::SendText", "\u0002[/"],
+      "ctrl-alt-p": "command_palette::Toggle",
+      "ctrl-shift-p": "command_palette::Toggle"
     }
   }
 ]
