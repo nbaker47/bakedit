@@ -947,10 +947,13 @@ impl View for ProjectDiff {
     }
 
     fn contexts(&self, out: &mut Vec<Context>) {
-        out.push(Context::new("ProjectDiff"));
         if self.find_focused() {
+            // Omit ProjectDiff while typing in the find bar so single-letter diff bindings
+            // (j, k, n, g, y, space, [, ], {, }) type into the query instead of firing.
             out.push(Context::new("BufferSearchBar"));
             out.push(Context::new("Editor").value("mode", "single_line"));
+        } else {
+            out.push(Context::new("ProjectDiff"));
         }
     }
 
@@ -1468,6 +1471,10 @@ mod tests {
 
         assert!(act(&mut harness, &mut diff, "buffer_search::Deploy"));
         assert!(diff.find_focused());
+        let mut ctxs = Vec::new();
+        diff.contexts(&mut ctxs);
+        assert!(ctxs.iter().all(|c| c.name != "ProjectDiff"), "find bar must suppress ProjectDiff single-letter bindings: {ctxs:?}");
+        assert!(ctxs.iter().any(|c| c.name == "BufferSearchBar"));
         for ch in "alpha".chars() {
             assert!(diff.handle_key(&KeyEvent::typed(ch), &mut harness.cx()));
         }
