@@ -286,7 +286,8 @@
     "context": "Editor && mode == full",
     "bindings": {
       "cmd-shift-o": "outline::Toggle",
-      "ctrl-g": "go_to_line::Toggle"
+      "ctrl-g": "go_to_line::Toggle",
+      "ctrl-l": "go_to_line::Toggle"
     }
   },
   {

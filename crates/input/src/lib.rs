@@ -56,9 +56,11 @@ mod describe;
 mod held;
 pub mod host;
 mod nav;
+mod num;
 mod parser;
 
 pub use describe::describe;
 pub use held::HeldMods;
 pub use nav::{NavLayer, NavLayerConfig};
+pub use num::{NumLayer, NumLayerConfig};
 pub use parser::{Parser, MAX_PASTE_LEN, MAX_STRING_LEN};

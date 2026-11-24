@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Context as _;
 use bakedit_core::{Action, InputEvent, Key, KeyEvent, MouseEvent, TerminalReply};
 use bakedit_input::host as seq;
-use bakedit_input::{HeldMods, NavLayer, NavLayerConfig, Parser};
+use bakedit_input::{HeldMods, NavLayer, NavLayerConfig, NumLayer, NumLayerConfig, Parser};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Position;
@@ -139,6 +139,7 @@ pub struct App {
     router: KeyRouter,
     parser: Parser,
     nav: NavLayer,
+    num: NumLayer,
     held: HeldMods,
     events: Receiver<AppEvent>,
     waker: Waker,
@@ -320,6 +321,7 @@ impl App {
             parser: Parser::new(),
             // Off until the terminal says it reports key releases (see on_reply).
             nav: NavLayer::new(NavLayerConfig { enabled: false, ..NavLayerConfig::default() }),
+            num: NumLayer::new(NumLayerConfig { enabled: false, ..NumLayerConfig::default() }),
             held: HeldMods::new(),
             events,
             waker,
@@ -498,9 +500,13 @@ impl App {
                     // The raw event first: held modifiers are what the keyboard says, not
                     // what the layer makes of it.
                     self.held.observe(&raw);
-                    let keys = self.nav.process(raw, Instant::now());
-                    for key in keys {
-                        self.key(key);
+                    let now = Instant::now();
+                    let nav_keys = self.nav.process(raw, now);
+                    for nav_key in nav_keys {
+                        let keys = if self.nav.active() { vec![nav_key] } else { self.num.process(nav_key, now) };
+                        for key in keys {
+                            self.key(key);
+                        }
                     }
                 }
                 InputEvent::Mouse(mouse) => {
@@ -546,6 +552,10 @@ impl App {
             for key in releases {
                 self.key(key);
             }
+            let num_releases = self.num.reset();
+            for key in num_releases {
+                self.key(key);
+            }
             self.held.clear();
             self.router.forget_held_keys();
             if matches!(self.shell.settings.autosave, Autosave::OnWindowChange | Autosave::OnFocusChange)
@@ -586,6 +596,12 @@ impl App {
         let on = self.nav_wanted && works;
         if on != self.nav.enabled() {
             let releases = self.nav.set_enabled(on);
+            for key in releases {
+                self.key(key);
+            }
+        }
+        if on != self.num.enabled() {
+            let releases = self.num.set_enabled(on);
             for key in releases {
                 self.key(key);
             }
