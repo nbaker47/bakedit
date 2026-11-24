@@ -1308,11 +1308,38 @@ pub(crate) static LUA: GrammarSpec = GrammarSpec {
     outline_loaded: OnceLock::new(),
 };
 
+const DOCKERFILE_EXTRA_HIGHLIGHTS: &str = r#"
+(image_name) @type
+(image_tag) @constant
+(image_digest) @number
+(image_alias) @type
+(arg_instruction name: (unquoted_string) @variable)
+(arg_instruction default: (unquoted_string) @string)
+(env_pair name: (unquoted_string) @variable)
+(env_pair value: (unquoted_string) @string)
+(label_pair key: (_) @property)
+(param) @attribute
+(mount_param) @attribute
+(path) @string.special
+(expose_port) @number
+(escape_sequence) @string.escape
+(line_continuation) @punctuation.special
+"#;
+
+const DOCKERFILE_INJECTIONS: &str = r#"
+((shell_command) @injection.content
+ (#set! injection.language "bash")
+ (#set! injection.include-children))
+"#;
+
 pub(crate) static DOCKERFILE: GrammarSpec = GrammarSpec {
     name: "dockerfile",
     language: || tree_sitter_dockerfile_orchard::LANGUAGE.into(),
-    highlights: &[tree_sitter_dockerfile_orchard::HIGHLIGHTS_QUERY],
-    injections: &[],
+    highlights: &[
+        tree_sitter_dockerfile_orchard::HIGHLIGHTS_QUERY,
+        DOCKERFILE_EXTRA_HIGHLIGHTS,
+    ],
+    injections: &[DOCKERFILE_INJECTIONS],
     locals: &[],
     precedence: Precedence::LastWins,
     children: InjectedChildren::ExcludeAll,
