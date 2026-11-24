@@ -619,6 +619,11 @@ impl Project {
         repo.relative_path(below).ok()
     }
 
+    /// The top of the active git work tree, spelled like the project root.
+    pub fn git_top(&self) -> Option<&Path> {
+        self.git_top.as_deref()
+    }
+
     /// The absolute path, spelled like the project root, of a path git reported.
     pub fn abs_path(&self, git_path: &Path) -> Option<PathBuf> {
         Some(self.git_top.as_ref()?.join(git_path))

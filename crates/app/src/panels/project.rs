@@ -40,13 +40,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bakedit_core::{Action, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb, Theme};
-use bakedit_git::{DisplayStatus, Status};
+use bakedit_git::{DiffStatus, DisplayStatus, Status};
 use bakedit_project::{FileTree, Row};
 use ratatui::layout::Rect;
 use serde_json::json;
 
+use crate::background::Task;
 use crate::icons::file_icon;
 use crate::line_input::{InputOutcome, LineInput};
+use crate::project::DiffBase;
 use crate::settings::Icons;
 use crate::ui::{Canvas, Style};
 use crate::view::{Context, Cursor, CursorShape, Cx, Effect, FsChange, Question, RenderCx, View};
@@ -110,35 +112,98 @@ pub struct ProjectPanel {
 #[derive(Default)]
 struct GitColors {
     generation: Option<u64>,
+    diff_base: DiffBase,
     /// Files with a status, by absolute path.
     files: HashMap<PathBuf, DisplayStatus>,
     /// Folders that hold a changed file somewhere below.
     dirs: HashSet<PathBuf>,
+    /// Background diff load when `diff_base` is a branch or historical commit.
+    diff_task: Option<Task<(u64, DiffBase, Vec<(PathBuf, DisplayStatus)>)>>,
 }
 
 impl GitColors {
-    /// Work the colours out again when the status moved; `enabled` is the `git_status`
-    /// setting, and with it off nothing is coloured.
-    fn rebuild(&mut self, project: &crate::project::Project, enabled: bool) {
-        let wanted = enabled.then(|| project.git_generation());
-        if self.generation == wanted {
-            return;
-        }
-        self.generation = wanted;
+    fn apply_entries(&mut self, entries: Vec<(PathBuf, DisplayStatus)>) {
         self.files.clear();
         self.dirs.clear();
-        if !enabled {
-            return;
-        }
-        let Some(status) = project.status().map(Arc::clone) else { return };
-        for entry in &status_entries(&status) {
-            let Some(path) = project.abs_path(&entry.0) else { continue };
+        for (path, status) in entries {
             for dir in path.ancestors().skip(1) {
                 if !self.dirs.insert(dir.to_path_buf()) {
                     break;
                 }
             }
-            self.files.insert(path, entry.1);
+            self.files.insert(path, status);
+        }
+    }
+
+    /// Poll a pending branch/commit diff load. Returns true when new colours arrived.
+    fn poll(&mut self) -> bool {
+        let Some((generation, base, entries)) = self.diff_task.as_mut().and_then(Task::poll) else {
+            if self.diff_task.as_ref().is_some_and(Task::is_finished) {
+                self.diff_task = None;
+            }
+            return false;
+        };
+        self.diff_task = None;
+        if self.generation == Some(generation) && self.diff_base == base {
+            self.apply_entries(entries);
+            return true;
+        }
+        false
+    }
+
+    /// Work the colours out again when the status or active diff base moved; `enabled` is
+    /// the `git_status` setting, and with it off nothing is coloured.
+    fn rebuild(&mut self, project: &crate::project::Project, enabled: bool) {
+        let wanted = enabled.then(|| project.git_generation());
+        let base = project.diff_base().clone();
+        if self.generation == wanted && (!enabled || self.diff_base == base) {
+            return;
+        }
+        self.generation = wanted;
+        self.diff_base = base.clone();
+        self.diff_task = None;
+        self.files.clear();
+        self.dirs.clear();
+        if !enabled {
+            return;
+        }
+        match base {
+            DiffBase::Uncommitted => {
+                let Some(status) = project.status().map(Arc::clone) else { return };
+                let entries = status_entries(&status)
+                    .into_iter()
+                    .filter_map(|(rel, st)| project.abs_path(&rel).map(|abs| (abs, st)))
+                    .collect();
+                self.apply_entries(entries);
+            }
+            DiffBase::Branch(ref_name) => {
+                let (Some(repo), Some(top)) = (project.repo().cloned(), project.git_top().map(Path::to_path_buf)) else { return };
+                let generation = project.git_generation();
+                let target = DiffBase::Branch(ref_name.clone());
+                self.diff_task = Some(project.spawn(move || {
+                    let entries = repo
+                        .diff_against_ref(&ref_name)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|file| (top.join(&file.path), diff_to_display(file.status)))
+                        .collect();
+                    (generation, target, entries)
+                }));
+            }
+            DiffBase::Commit { sha, label } => {
+                let (Some(repo), Some(top)) = (project.repo().cloned(), project.git_top().map(Path::to_path_buf)) else { return };
+                let generation = project.git_generation();
+                let target = DiffBase::Commit { sha: sha.clone(), label };
+                self.diff_task = Some(project.spawn(move || {
+                    let entries = repo
+                        .diff_commit(&sha)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|file| (top.join(&file.path), diff_to_display(file.status)))
+                        .collect();
+                    (generation, target, entries)
+                }));
+            }
         }
     }
 
@@ -153,6 +218,16 @@ impl GitColors {
             None if row.ignored => theme.ignored,
             None => theme.text,
         }
+    }
+}
+
+fn diff_to_display(status: DiffStatus) -> DisplayStatus {
+    match status {
+        DiffStatus::Added | DiffStatus::Untracked => DisplayStatus::Added,
+        DiffStatus::Deleted => DisplayStatus::Deleted,
+        DiffStatus::Modified => DisplayStatus::Modified,
+        DiffStatus::Renamed | DiffStatus::Copied => DisplayStatus::Renamed,
+        DiffStatus::Conflicted => DisplayStatus::Conflict,
     }
 }
 
@@ -940,10 +1015,15 @@ impl View for ProjectPanel {
     }
 
     fn tick(&mut self, cx: &mut Cx<'_>) -> bool {
-        let mut dirty = false;
+        let mut dirty = self.colors.poll();
         if cx.settings.project_panel.git_status {
-            dirty = self.colors.generation != Some(cx.project.git_generation());
+            let stale = self.colors.generation != Some(cx.project.git_generation()) || self.colors.diff_base != *cx.project.diff_base();
+            if stale {
+                self.colors.rebuild(cx.project, true);
+                dirty = true;
+            }
         } else if self.colors.generation.is_some() {
+            self.colors.rebuild(cx.project, false);
             dirty = true;
         }
         if cx.settings.project_panel.auto_reveal_entries {

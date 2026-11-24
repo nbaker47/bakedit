@@ -628,12 +628,22 @@ impl GitPanel {
             self.commit_loaded_sha = None;
             self.commit_changes.clear();
             self.commit_counts.clear();
+            if *cx.project.diff_base() != DiffBase::Uncommitted {
+                cx.push(Effect::SetDiffBase(None));
+            }
+            let path = self.changes.get(self.selected).and_then(|c| cx.project.abs_path(&c.path));
+            cx.push(Effect::ShowProjectDiff { path, focus: false });
             cx.status("Uncommitted changes");
         } else if let Some(commit) = self.viewing_commit().cloned() {
             self.commit_changes.clear();
             self.commit_counts.clear();
             self.commit_loaded_sha = None;
             self.kick_commit_diff(cx.project);
+            let want = DiffBase::Commit { sha: commit.sha.clone(), label: commit.short.clone() };
+            if *cx.project.diff_base() != want {
+                cx.push(Effect::SetCommitDiff { sha: commit.sha.clone(), label: commit.short.clone() });
+            }
+            cx.push(Effect::ShowProjectDiff { path: None, focus: false });
             cx.status(format!("{} {}", commit.short, commit.subject));
         }
         true
