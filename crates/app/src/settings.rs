@@ -190,6 +190,9 @@ pub struct Settings {
     pub window: bool,
     /// Show the usage strip (AI subscription quotas) on the bottom row.
     pub usage_meter: bool,
+    /// Show Agent Dots (herdr AI agent monitor) in the status bar and as a floating overlay
+    /// when leaving the bakedit window.
+    pub agent_dots: bool,
     pub link_click_modifier: LinkModifier,
     /// Language name -> the command that formats that language (reads stdin, writes stdout).
     pub formatters: HashMap<String, Vec<String>>,
@@ -286,6 +289,7 @@ impl Default for Settings {
             nav_layer: true,
             window: cfg!(target_os = "macos"),
             usage_meter: true,
+            agent_dots: false,
             link_click_modifier: LinkModifier::Cmd,
             formatters: HashMap::new(),
 
@@ -394,6 +398,30 @@ pub fn load_from(bakedit_file: &Path, zed_file: &Path) -> LoadedSettings {
         }
     }
     LoadedSettings { settings: Settings::default(), source: SettingsSource::Defaults, warnings: Vec::new() }
+}
+
+/// Update or insert top-level keys in `path` (creating the file and parent folder when
+/// needed), keeping every other key intact.
+pub fn save_values(path: &Path, pairs: &[(&str, Value)]) -> Result<(), String> {
+    let mut map = match std::fs::read_to_string(path) {
+        Ok(text) => match jsonc::from_str::<Value>(&text) {
+            Ok(Value::Object(obj)) => obj,
+            Ok(_) => return Err(format!("{} is not a JSON object", path.display())),
+            Err(err) => return Err(format!("cannot parse {}: {err}", path.display())),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    for (k, v) in pairs {
+        map.insert((*k).to_string(), v.clone());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(map))
+        .map_err(|e| format!("cannot format settings JSON: {e}"))?;
+    std::fs::write(path, format!("{text}\n"))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 /// Reads typed values out of a JSON object, recording a warning for every value of the
@@ -703,6 +731,16 @@ impl Settings {
             Some(_) => r.warn("nav_layer", "true, false or {\"enabled\": bool}"),
         }
         r.bool("window", &mut self.window);
+        match map.get("agent_dots") {
+            Some(Value::Bool(b)) => self.agent_dots = *b,
+            Some(Value::Object(dots)) => {
+                if let Some(enabled) = dots.get("enabled").and_then(Value::as_bool) {
+                    self.agent_dots = enabled;
+                }
+            }
+            None | Some(Value::Null) => {}
+            Some(_) => r.warn("agent_dots", "true, false or {\"enabled\": bool}"),
+        }
         match map.get("usage_meter") {
             Some(Value::Bool(b)) => self.usage_meter = *b,
             Some(Value::Object(meter)) => {

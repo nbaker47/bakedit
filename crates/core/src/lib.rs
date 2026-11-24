@@ -17,4 +17,4 @@ pub use color::{Color, Rgb};
 pub use event::{ColorSlot, InputEvent, TerminalReply};
 pub use keys::{us_shifted, us_unshifted, Key, KeyEvent, KeyKind, ModKey, Mods};
 pub use mouse::{MouseButton, MouseEvent, MouseKind};
-pub use theme::{SyntaxStyle, Theme, ThemeError};
+pub use theme::{SyntaxStyle, TerminalPalette, Theme, ThemeError, BUILTIN_THEME_NAMES};

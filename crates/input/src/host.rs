@@ -112,6 +112,16 @@ pub fn palette_query(index: u8) -> String {
     format!("\x1b]4;{index};?\x1b\\")
 }
 
+/// Ask for the host terminal's cursor colour and 16 ANSI palette slots (0..16) so the
+/// `"Terminal"` theme can mirror the host terminal's exact colours.
+pub fn palette_query_sequence() -> String {
+    let mut out = String::from(CURSOR_COLOR_QUERY);
+    for i in 0..16u8 {
+        out.push_str(&palette_query(i));
+    }
+    out
+}
+
 /// `CSI ? mode h` or `l`: set or reset a DEC private mode not covered by a constant.
 pub fn private_mode(mode: u16, on: bool) -> String {
     format!("\x1b[?{mode}{}", if on { 'h' } else { 'l' })

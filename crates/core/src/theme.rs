@@ -10,10 +10,75 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::color::Rgb;
+use crate::event::ColorSlot;
 use crate::jsonc;
 
-/// The theme bakedit ships with: the user's Zed "Ghostty" theme (SilkCircuit Neon).
+/// The default built-in theme: the user's Zed "Ghostty" theme (SilkCircuit Neon).
 const BUILTIN_THEME_JSON: &str = include_str!("../../../assets/themes/ghostty.json");
+/// Built-in Catppuccin Mocha theme.
+const CATPPUCCIN_MOCHA_JSON: &str = include_str!("../../../assets/themes/catppuccin-mocha.json");
+/// Built-in Light theme (Catppuccin Latte).
+const LIGHT_THEME_JSON: &str = include_str!("../../../assets/themes/light.json");
+
+/// The four built-in themes, in the order shown in onboarding and the theme picker.
+pub const BUILTIN_THEME_NAMES: &[&str] = &["Ghostty", "Terminal", "Catppuccin Mocha", "Light"];
+
+/// Colours reported by the host terminal via OSC 10/11/12/4 and CSI ? 997 n.
+/// Used to build the `"Terminal"` ("Follow Terminal") theme dynamically.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TerminalPalette {
+    pub foreground: Option<Rgb>,
+    pub background: Option<Rgb>,
+    pub cursor: Option<Rgb>,
+    pub dark: Option<bool>,
+    pub ansi: [Option<Rgb>; 16],
+}
+
+impl TerminalPalette {
+    /// Record one colour report from the host terminal. Returns true if the slot changed.
+    pub fn set(&mut self, slot: ColorSlot, rgb: Rgb) -> bool {
+        let target = match slot {
+            ColorSlot::Foreground => &mut self.foreground,
+            ColorSlot::Background => &mut self.background,
+            ColorSlot::Cursor => &mut self.cursor,
+            ColorSlot::Palette(i) if (i as usize) < 16 => &mut self.ansi[i as usize],
+            ColorSlot::Palette(_) => return false,
+        };
+        if *target == Some(rgb) {
+            return false;
+        }
+        *target = Some(rgb);
+        true
+    }
+
+    /// Record a `CSI ? 997 n` dark/light mode report. Returns true if it changed.
+    pub fn set_dark(&mut self, dark: bool) -> bool {
+        if self.dark == Some(dark) {
+            return false;
+        }
+        self.dark = Some(dark);
+        true
+    }
+
+    /// Whether the terminal looks dark, preferring the explicit background luminance when known.
+    pub fn is_dark(&self) -> bool {
+        if let Some(bg) = self.background {
+            // Perceived luminance (BT.601)
+            let lum = 0.299 * (bg.r as f32) + 0.587 * (bg.g as f32) + 0.114 * (bg.b as f32);
+            return lum < 128.0;
+        }
+        self.dark.unwrap_or(true)
+    }
+
+    /// Whether the terminal has answered at least one colour or scheme query.
+    pub fn has_any(&self) -> bool {
+        self.foreground.is_some()
+            || self.background.is_some()
+            || self.cursor.is_some()
+            || self.dark.is_some()
+            || self.ansi.iter().any(Option::is_some)
+    }
+}
 
 /// The `theme_overrides` from the user's Zed settings, so the built-in theme matches what
 /// their Zed actually shows.
@@ -147,6 +212,153 @@ impl Theme {
         }
         Theme::from_zed_json(BUILTIN_THEME_JSON, None, Some(&merged))
             .expect("the built-in theme is valid")
+    }
+
+    /// Resolve one of the four built-in themes (`Ghostty`, `Terminal`, `Catppuccin Mocha`,
+    /// `Light`) with optional `overrides` and host `palette` (for `Terminal`). Returns `None`
+    /// for any other name so callers can look it up on disk.
+    pub fn builtin_named(
+        name: &str,
+        palette: Option<&TerminalPalette>,
+        overrides: &Map<String, Value>,
+    ) -> Option<Theme> {
+        let ov = if overrides.is_empty() { None } else { Some(overrides) };
+        match name {
+            "Ghostty" => Some(Theme::builtin_with(overrides)),
+            "Terminal" | "Follow Terminal" => {
+                let empty = TerminalPalette::default();
+                Some(Theme::from_terminal_palette(palette.unwrap_or(&empty), overrides))
+            }
+            "Catppuccin Mocha" => Some(
+                Theme::from_zed_json(CATPPUCCIN_MOCHA_JSON, None, ov)
+                    .expect("built-in Catppuccin Mocha theme is valid"),
+            ),
+            "Light" | "Catppuccin Latte" => Some(
+                Theme::from_zed_json(LIGHT_THEME_JSON, None, ov)
+                    .expect("built-in Light theme is valid"),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Build a theme dynamically from the host terminal's OSC 10/11/12/4 palette.
+    /// Any unreported slot falls back cleanly to Catppuccin Mocha (dark) or Light (light).
+    pub fn from_terminal_palette(palette: &TerminalPalette, overrides: &Map<String, Value>) -> Theme {
+        let dark = palette.is_dark();
+        let base_json = if dark { CATPPUCCIN_MOCHA_JSON } else { LIGHT_THEME_JSON };
+        let base = Theme::from_zed_json(base_json, None, None).expect("fallback theme is valid");
+
+        let bg = palette.background.unwrap_or(base.background);
+        let fg = palette.foreground.unwrap_or(base.text);
+        let cursor = palette.cursor.unwrap_or(base.cursor);
+
+        let mut ansi = base.ansi;
+        for (i, slot) in palette.ansi.iter().enumerate() {
+            if let Some(rgb) = slot {
+                ansi[i] = *rgb;
+            }
+        }
+        let (red, green, yellow, blue, magenta, cyan) = (ansi[1], ansi[2], ansi[3], ansi[4], ansi[5], ansi[6]);
+        let muted = palette.ansi[8].unwrap_or_else(|| fg.over(bg, 140));
+        let surface = fg.over(bg, if dark { 10 } else { 8 });
+        let elevated = fg.over(bg, if dark { 24 } else { 18 });
+        let active_line = fg.over(bg, if dark { 14 } else { 10 });
+        let border = fg.over(bg, if dark { 38 } else { 32 });
+        let border_variant = fg.over(bg, if dark { 22 } else { 18 });
+        let accent = blue;
+
+        let mut style = Map::new();
+        let mut put = |k: &str, rgb: Rgb| {
+            style.insert(k.to_string(), Value::String(rgb.to_hex()));
+        };
+        put("background", bg);
+        put("surface.background", surface);
+        put("elevated_surface.background", elevated);
+        put("editor.background", bg);
+        put("editor.gutter.background", bg);
+        put("editor.active_line.background", active_line);
+        put("editor.foreground", fg);
+        put("editor.line_number", muted);
+        put("editor.active_line_number", fg);
+        put("panel.background", surface);
+        put("title_bar.background", surface);
+        put("title_bar.inactive_background", surface);
+        put("status_bar.background", surface);
+        put("toolbar.background", bg);
+        put("tab_bar.background", surface);
+        put("tab.active_background", bg);
+        put("tab.inactive_background", surface);
+        put("scrollbar.track.background", bg);
+        put("scrollbar.thumb.background", elevated);
+        put("border", border);
+        put("border.variant", border_variant);
+        put("border.focused", accent);
+        put("border.selected", accent);
+        put("panel.focused_border", accent);
+        put("text", fg);
+        put("text.muted", muted);
+        put("text.placeholder", muted);
+        put("text.accent", accent);
+        put("icon", fg);
+        put("icon.muted", muted);
+        put("element.hover", elevated);
+        put("element.active", accent.over(bg, 68));
+        put("element.selected", accent.over(bg, 48));
+        put("ghost_element.hover", elevated);
+        put("ghost_element.active", accent.over(bg, 68));
+        put("ghost_element.selected", accent.over(bg, 48));
+        put("terminal.background", bg);
+        put("terminal.foreground", fg);
+        put("terminal.bright_foreground", ansi[15]);
+
+        const ANSI_NAMES: [&str; 8] = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+        for (i, rgb) in ansi.iter().enumerate() {
+            let key = if i < 8 {
+                format!("terminal.ansi.{}", ANSI_NAMES[i])
+            } else {
+                format!("terminal.ansi.bright_{}", ANSI_NAMES[i - 8])
+            };
+            style.insert(key, Value::String(rgb.to_hex()));
+        }
+
+        style.insert(
+            "players".into(),
+            serde_json::json!([{
+                "cursor": cursor.to_hex(),
+                "background": accent.to_hex(),
+                "selection": accent.over(bg, 64).to_hex(),
+            }]),
+        );
+
+        style.insert(
+            "syntax".into(),
+            serde_json::json!({
+                "keyword": { "color": magenta.to_hex() },
+                "string": { "color": green.to_hex() },
+                "comment": { "color": muted.to_hex(), "font_style": "italic" },
+                "function": { "color": blue.to_hex() },
+                "type": { "color": yellow.to_hex() },
+                "number": { "color": red.to_hex() },
+                "boolean": { "color": red.to_hex() },
+                "constant": { "color": cyan.to_hex() },
+                "property": { "color": cyan.to_hex() },
+                "operator": { "color": cyan.to_hex() },
+                "variable": { "color": fg.to_hex() },
+                "punctuation": { "color": muted.to_hex() },
+                "tag": { "color": blue.to_hex() },
+                "attribute": { "color": yellow.to_hex() },
+                "constructor": { "color": yellow.to_hex() },
+                "title": { "color": blue.to_hex(), "font_weight": 700 },
+                "link_uri": { "color": cyan.to_hex() },
+                "emphasis": { "color": magenta.to_hex(), "font_style": "italic" },
+                "string.escape": { "color": cyan.to_hex() },
+            }),
+        );
+
+        for (key, value) in overrides {
+            style.insert(key.clone(), value.clone());
+        }
+        Theme::from_style("Terminal".to_string(), dark, &style)
     }
 
     /// Load a theme from a Zed theme family file (JSON with comments allowed).
@@ -478,5 +690,43 @@ mod tests {
         assert_eq!(Theme::from_zed_json(json, None, None).unwrap().name, "One");
         assert!(matches!(Theme::from_zed_json(json, Some("Three"), None), Err(ThemeError::NotFound(_))));
         assert!(matches!(Theme::from_zed_json("{}", None, None), Err(ThemeError::Empty)));
+    }
+
+    #[test]
+    fn all_four_builtin_themes_load_cleanly() {
+        let empty = Map::new();
+        assert_eq!(BUILTIN_THEME_NAMES, &["Ghostty", "Terminal", "Catppuccin Mocha", "Light"]);
+        let ghostty = Theme::builtin_named("Ghostty", None, &empty).unwrap();
+        assert_eq!(ghostty.background.to_hex(), "#12101a");
+        assert!(ghostty.dark);
+
+        let mocha = Theme::builtin_named("Catppuccin Mocha", None, &empty).unwrap();
+        assert_eq!(mocha.background.to_hex(), "#1e1e2e");
+        assert!(mocha.dark);
+
+        let light = Theme::builtin_named("Light", None, &empty).unwrap();
+        assert_eq!(light.background.to_hex(), "#eff1f5");
+        assert!(!light.dark);
+
+        let mut pal = TerminalPalette::default();
+        assert!(pal.set(ColorSlot::Background, Rgb::new(0x10, 0x20, 0x30)));
+        assert!(pal.set(ColorSlot::Foreground, Rgb::new(0xf0, 0xf0, 0xf0)));
+        assert!(pal.set(ColorSlot::Palette(4), Rgb::new(0x33, 0x88, 0xff)));
+        let term = Theme::builtin_named("Terminal", Some(&pal), &empty).unwrap();
+        assert_eq!(term.name, "Terminal");
+        assert_eq!(term.background.to_hex(), "#102030");
+        assert_eq!(term.text.to_hex(), "#f0f0f0");
+        assert_eq!(term.border_focused.to_hex(), "#3388ff");
+        assert!(term.dark);
+
+        // Light terminal background flips `dark` to false automatically.
+        let mut light_pal = TerminalPalette::default();
+        light_pal.set(ColorSlot::Background, Rgb::new(0xf8, 0xf8, 0xf8));
+        light_pal.set(ColorSlot::Foreground, Rgb::new(0x22, 0x22, 0x22));
+        let light_term = Theme::from_terminal_palette(&light_pal, &empty);
+        assert!(!light_term.dark);
+        assert_eq!(light_term.background.to_hex(), "#f8f8f8");
+
+        assert!(Theme::builtin_named("Unknown", None, &empty).is_none());
     }
 }

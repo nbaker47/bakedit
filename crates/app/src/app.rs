@@ -158,6 +158,8 @@ pub struct App {
     config: ConfigFiles,
     /// The session as last written, to skip writing the same again.
     saved_session: Option<String>,
+    /// Colours reported by the host terminal via OSC 10/11/12/4 and CSI ? 997 n.
+    terminal_palette: bakedit_core::TerminalPalette,
     /// Where the keyboard was after the last event, to notice it moving.
     focus_key: (Focus, Option<String>),
     cursor_shape: Option<seq::CursorShape>,
@@ -175,10 +177,13 @@ struct Loaded {
     warnings: Vec<String>,
 }
 
-fn load_config() -> Loaded {
+fn load_config(palette: Option<&bakedit_core::TerminalPalette>) -> Loaded {
     let loaded = settings::load();
     let mut warnings = loaded.warnings;
-    let (theme, theme_warning) = themes::load(&loaded.settings);
+    let (theme, theme_warning) = match palette {
+        Some(pal) => themes::load_with_palette(&loaded.settings, pal),
+        None => themes::load(&loaded.settings),
+    };
     warnings.extend(theme_warning);
     let keymap_text = match std::fs::read_to_string(settings::keymap_path()) {
         Ok(text) => Some(text),
@@ -238,7 +243,7 @@ impl App {
                 let _ = sender.send(AppEvent::Wake);
             })
         };
-        let loaded = load_config();
+        let loaded = load_config(None);
         let terminal_command = options.terminal_command.clone().unwrap_or_else(|| loaded.settings.terminal.command.clone());
         let state_dir = ipc::state_dir();
         let sessions_dir = state_dir.join("sessions");
@@ -336,12 +341,15 @@ impl App {
             config_deadline: Instant::now() + CONFIG_CHECK,
             config: ConfigFiles::new(),
             saved_session: None,
+            terminal_palette: bakedit_core::TerminalPalette::default(),
             cursor_shape: None,
             dirty: true,
             quit: false,
             _host: host,
         };
         app.update_nav_indicator();
+        let palette_query = seq::palette_query_sequence();
+        let _ = app.screen.backend_mut().write_all(palette_query.as_bytes());
         let title = window_title(&options.root);
         let _ = app.screen.backend_mut().write_all(title.as_bytes());
         let result = app.event_loop();
@@ -575,6 +583,20 @@ impl App {
                 self.shell.set_status("No cmd keys from this terminal: use the ctrl-] prefix (ctrl-] ? lists every key)", false);
                 self.dirty = true;
             }
+            TerminalReply::Color { slot, rgb } => {
+                if self.terminal_palette.set(slot, rgb) && self.shell.theme.name == themes::TERMINAL {
+                    let (theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
+                    self.shell.theme = theme;
+                    self.dirty = true;
+                }
+            }
+            TerminalReply::DarkMode(dark) => {
+                if self.terminal_palette.set_dark(dark) && self.shell.theme.name == themes::TERMINAL {
+                    let (theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
+                    self.shell.theme = theme;
+                    self.dirty = true;
+                }
+            }
             other => log::debug!("terminal reply: {other:?}"),
         }
     }
@@ -658,7 +680,7 @@ impl App {
     /// Read settings.json, keymap.json and the theme again. Settings that build the window
     /// (where the docks are, the terminal's command) take effect at the next start.
     fn reload_config(&mut self, announce: bool) {
-        let loaded = load_config();
+        let loaded = load_config(Some(&self.terminal_palette));
         let nav_setting_changed = loaded.settings.nav_layer != self.shell.settings.nav_layer;
         self.router.clear(&mut self.shell);
         self.router = loaded.router;
