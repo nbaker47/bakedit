@@ -164,17 +164,31 @@ pub fn compute_with(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId
         center_width -= left_width + 1;
     }
     if let (Some(panel), true) = (right, right_width > 0) {
-        let dock_x = body.right() - right_width;
-        layout.docks.push(DockArea {
-            position: DockPosition::Right,
-            panel,
-            rect: Rect::new(dock_x, body.y, right_width, body.height),
-        });
-        layout.dividers.push(Divider {
-            position: DockPosition::Right,
-            rect: Rect::new(dock_x - 1, body.y, 1, body.height),
-        });
-        center_width -= right_width + 1;
+        if ws.is_right_dock_inner_left() {
+            layout.docks.push(DockArea {
+                position: DockPosition::Right,
+                panel,
+                rect: Rect::new(x, body.y, right_width, body.height),
+            });
+            layout.dividers.push(Divider {
+                position: DockPosition::Right,
+                rect: Rect::new(x + right_width, body.y, 1, body.height),
+            });
+            x += right_width + 1;
+            center_width -= right_width + 1;
+        } else {
+            let dock_x = body.right() - right_width;
+            layout.docks.push(DockArea {
+                position: DockPosition::Right,
+                panel,
+                rect: Rect::new(dock_x, body.y, right_width, body.height),
+            });
+            layout.dividers.push(Divider {
+                position: DockPosition::Right,
+                rect: Rect::new(dock_x - 1, body.y, 1, body.height),
+            });
+            center_width -= right_width + 1;
+        }
     }
 
     // The bottom dock sits under the centre, between the side docks.

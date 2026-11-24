@@ -867,6 +867,7 @@
       "ctrl-alt-g": ["action::Sequence", ["git::Diff", "workspace::ToggleZoom"]],
       "ctrl-alt-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
       "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "ctrl-alt-shift-e": "project_panel::SwapPosition",
       "ctrl-e": "workspace::FocusCenterPane",
       "ctrl-b": "workspace::ToggleLeftDock",
       "ctrl-r": "workspace::ToggleRightDock",
@@ -1016,6 +1017,7 @@
       "ctrl-e": "workspace::FocusCenterPane",
       "ctrl-alt-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
       "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
+      "ctrl-alt-shift-e": "project_panel::SwapPosition",
       "ctrl-alt-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-shift-f": ["terminal::SendText", "\u0002[/"]
     }

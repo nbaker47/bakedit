@@ -141,6 +141,10 @@ pub struct WorkspaceSnapshot {
     pub zoomed: Vec<String>,
     #[serde(default)]
     pub focus: Option<String>,
+    /// When true, the right dock (file tree) sits immediately to the right of the left
+    /// dock (git/terminal) instead of at the far right of the window.
+    #[serde(default)]
+    pub right_dock_inner_left: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +153,7 @@ pub struct Workspace {
     focus: Focus,
     center_zoomed: bool,
     last_open: Vec<DockPosition>,
+    right_dock_inner_left: bool,
 }
 
 impl Workspace {
@@ -169,7 +174,20 @@ impl Workspace {
                 dock.active = Some(0);
             }
         }
-        Workspace { docks, focus: Focus::Center, center_zoomed: false, last_open: Vec::new() }
+        Workspace { docks, focus: Focus::Center, center_zoomed: false, last_open: Vec::new(), right_dock_inner_left: false }
+    }
+
+    /// True when the right dock (file tree) is placed immediately to the right of the left
+    /// dock (git/terminal) instead of the far right edge.
+    pub fn is_right_dock_inner_left(&self) -> bool {
+        self.right_dock_inner_left
+    }
+
+    /// Swap the right dock (file tree) between far right and immediately right of the left
+    /// dock (git/terminal). Returns the new `inner_left` state.
+    pub fn toggle_right_dock_inner_left(&mut self) -> bool {
+        self.right_dock_inner_left = !self.right_dock_inner_left;
+        self.right_dock_inner_left
     }
 
     fn dock(&self, position: DockPosition) -> &Dock {
@@ -533,12 +551,14 @@ impl Workspace {
                 Focus::Center => None,
                 Focus::Panel(id) => Some(id.title().to_string()),
             },
+            right_dock_inner_left: self.right_dock_inner_left,
         }
     }
 
     /// Apply a saved snapshot. Unknown names are ignored, and the result is always a
     /// consistent state (the focus never lands on a hidden panel).
     pub fn restore(&mut self, snapshot: &WorkspaceSnapshot) {
+        self.right_dock_inner_left = snapshot.right_dock_inner_left;
         let by_title = |title: &str| PanelId::ALL.into_iter().find(|id| id.title() == title);
         for (title, &size) in &snapshot.sizes {
             if let Some(id) = by_title(title) {

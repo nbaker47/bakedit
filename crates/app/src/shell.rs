@@ -679,6 +679,18 @@ impl Shell {
             "workspace::ToggleAllDocks" => self.with_workspace(|ws| ws.toggle_all_docks()),
             "workspace::ToggleLeftDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Left)),
             "workspace::ToggleRightDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right)),
+            "project_panel::SwapPosition" => {
+                let inner_left = self.workspace.toggle_right_dock_inner_left();
+                if !self.workspace.is_dock_open(DockPosition::Right) {
+                    self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right));
+                }
+                let msg = if inner_left {
+                    "File tree: right of git/terminal"
+                } else {
+                    "File tree: far right"
+                };
+                self.set_status(msg, false);
+            }
             "workspace::ToggleBottomDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Bottom)),
             "workspace::CloseActiveDock" => {
                 let mut closed = false;
@@ -1854,7 +1866,14 @@ impl Shell {
         let Some(area) = self.layout.dock(position).map(|dock| dock.rect) else { return };
         let (current, wanted, max) = match position {
             DockPosition::Left => (area.width, col.saturating_sub(area.x), self.screen.width.saturating_sub(layout::MIN_CENTER_WIDTH + 2)),
-            DockPosition::Right => (area.width, area.right().saturating_sub(col + 1), self.screen.width.saturating_sub(layout::MIN_CENTER_WIDTH + 2)),
+            DockPosition::Right => {
+                let want = if self.workspace.is_right_dock_inner_left() {
+                    col.saturating_sub(area.x)
+                } else {
+                    area.right().saturating_sub(col + 1)
+                };
+                (area.width, want, self.screen.width.saturating_sub(layout::MIN_CENTER_WIDTH + 2))
+            }
             DockPosition::Bottom => (area.height, area.bottom().saturating_sub(row + 1), self.screen.height.saturating_sub(layout::MIN_CENTER_HEIGHT + 2)),
         };
         self.workspace.resize_dock(position, current, wanted as i32 - current as i32, layout::MIN_DOCK_WIDTH, max);
