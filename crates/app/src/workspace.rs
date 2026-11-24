@@ -398,10 +398,22 @@ impl Workspace {
         self.dock_mut(position).open = true;
     }
 
-    /// Close the dock a panel lives in (Zed's `close_panel`). If the focus was in that dock
-    /// it returns to the centre.
+    /// Close `id`. When all left-dock panels are shown side-by-side, closing one left
+    /// panel hides only that panel and keeps the other left panel open. Otherwise closes
+    /// the dock `id` lives in (Zed's `close_panel`). If focus was on the closed panel it
+    /// returns to the centre.
     pub fn close_panel(&mut self, id: PanelId) {
         let Some(position) = self.position_of(id) else { return };
+        if self.show_all_left_panels && position == DockPosition::Left && self.is_dock_open(DockPosition::Left) {
+            if let Some(other) = self.dock(DockPosition::Left).panels.iter().find(|p| p.id != id).map(|p| p.id) {
+                self.show_all_left_panels = false;
+                self.activate(other);
+                if self.focus == Focus::Panel(id) {
+                    self.focus_center();
+                }
+                return;
+            }
+        }
         self.close_dock(position);
     }
 
