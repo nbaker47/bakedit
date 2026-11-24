@@ -197,6 +197,7 @@ impl KeymapsGuide {
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("NAV MODE vs EDIT MODE", GuideTone::Heading));
         lines.push(GuideLine::pair("ctrl-alt-i / ctrl-shift-i", "Toggle between Nav mode (default) and Edit mode"));
+        lines.push(GuideLine::pair("y / Y (in Nav & Diff)", "Yank selection or current line to clipboard (also cmd/ctrl-c)"));
         lines.push(GuideLine::pair("Esc", "Return to Nav mode (or close active modal)"));
 
         lines.push(GuideLine::blank());
