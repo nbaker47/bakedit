@@ -567,17 +567,42 @@ impl Shell {
             }
             "pane::SwapItemLeft" => self.pane.swap_active(false),
             "pane::SwapItemRight" => self.pane.swap_active(true),
-            "pane::CloseActiveItem" => {
+            "pane::TogglePinTab" => {
                 if let Some(index) = self.pane.active_index() {
-                    self.close_tabs(vec![index], action, save_first, skip_save);
+                    self.pane.toggle_pin(index);
                 }
             }
-            "pane::CloseOtherItems" => self.close_set(CloseSet::Others, action, save_first, skip_save),
-            "pane::CloseItemsToTheLeft" => self.close_set(CloseSet::ToTheLeft, action, save_first, skip_save),
-            "pane::CloseItemsToTheRight" => self.close_set(CloseSet::ToTheRight, action, save_first, skip_save),
-            "pane::CloseCleanItems" => self.close_set(CloseSet::Clean, action, save_first, skip_save),
-            "pane::CloseAllItems" | "workspace::CloseAllItemsAndPanes" => {
-                self.close_set(CloseSet::All, action, save_first, skip_save)
+            "pane::CloseActiveItem" => {
+                if let Some(index) = self.pane.active_index() {
+                    let close_pinned = action.arg_bool("close_pinned").unwrap_or(true);
+                    if close_pinned || !self.pane.is_pinned(index) {
+                        self.close_tabs(vec![index], action, save_first, skip_save);
+                    }
+                }
+            }
+            "pane::CloseOtherItems" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(false);
+                self.close_set(CloseSet::Others, close_pinned, action, save_first, skip_save);
+            }
+            "pane::CloseItemsToTheLeft" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(false);
+                self.close_set(CloseSet::ToTheLeft, close_pinned, action, save_first, skip_save);
+            }
+            "pane::CloseItemsToTheRight" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(false);
+                self.close_set(CloseSet::ToTheRight, close_pinned, action, save_first, skip_save);
+            }
+            "pane::CloseCleanItems" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(false);
+                self.close_set(CloseSet::Clean, close_pinned, action, save_first, skip_save);
+            }
+            "pane::CloseAllItems" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(false);
+                self.close_set(CloseSet::All, close_pinned, action, save_first, skip_save);
+            }
+            "workspace::CloseAllItemsAndPanes" => {
+                let close_pinned = action.arg_bool("close_pinned").unwrap_or(true);
+                self.close_set(CloseSet::All, close_pinned, action, save_first, skip_save);
             }
             "pane::ReopenClosedItem" => {
                 if let Some(location) = self.pane.pop_closed() {
@@ -1021,8 +1046,8 @@ impl Shell {
         }
     }
 
-    fn close_set(&mut self, set: CloseSet, action: &Action, save_first: bool, skip_save: bool) {
-        let indices = self.pane.close_candidates(set);
+    fn close_set(&mut self, set: CloseSet, close_pinned: bool, action: &Action, save_first: bool, skip_save: bool) {
+        let indices = self.pane.close_candidates(set, close_pinned);
         self.close_tabs(indices, action, save_first, skip_save);
     }
 
@@ -2012,6 +2037,7 @@ impl Shell {
                     .map(|slot| {
                         let mut tab = slot.item.tab(&cx);
                         tab.preview = slot.preview;
+                        tab.pinned = slot.pinned;
                         tab
                     })
                     .collect();

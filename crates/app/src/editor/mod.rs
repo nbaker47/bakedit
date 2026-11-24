@@ -403,7 +403,7 @@ impl Item for EditorItem {
 
     fn tab(&self, cx: &RenderCx<'_>) -> Tab {
         let icon = Some(file_icon(cx.settings, &self.title, false, false));
-        Tab { title: self.title.clone(), dirty: self.is_dirty(), preview: false, icon }
+        Tab { title: self.title.clone(), dirty: self.is_dirty(), preview: false, pinned: false, icon }
     }
 
     fn path(&self) -> Option<&Path> {

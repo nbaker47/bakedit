@@ -339,6 +339,35 @@ fn bulk_close_and_reopen() {
 }
 
 #[test]
+fn pinned_tabs_survive_close_all_and_close_active() {
+    let (mut shell, _) = shell();
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        shell.open_file(Path::new(&format!("/project/{name}")), None, None, false, true);
+    }
+    // Pin c.rs -> moves to index 0.
+    act(&mut shell, "pane::TogglePinTab");
+    assert_eq!(names(&shell), ["c.rs", "a.rs", "b.rs"]);
+    assert!(shell.pane.is_pinned(0));
+    let text = frame(&mut shell, 100, 20);
+    assert!(text.contains("◆ c.rs"), "pinned tab shows indicator: {text}");
+
+    // ctrl-w (CloseActiveItem with close_pinned: false) does not close the pinned tab.
+    shell.dispatch(&Action::with_args("pane::CloseActiveItem", json!({ "close_pinned": false })));
+    assert_eq!(names(&shell), ["c.rs", "a.rs", "b.rs"]);
+
+    // ctrl-k w (CloseAllItems with close_pinned: false) closes only unpinned tabs.
+    shell.dispatch(&Action::with_args("pane::CloseAllItems", json!({ "close_pinned": false })));
+    assert_eq!(names(&shell), ["c.rs"]);
+    assert!(shell.pane.is_pinned(0));
+
+    // Unpinning lets CloseAllItems close it.
+    act(&mut shell, "pane::TogglePinTab");
+    assert!(!shell.pane.is_pinned(0));
+    shell.dispatch(&Action::with_args("pane::CloseAllItems", json!({ "close_pinned": false })));
+    assert!(shell.pane.is_empty());
+}
+
+#[test]
 fn quitting_with_unsaved_work_asks() {
     let (mut shell, _) = shell();
     act(&mut shell, "zed::Quit");

@@ -34,6 +34,8 @@ pub struct TabState {
     /// First visible line.
     #[serde(default)]
     pub scroll_top: u32,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -148,6 +150,7 @@ pub fn capture(shell: &Shell) -> Session {
             line: line.saturating_sub(1),
             column: column.saturating_sub(1),
             scroll_top: item.scroll_top().unwrap_or(0),
+            pinned: slot.pinned,
         });
     }
     Session {
@@ -178,6 +181,11 @@ pub fn restore(shell: &mut Shell, session: &Session) {
         if let Some(item) = shell.pane.active_mut() {
             if item.path() == Some(tab.path.as_path()) {
                 item.set_scroll_top(tab.scroll_top);
+                if tab.pinned {
+                    if let Some(slot) = shell.pane.active_index() {
+                        shell.pane.pin(slot);
+                    }
+                }
                 opened.push((index, shell.pane.active_index()));
             }
         }
@@ -231,7 +239,7 @@ mod tests {
         assert_eq!(load(dir.path(), root), None);
 
         let mut session = Session::default();
-        session.tabs.push(TabState { path: "/a/b.rs".into(), line: 10, column: 4, scroll_top: 2 });
+        session.tabs.push(TabState { path: "/a/b.rs".into(), line: 10, column: 4, scroll_top: 2, pinned: true });
         session.active_tab = Some(0);
         session.touch_recent(Path::new("/a/b.rs"));
         session.remember_search("needle");
