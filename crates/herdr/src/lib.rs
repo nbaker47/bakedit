@@ -60,6 +60,7 @@
 
 #![warn(missing_docs)]
 
+mod agents;
 mod client;
 mod collapse;
 #[cfg(test)]
@@ -77,6 +78,11 @@ mod state;
 mod types;
 mod workspace;
 
+pub use agents::{
+    focus_agent, list_agents, prompt_agent, read_agent_output, read_claude_history,
+    read_claude_history_from_path, render_markdown_to_ansi, send_agent_keys,
+    split_output_and_status, strip_ansi, AgentInfo, AgentStatus,
+};
 pub use client::{
     is_mutating, Client, HerdrError, ServerInfo, DEFAULT_TIMEOUT, MAX_TIMEOUT, SOCKET_ENV_VAR,
 };

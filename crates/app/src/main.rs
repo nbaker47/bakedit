@@ -68,6 +68,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Mode::Action { name, args } => app::send_action(name, args.clone()).map_err(anyhow::Error::msg),
+        Mode::Dots => bakedit::dots::tui::run(),
         Mode::DumpInput | Mode::Probe | Mode::Edit => launch(args, &cwd),
     };
     match result {
@@ -147,7 +148,7 @@ fn here(args: cli::Args, cwd: &Path, why: Option<String>) -> anyhow::Result<()> 
     let root = cli::project_root(&args.paths, cwd);
     let files = args.paths.iter().filter(|spec| !spec.path.is_dir()).cloned().collect();
     let terminal_command = args.terminal_command.as_deref().map(TerminalCommand::parse);
-    App::run(StartOptions { root, files, terminal_command, restore: !args.no_restore, notice: why })
+    App::run(StartOptions { root, files, terminal_command, restore: !args.no_restore, onboarding: args.onboarding, notice: why })
 }
 
 fn is_ctrl_c(event: &InputEvent) -> bool {

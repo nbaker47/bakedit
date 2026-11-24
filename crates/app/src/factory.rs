@@ -239,7 +239,7 @@ impl PickerSource for AppSource {
             PickerKind::DiffBase => self.diff_base_rows(query, cx),
             PickerKind::RecentProjects => self.project_rows(query, cx),
             // The shell and the views fill the others.
-            PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links => Vec::new(),
+            PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links | PickerKind::Themes => Vec::new(),
         }
     }
 

@@ -265,6 +265,27 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A crisp single-line box border around `area`.
+    pub fn box_border(&mut self, area: Rect, style: Style) {
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        let right = area.x + area.width - 1;
+        let bottom = area.y + area.height - 1;
+        self.put(area.x, area.y, "┌", style);
+        self.put(right, area.y, "┐", style);
+        self.put(area.x, bottom, "└", style);
+        self.put(right, bottom, "┘", style);
+        if area.width > 2 {
+            self.hline(area.x + 1, area.y, area.width - 2, "─", style);
+            self.hline(area.x + 1, bottom, area.width - 2, "─", style);
+        }
+        if area.height > 2 {
+            self.vline(area.x, area.y + 1, area.height - 2, "│", style);
+            self.vline(right, area.y + 1, area.height - 2, "│", style);
+        }
+    }
+
     /// Direct access for views that fill cells themselves (the terminal panel).
     pub fn cell_mut(&mut self, x: u16, y: u16) -> Option<&mut ratatui::buffer::Cell> {
         if self.contains(x, y) {
