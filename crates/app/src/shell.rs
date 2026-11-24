@@ -695,6 +695,13 @@ impl Shell {
                 return true;
             }
         }
+        if name.starts_with("herdr::") {
+            let mut cx = cx!(self);
+            return self
+                .panels
+                .get_mut(&PanelId::Terminal)
+                .is_some_and(|view| view.handle_action(action, &mut cx));
+        }
         match name {
             "workspace::ToggleZoom" => self.with_workspace(|ws| ws.toggle_zoom()),
             "bakedit::ZoomIn" => self.adjust_font_size("+1"),
