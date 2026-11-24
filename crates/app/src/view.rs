@@ -125,6 +125,8 @@ pub enum Effect {
     /// Switch the git diff base between uncommitted changes (`None`) and a branch/ref
     /// (`Some(ref_name)`).
     SetDiffBase(Option<String>),
+    /// Show the diff introduced by a specific commit (`sha`).
+    SetCommitDiff { sha: String, label: String },
     Quit,
 }
 

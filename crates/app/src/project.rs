@@ -67,6 +67,8 @@ pub enum DiffBase {
     /// All changes in the current branch and work tree since the merge-base with this ref
     /// (for example `origin/main` or `main`).
     Branch(String),
+    /// The changes introduced by a single historical commit.
+    Commit { sha: String, label: String },
 }
 
 /// Git facts for the status bar.
@@ -555,7 +557,7 @@ impl Project {
     /// default base ref (`origin/main`, `main`, etc.). Returns a short status description.
     pub fn toggle_branch_diff(&mut self) -> String {
         match &self.diff_base {
-            DiffBase::Branch(_) => {
+            DiffBase::Branch(_) | DiffBase::Commit { .. } => {
                 self.set_diff_base(DiffBase::Uncommitted);
                 "Diff: uncommitted changes".to_string()
             }

@@ -70,6 +70,8 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("workspace::NewTerminal", None, None),
     ("git_panel::Toggle", None, None),
     ("git_panel::ToggleFocus", None, None),
+    ("git_panel::PreviousCommit", None, Some("git panel: previous commit")),
+    ("git_panel::NextCommit", None, Some("git panel: next commit")),
     ("project_panel::Toggle", None, None),
     ("project_panel::ToggleFocus", None, None),
     ("workspace::FocusCenterPane", None, Some("workspace: focus the editor")),

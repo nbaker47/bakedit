@@ -294,6 +294,7 @@ impl ProjectDiff {
             let result = match &base {
                 crate::project::DiffBase::Uncommitted => repo.diff_files(DiffTarget::HeadToWorktree),
                 crate::project::DiffBase::Branch(ref_name) => repo.diff_against_ref(ref_name),
+                crate::project::DiffBase::Commit { sha, .. } => repo.diff_commit(sha),
             };
             result.map(build).map_err(|error| error.to_string())
         }));
@@ -854,6 +855,7 @@ impl Item for ProjectDiff {
         let title = match &self.diff_base {
             crate::project::DiffBase::Uncommitted => "Project Diff".to_string(),
             crate::project::DiffBase::Branch(base) => format!("Diff vs {base}"),
+            crate::project::DiffBase::Commit { label, .. } => format!("Commit {label}"),
         };
         Tab { title, icon, ..Default::default() }
     }

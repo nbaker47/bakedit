@@ -1638,6 +1638,11 @@ impl Shell {
                 self.project.set_diff_base(target);
                 self.set_status(msg, false);
             }
+            Effect::SetCommitDiff { sha, label } => {
+                let msg = format!("Diff: commit {label}");
+                self.project.set_diff_base(crate::project::DiffBase::Commit { sha, label });
+                self.set_status(msg, false);
+            }
             Effect::Quit => self.request_quit(None),
         }
     }

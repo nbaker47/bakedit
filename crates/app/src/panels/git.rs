@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bakedit_core::{Action, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb, Theme};
-use bakedit_git::{CommitOptions, DiffStatus, DiffTarget, DisplayStatus, FileState, GitError, RepoState, StageState, Status, StatusEntry};
+use bakedit_git::{Commit, CommitOptions, DiffStatus, DiffTarget, DisplayStatus, FileState, GitError, RepoState, StageState, Status, StatusEntry};
 use bakedit_text::{Buffer, Clipboard as TextClipboard, ClipboardPiece, Command, DisplayPosition, EditSettings, Editor, Motion};
 use ratatui::layout::Rect;
 use serde_json::json;
@@ -134,6 +134,9 @@ struct VisualRow {
     range: Range<usize>,
 }
 
+/// Maximum number of recent commits loaded for left/right history browsing in the top pane.
+const MAX_HISTORY_COMMITS: usize = 50;
+
 /// The git panel.
 pub struct GitPanel {
     changes: Vec<Change>,
@@ -149,6 +152,21 @@ pub struct GitPanel {
     reveal: bool,
     focus: PanelFocus,
     active_section: ListSection,
+
+    /// Commit history for left/right browsing in the top section:
+    /// `commit_offset == 0` is Uncommitted (furthest right), `1` is `HEAD`, `2` is `HEAD~1`, ...
+    commits: Vec<Commit>,
+    commits_task: Option<Task<Vec<Commit>>>,
+    commits_stale: bool,
+    commit_offset: usize,
+    commit_changes: Vec<Change>,
+    commit_counts: HashMap<PathBuf, (usize, usize)>,
+    commit_selected: usize,
+    commit_scroll: usize,
+    commit_reveal: bool,
+    commit_task: Option<Task<Result<(String, Vec<Change>, HashMap<PathBuf, (usize, usize)>), String>>>,
+    commit_loaded_sha: Option<String>,
+    commit_error: Option<String>,
 
     /// Lines added and removed per file, from a background read of the diff.
     counts: HashMap<PathBuf, (usize, usize)>,
@@ -181,6 +199,8 @@ pub struct GitPanel {
     repo_button: Rect,
     branch_button: Rect,
     mode_button: Rect,
+    prev_commit_button: Rect,
+    next_commit_button: Rect,
     list_area: Rect,
     branch_header: Rect,
     branch_list_area: Rect,
@@ -409,7 +429,7 @@ impl GitPanel {
         let branch_repo_root = cx.project.repo().map(|r| r.root().to_path_buf());
         let branch_base = match cx.project.diff_base() {
             DiffBase::Branch(base) => base.clone(),
-            DiffBase::Uncommitted => cx.project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
+            DiffBase::Uncommitted | DiffBase::Commit { .. } => cx.project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
         };
         let mut panel = GitPanel {
             changes: Vec::new(),
@@ -421,6 +441,18 @@ impl GitPanel {
             reveal: false,
             focus: PanelFocus::Changes,
             active_section: ListSection::Uncommitted,
+            commits: Vec::new(),
+            commits_task: None,
+            commits_stale: true,
+            commit_offset: 0,
+            commit_changes: Vec::new(),
+            commit_counts: HashMap::new(),
+            commit_selected: 0,
+            commit_scroll: 0,
+            commit_reveal: false,
+            commit_task: None,
+            commit_loaded_sha: None,
+            commit_error: None,
             counts: HashMap::new(),
             counts_task: None,
             counts_stale: true,
@@ -446,6 +478,8 @@ impl GitPanel {
             repo_button: Rect::default(),
             branch_button: Rect::default(),
             mode_button: Rect::default(),
+            prev_commit_button: Rect::default(),
+            next_commit_button: Rect::default(),
             list_area: Rect::default(),
             branch_header: Rect::default(),
             branch_list_area: Rect::default(),
@@ -480,8 +514,19 @@ impl GitPanel {
             self.branch_repo_root = repo_root;
             self.branch_base = match &diff_base {
                 DiffBase::Branch(base) => base.clone(),
-                DiffBase::Uncommitted => project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
+                DiffBase::Uncommitted | DiffBase::Commit { .. } => project.repo().and_then(bakedit_git::Repo::default_base_ref).unwrap_or_else(|| "main".to_string()),
             };
+            self.commits.clear();
+            self.commits_task = None;
+            self.commits_stale = true;
+            self.commit_offset = 0;
+            self.commit_changes.clear();
+            self.commit_counts.clear();
+            self.commit_selected = 0;
+            self.commit_scroll = 0;
+            self.commit_task = None;
+            self.commit_loaded_sha = None;
+            self.commit_error = None;
             self.branch_changes.clear();
             self.branch_counts.clear();
             self.branch_selected = 0;
@@ -512,6 +557,7 @@ impl GitPanel {
         if !same || repo_changed {
             self.counts_stale = true;
             self.branch_stale = true;
+            self.commits_stale = true;
             let mut changes: Vec<Change> = status
                 .as_deref()
                 .map(|status| {
@@ -539,9 +585,58 @@ impl GitPanel {
             None => self.selected = self.selected.min(self.changes.len().saturating_sub(1)),
         }
         self.selected_path = self.changes.get(self.selected).map(|change| change.path.clone());
-        if self.changes.is_empty() && !self.branch_changes.is_empty() {
+        if self.changes.is_empty() && self.commit_offset == 0 && !self.branch_changes.is_empty() {
             self.active_section = ListSection::Branch;
         }
+    }
+
+    fn viewing_commit(&self) -> Option<&Commit> {
+        self.commit_offset.checked_sub(1).and_then(|i| self.commits.get(i))
+    }
+
+    fn top_changes(&self) -> &[Change] {
+        if self.commit_offset == 0 { &self.changes } else { &self.commit_changes }
+    }
+
+    fn step_commit(&mut self, delta: isize, cx: &mut Cx<'_>) -> bool {
+        // Left (+1) steps backwards into commit history; Right (-1) steps forward toward
+        // Uncommitted (commit_offset == 0, furthest right).
+        if self.commits.is_empty() && delta > 0 {
+            self.kick_commits(cx.project);
+            cx.status("No commits loaded yet");
+            return true;
+        }
+        let max_offset = self.commits.len();
+        let next = (self.commit_offset as isize + delta).clamp(0, max_offset as isize) as usize;
+        if next == self.commit_offset {
+            if next == 0 {
+                self.active_section = ListSection::Uncommitted;
+                cx.status("Already at uncommitted changes");
+            } else {
+                cx.status("Oldest loaded commit");
+            }
+            return true;
+        }
+        self.commit_offset = next;
+        self.active_section = ListSection::Uncommitted;
+        self.commit_selected = 0;
+        self.commit_scroll = 0;
+        self.commit_reveal = true;
+        self.commit_error = None;
+        if self.commit_offset == 0 {
+            self.commit_task = None;
+            self.commit_loaded_sha = None;
+            self.commit_changes.clear();
+            self.commit_counts.clear();
+            cx.status("Uncommitted changes");
+        } else if let Some(commit) = self.viewing_commit().cloned() {
+            self.commit_changes.clear();
+            self.commit_counts.clear();
+            self.commit_loaded_sha = None;
+            self.kick_commit_diff(cx.project);
+            cx.status(format!("{} {}", commit.short, commit.subject));
+        }
+        true
     }
 
     fn apply_branch_changes(&mut self, changes: Vec<Change>) {
@@ -572,12 +667,30 @@ impl GitPanel {
 
     fn selected_change(&self) -> Option<&Change> {
         match self.active_section {
-            ListSection::Uncommitted => self.changes.get(self.selected),
+            ListSection::Uncommitted => {
+                if self.commit_offset == 0 {
+                    self.changes.get(self.selected)
+                } else {
+                    self.commit_changes.get(self.commit_selected)
+                }
+            }
             ListSection::Branch => self.branch_changes.get(self.branch_selected),
         }
     }
 
     fn select(&mut self, index: usize) {
+        if self.commit_offset > 0 {
+            if self.commit_changes.is_empty() {
+                if !self.branch_changes.is_empty() {
+                    self.select_branch(index);
+                }
+                return;
+            }
+            self.active_section = ListSection::Uncommitted;
+            self.commit_selected = index.min(self.commit_changes.len() - 1);
+            self.commit_reveal = true;
+            return;
+        }
         if self.changes.is_empty() {
             if !self.branch_changes.is_empty() {
                 self.select_branch(index);
@@ -601,31 +714,33 @@ impl GitPanel {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        let top_len = self.top_changes().len();
+        let top_sel = if self.commit_offset == 0 { self.selected } else { self.commit_selected };
         match self.active_section {
             ListSection::Uncommitted => {
-                if self.changes.is_empty() {
+                if top_len == 0 {
                     if !self.branch_changes.is_empty() {
                         self.select_branch(0);
                     }
                     return;
                 }
-                let next = self.selected as isize + delta;
-                if next >= self.changes.len() as isize && !self.branch_changes.is_empty() {
+                let next = top_sel as isize + delta;
+                if next >= top_len as isize && !self.branch_changes.is_empty() {
                     self.select_branch(0);
                 } else {
-                    self.select(next.clamp(0, self.changes.len().saturating_sub(1) as isize) as usize);
+                    self.select(next.clamp(0, top_len.saturating_sub(1) as isize) as usize);
                 }
             }
             ListSection::Branch => {
                 if self.branch_changes.is_empty() {
-                    if !self.changes.is_empty() {
-                        self.select(self.changes.len() - 1);
+                    if top_len > 0 {
+                        self.select(top_len - 1);
                     }
                     return;
                 }
                 let next = self.branch_selected as isize + delta;
-                if next < 0 && !self.changes.is_empty() {
-                    self.select(self.changes.len() - 1);
+                if next < 0 && top_len > 0 {
+                    self.select(top_len - 1);
                 } else {
                     self.select_branch(next.clamp(0, self.branch_changes.len().saturating_sub(1) as isize) as usize);
                 }
@@ -933,6 +1048,8 @@ impl GitPanel {
 
     fn kick_counts(&mut self, project: &Project) {
         self.kick_branch_diff(project);
+        self.kick_commits(project);
+        self.kick_commit_diff(project);
         if self.counts_task.is_some() || !self.counts_stale {
             return;
         }
@@ -998,6 +1115,44 @@ impl GitPanel {
                 Group::Untracked => 2,
             });
             Ok((base_ref, changes, counts))
+        }));
+    }
+
+    fn kick_commits(&mut self, project: &Project) {
+        if self.commits_task.is_some() || !self.commits_stale {
+            return;
+        }
+        let Some(repo) = project.repo().cloned() else {
+            self.commits_stale = false;
+            return;
+        };
+        self.commits_stale = false;
+        self.commits_task = Some(project.spawn(move || repo.log(MAX_HISTORY_COMMITS, None).unwrap_or_default()));
+    }
+
+    fn kick_commit_diff(&mut self, project: &Project) {
+        let Some(commit) = self.viewing_commit() else { return };
+        let sha = commit.sha.clone();
+        if self.commit_loaded_sha.as_deref() == Some(sha.as_str()) || self.commit_task.is_some() {
+            return;
+        }
+        let Some(repo) = project.repo().cloned() else { return };
+        self.commit_task = Some(project.spawn(move || {
+            let files = repo.diff_commit(&sha).map_err(|error| error.to_string())?;
+            let mut counts = HashMap::new();
+            let mut changes = Vec::with_capacity(files.len());
+            for file in files {
+                counts.insert(file.path.clone(), (file.additions(), file.deletions()));
+                let status = match file.status {
+                    DiffStatus::Added | DiffStatus::Untracked => DisplayStatus::Added,
+                    DiffStatus::Deleted => DisplayStatus::Deleted,
+                    DiffStatus::Modified => DisplayStatus::Modified,
+                    DiffStatus::Renamed | DiffStatus::Copied => DisplayStatus::Renamed,
+                    DiffStatus::Conflicted => DisplayStatus::Conflict,
+                };
+                changes.push(Change { path: file.path, status, stage: StageState::Unstaged, group: Group::Tracked });
+            }
+            Ok((sha, changes, counts))
         }));
     }
 
@@ -1132,10 +1287,48 @@ impl GitPanel {
     fn draw_header(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
         let theme = cx.theme;
         let bg = theme.panel_bg;
+        self.prev_commit_button = Rect::default();
+        self.next_commit_button = Rect::default();
         if area.height == 0 {
             return;
         }
         let inner = area.width.saturating_sub(2);
+        if let Some(commit) = self.viewing_commit().cloned() {
+            let mut x = area.x + 1;
+            let has_older = self.commit_offset < self.commits.len();
+            let left_col = if has_older { theme.text_accent } else { theme.text_muted };
+            canvas.text(x, area.y, "←", Style::colors(left_col, bg).bold(), 1);
+            if has_older {
+                self.prev_commit_button = Rect::new(x, area.y, 2, 1);
+            }
+            x += 2;
+            let right_arrow = "→";
+            let count_str = if self.commit_task.is_some() {
+                "…".to_string()
+            } else {
+                match self.commit_changes.len() {
+                    0 => String::new(),
+                    1 => "1 file".to_string(),
+                    n => format!("{n} files"),
+                }
+            };
+            let right_w = ui::width(&count_str) as u16 + if count_str.is_empty() { 1 } else { 3 };
+            let end = area.right().saturating_sub(1 + right_w + 1);
+            if x < end {
+                let used = canvas.text_truncated(x, area.y, &commit.short, Style::colors(theme.text_accent, bg).bold(), end - x);
+                x += used + 1;
+            }
+            if x < end {
+                canvas.text_truncated(x, area.y, &commit.subject, Style::colors(theme.text, bg), end - x);
+            }
+            let arrow_x = area.right().saturating_sub(2);
+            canvas.text(arrow_x, area.y, right_arrow, Style::colors(theme.text_accent, bg).bold(), 1);
+            self.next_commit_button = Rect::new(arrow_x.saturating_sub(1), area.y, 2, 1);
+            if !count_str.is_empty() && arrow_x > area.x + 2 {
+                canvas.text_right(arrow_x.saturating_sub(2), area.y, &count_str, Style::colors(theme.text_muted, bg));
+            }
+            return;
+        }
         let repo_label = cx.project.active_repo_label().map(str::to_string);
         let multi_repo = cx.project.repos().len() > 1;
         let Some(status) = &self.status else {
@@ -1150,13 +1343,17 @@ impl GitPanel {
             }
             return;
         };
-        // The right side: the job that is running, else the uncommitted change count.
+        // The right side: the job that is running, else a ← history cue + uncommitted count.
+        let history_hint = !self.commits.is_empty() && cx.project.busy().is_none();
         let right = match cx.project.busy() {
             Some(job) => format!("{job}…"),
-            None => match self.changes.len() {
-                0 => String::new(),
-                1 => "1 change".to_string(),
-                n => format!("{n} changes"),
+            None => match (history_hint, self.changes.len()) {
+                (true, 0) => "←".to_string(),
+                (false, 0) => String::new(),
+                (true, 1) => "← 1 change".to_string(),
+                (false, 1) => "1 change".to_string(),
+                (true, n) => format!("← {n} changes"),
+                (false, n) => format!("{n} changes"),
             },
         };
         let right_accent = false;
@@ -1219,7 +1416,14 @@ impl GitPanel {
             canvas.text_right(area.right() - 1, area.y, &right, style);
             if cx.project.busy().is_none() {
                 let x = (area.right() - 1).saturating_sub(right_width);
-                self.mode_button = Rect::new(x, area.y, right_width, 1);
+                if history_hint {
+                    self.prev_commit_button = Rect::new(x, area.y, 2, 1);
+                    if right_width > 2 {
+                        self.mode_button = Rect::new(x + 2, area.y, right_width - 2, 1);
+                    }
+                } else {
+                    self.mode_button = Rect::new(x, area.y, right_width, 1);
+                }
             }
         }
     }
@@ -1255,6 +1459,10 @@ impl GitPanel {
         let bg = theme.panel_bg;
         canvas.fill(area, bg);
         if area.height == 0 || area.width < 6 {
+            return;
+        }
+        if self.commit_offset > 0 {
+            self.draw_commit_list(canvas, area, cx);
             return;
         }
         if self.changes.is_empty() {
@@ -1320,6 +1528,85 @@ impl GitPanel {
             let mut right = line.right() - 1;
             if show_counts {
                 let (added, removed) = self.counts.get(&change.path).copied().unwrap_or((0, 0));
+                if del_w > 0 {
+                    if removed > 0 {
+                        canvas.text_right(right, y, &format!("−{removed}"), Style::colors(theme.deleted, row_bg));
+                    }
+                    right = right.saturating_sub(del_w + 1);
+                }
+                if add_w > 0 {
+                    if added > 0 {
+                        canvas.text_right(right, y, &format!("+{added}"), Style::colors(theme.created, row_bg));
+                    }
+                    right = right.saturating_sub(add_w + 1);
+                }
+            }
+            let room = right.saturating_sub(x);
+            let name = change.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name_color = if change.status == DisplayStatus::Deleted { theme.text_muted } else { theme.text };
+            let used = canvas.text_truncated(x, y, &name, Style::colors(name_color, row_bg), room);
+            let folder = change.path.parent().map(Path::to_string_lossy).unwrap_or_default().into_owned();
+            let left = room.saturating_sub(used + 2);
+            if !folder.is_empty() && left >= 4 {
+                canvas.text(x + used + 2, y, &ui::truncate_start(&folder, left as usize), Style::colors(theme.text_muted, row_bg), left);
+            }
+        }
+    }
+
+    fn draw_commit_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
+        let theme = cx.theme;
+        let bg = theme.panel_bg;
+        if let Some(error) = &self.commit_error {
+            canvas.text_truncated(area.x + 1, area.y, error, Style::colors(theme.error, bg), area.width.saturating_sub(2));
+            return;
+        }
+        if self.commit_changes.is_empty() {
+            let msg = if self.commit_task.is_some() { "Loading commit…" } else { "No file changes in this commit" };
+            canvas.text_truncated(area.x + 1, area.y, msg, Style::colors(theme.text_muted, bg), area.width.saturating_sub(2));
+            return;
+        }
+        let visible = area.height as usize;
+        if self.commit_reveal {
+            if self.commit_selected < self.commit_scroll {
+                self.commit_scroll = self.commit_selected;
+            } else if self.commit_selected >= self.commit_scroll + visible {
+                self.commit_scroll = self.commit_selected + 1 - visible;
+            }
+            self.commit_reveal = false;
+        }
+        self.commit_scroll = self.commit_scroll.min(self.commit_changes.len().saturating_sub(visible));
+        let scrollbar = self.commit_changes.len() > visible && area.width > 8;
+        let width = area.width - u16::from(scrollbar);
+        if scrollbar {
+            let marks = ScrollMarks { marks: Vec::new(), cursor_line: Some(self.commit_selected) };
+            paint::scrollbar(canvas, area.right() - 1, area.y, area.height, self.commit_changes.len(), self.commit_scroll, visible, &marks, theme);
+        }
+        let (mut add_w, mut del_w) = (0u16, 0u16);
+        for change in self.commit_changes.iter().skip(self.commit_scroll).take(visible) {
+            if let Some(&(added, removed)) = self.commit_counts.get(&change.path) {
+                if added > 0 {
+                    add_w = add_w.max(digits(added) + 1);
+                }
+                if removed > 0 {
+                    del_w = del_w.max(digits(removed) + 1);
+                }
+            }
+        }
+        let counts_w = add_w + del_w + u16::from(add_w > 0 && del_w > 0);
+        let show_counts = counts_w > 0 && width > counts_w + 14;
+        for (offset, change) in self.commit_changes.iter().skip(self.commit_scroll).take(visible).enumerate() {
+            let index = self.commit_scroll + offset;
+            let y = area.y + offset as u16;
+            let line = Rect::new(area.x, y, width, 1);
+            let is_selected = self.active_section == ListSection::Uncommitted && index == self.commit_selected;
+            let row_bg = if is_selected { theme.element_selected } else { bg };
+            canvas.fill(line, row_bg);
+            let mut x = area.x + 1;
+            canvas.text(x, y, status_letter(change.status), Style::colors(status_color(change.status, theme), row_bg).bold(), 1);
+            x += 2;
+            let mut right = line.right() - 1;
+            if show_counts {
+                let (added, removed) = self.commit_counts.get(&change.path).copied().unwrap_or((0, 0));
                 if del_w > 0 {
                     if removed > 0 {
                         canvas.text_right(right, y, &format!("−{removed}"), Style::colors(theme.deleted, row_bg));
@@ -1621,6 +1908,12 @@ impl View for GitPanel {
         match action.name.as_str() {
             "menu::SelectNext" | "git_panel::NextEntry" if in_list => self.move_selection(1),
             "menu::SelectPrevious" | "git_panel::PreviousEntry" if in_list => self.move_selection(-1),
+            "git_panel::PreviousCommit" if in_list && (self.active_section == ListSection::Uncommitted || self.changes.is_empty()) => {
+                return self.step_commit(1, cx);
+            }
+            "git_panel::NextCommit" if in_list && (self.active_section == ListSection::Uncommitted || self.commit_offset > 0) => {
+                return self.step_commit(-1, cx);
+            }
             "menu::SelectFirst" | "git_panel::FirstEntry" if in_list => self.select(0),
             "menu::SelectLast" | "git_panel::LastEntry" if in_list => {
                 if !self.branch_changes.is_empty() && self.branch_list_area.height > 0 {
@@ -1633,7 +1926,12 @@ impl View for GitPanel {
                 let Some(path) = self.selected_change().and_then(|change| cx.project.abs_path(&change.path)) else { return false };
                 match self.active_section {
                     ListSection::Uncommitted => {
-                        if *cx.project.diff_base() != DiffBase::Uncommitted {
+                        if let Some(commit) = self.viewing_commit().cloned() {
+                            let want = DiffBase::Commit { sha: commit.sha.clone(), label: commit.short.clone() };
+                            if *cx.project.diff_base() != want {
+                                cx.push(Effect::SetCommitDiff { sha: commit.sha, label: commit.short });
+                            }
+                        } else if *cx.project.diff_base() != DiffBase::Uncommitted {
                             cx.push(Effect::SetDiffBase(None));
                         }
                     }
@@ -1654,10 +1952,18 @@ impl View for GitPanel {
             "git::Commit" => return self.commit(cx),
             "git::Amend" => return self.amend(cx),
             "git::ToggleStaged" if in_list => {
+                if self.active_section == ListSection::Uncommitted && self.commit_offset > 0 {
+                    cx.status("Viewing a past commit — press → to return to uncommitted changes");
+                    return true;
+                }
                 let Some(change) = self.selected_change() else { return false };
                 return self.stage(self.entry_paths(change), change.stage != StageState::Staged, cx);
             }
             "git::StageFile" | "git::UnstageFile" if in_list => {
+                if self.active_section == ListSection::Uncommitted && self.commit_offset > 0 {
+                    cx.status("Viewing a past commit — press → to return to uncommitted changes");
+                    return true;
+                }
                 let Some(change) = self.selected_change() else { return false };
                 return self.stage(self.entry_paths(change), action.name == "git::StageFile", cx);
             }
@@ -1667,7 +1973,13 @@ impl View for GitPanel {
             "git::UnstageAll" => {
                 let _ = cx.project.git_job("Unstage all", |repo| repo.unstage_all().map(|()| String::new()));
             }
-            "git::RestoreFile" if in_list => return self.restore_file(action, cx),
+            "git::RestoreFile" if in_list => {
+                if self.active_section == ListSection::Uncommitted && self.commit_offset > 0 {
+                    cx.status("Viewing a past commit — press → to return to uncommitted changes");
+                    return true;
+                }
+                return self.restore_file(action, cx);
+            }
             "git::RestoreTrackedFiles" => return self.restore_tracked(action, cx),
             "git::TrashUntrackedFiles" => return self.trash_untracked(action, cx),
             "git::Fetch" | "git::Pull" | "git::PullRebase" | "git::Push" | "git::ForcePush" => return self.remote(action, cx),
@@ -1728,6 +2040,12 @@ impl View for GitPanel {
                     cx.push(Effect::Dispatch(Action::new("branches::OpenRecent")));
                     return true;
                 }
+                if inside(self.prev_commit_button) {
+                    return self.step_commit(1, cx);
+                }
+                if inside(self.next_commit_button) {
+                    return self.step_commit(-1, cx);
+                }
                 if inside(self.mode_button) || inside(self.branch_header) {
                     cx.push(Effect::Dispatch(Action::new("git::SelectDiffBase")));
                     return true;
@@ -1769,6 +2087,21 @@ impl View for GitPanel {
                     return true;
                 }
                 self.focus = PanelFocus::Changes;
+                if self.commit_offset > 0 {
+                    let index = self.commit_scroll + (event.row - self.list_area.y) as usize;
+                    if let Some(change) = self.commit_changes.get(index).cloned() {
+                        self.select(index);
+                        self.commit_reveal = false;
+                        if let (Some(commit), Some(path)) = (self.viewing_commit().cloned(), cx.project.abs_path(&change.path)) {
+                            let want = DiffBase::Commit { sha: commit.sha.clone(), label: commit.short.clone() };
+                            if *cx.project.diff_base() != want {
+                                cx.push(Effect::SetCommitDiff { sha: commit.sha, label: commit.short });
+                            }
+                            cx.push(Effect::ShowProjectDiff { path: Some(path), focus: false });
+                        }
+                    }
+                    return true;
+                }
                 let rows = self.list_rows();
                 let Some(row) = rows.get(self.scroll + (event.row - self.list_area.y) as usize).copied() else { return true };
                 match row {
@@ -1829,6 +2162,43 @@ impl View for GitPanel {
         }
         if self.branch_task.as_ref().is_some_and(Task::is_finished) {
             self.branch_task = None;
+        }
+        if let Some(commits) = self.commits_task.as_mut().and_then(Task::poll) {
+            self.commits_task = None;
+            let prev_sha = self.viewing_commit().map(|c| c.sha.clone());
+            self.commits = commits;
+            if let Some(sha) = prev_sha {
+                self.commit_offset = self.commits.iter().position(|c| c.sha == sha).map_or(0, |i| i + 1);
+            } else {
+                self.commit_offset = self.commit_offset.min(self.commits.len());
+            }
+            dirty = true;
+        }
+        if self.commits_task.as_ref().is_some_and(Task::is_finished) {
+            self.commits_task = None;
+        }
+        if let Some(loaded) = self.commit_task.as_mut().and_then(Task::poll) {
+            self.commit_task = None;
+            let want_sha = self.viewing_commit().map(|c| c.sha.clone());
+            match loaded {
+                Ok((sha, changes, counts)) if want_sha.as_deref() == Some(sha.as_str()) => {
+                    self.commit_error = None;
+                    self.commit_loaded_sha = Some(sha);
+                    self.commit_counts = counts;
+                    self.commit_changes = changes;
+                    self.commit_selected = self.commit_selected.min(self.commit_changes.len().saturating_sub(1));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.commit_error = Some(error);
+                    self.commit_changes.clear();
+                    self.commit_counts.clear();
+                }
+            }
+            dirty = true;
+        }
+        if self.commit_task.as_ref().is_some_and(Task::is_finished) {
+            self.commit_task = None;
         }
         self.kick_counts(cx.project);
         if let Some(loaded) = self.amend_load.as_mut().and_then(Task::poll) {

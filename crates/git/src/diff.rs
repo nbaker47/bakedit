@@ -670,6 +670,33 @@ impl Repo {
         Ok(files)
     }
 
+    /// All changes introduced by a single commit (`sha`), comparing it against its first
+    /// parent (or the empty tree for a root commit).
+    pub fn diff_commit(&self, sha: &str) -> Result<Vec<FileDiff>> {
+        let output = self
+            .git()
+            .args([
+                "diff-tree",
+                "--root",
+                "-m",
+                "--first-parent",
+                "--no-commit-id",
+                "-p",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "-M",
+                "-U3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--submodule=short",
+                "-O/dev/null",
+                sha,
+            ])
+            .run()?;
+        Ok(parse_diff(&output.stdout))
+    }
+
     /// The changes to one file, or `None` when it does not differ between the two
     /// versions `target` names.
     ///

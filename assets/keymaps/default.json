@@ -434,6 +434,8 @@
     "bindings": {
       "up": "git_panel::PreviousEntry",
       "down": "git_panel::NextEntry",
+      "left": "git_panel::PreviousCommit",
+      "right": "git_panel::NextCommit",
       "shift-up": "git_panel::PreviousEntry",
       "shift-down": "git_panel::NextEntry",
       "cmd-up": "git_panel::FirstEntry",
