@@ -36,11 +36,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::background::Task;
 use crate::chrome::Tab;
 use crate::icons::file_icon;
+use crate::line_input::{InputOutcome, LineInput};
 use crate::paint::{self, ScrollMarks};
 use crate::panels::git::{request_discard, Discarding};
 use crate::settings::Icons;
 use crate::ui::{self, Canvas, Style};
-use crate::view::{Context, Cursor, Cx, Effect, FsChange, Item, RenderCx, View};
+use crate::view::{Context, Cursor, CursorShape, Cx, Effect, FsChange, Item, RenderCx, View};
 use crate::workspace::{Focus, PanelId};
 
 /// Lines a wheel step scrolls.
@@ -100,6 +101,17 @@ struct Anchor {
     offset: usize,
 }
 
+/// In-diff find bar (`Ctrl+F` / `Cmd+F`).
+struct DiffFindBar {
+    query: LineInput,
+    focused: bool,
+    case_sensitive: bool,
+    /// Row indices in `ProjectDiff::rows` matching the query.
+    matches: Vec<usize>,
+    /// Active index in `matches`.
+    current: Option<usize>,
+}
+
 /// The project diff.
 pub struct ProjectDiff {
     files: Vec<FileDiff>,
@@ -129,6 +141,8 @@ pub struct ProjectDiff {
     styles_theme: String,
     /// The top of the repository (git's paths are relative to it), as the project spells it.
     top: Option<PathBuf>,
+    /// In-diff find bar (`Ctrl+F` / `Cmd+F`).
+    find: Option<DiffFindBar>,
 }
 
 fn status_letter(status: DiffStatus) -> &'static str {
@@ -271,6 +285,7 @@ impl ProjectDiff {
             styles: StyleCache::new(),
             styles_theme: String::new(),
             top: None,
+            find: None,
         };
         diff.reload(cx);
         diff
@@ -302,6 +317,166 @@ impl ProjectDiff {
             };
             result.map(build).map_err(|error| error.to_string())
         }));
+    }
+
+    /// Open or re-focus the in-diff find bar.
+    fn open_find(&mut self) {
+        if let Some(bar) = &mut self.find {
+            bar.focused = true;
+            bar.query.select_all();
+        } else {
+            self.find = Some(DiffFindBar {
+                query: LineInput::new(),
+                focused: true,
+                case_sensitive: false,
+                matches: Vec::new(),
+                current: None,
+            });
+        }
+    }
+
+    fn find_focused(&self) -> bool {
+        self.find.as_ref().is_some_and(|bar| bar.focused)
+    }
+
+    fn row_matches(&self, row: &DiffRow, needle: &str, case_sensitive: bool) -> bool {
+        let check = |haystack: &str| {
+            if case_sensitive {
+                haystack.contains(needle)
+            } else {
+                haystack.to_lowercase().contains(needle)
+            }
+        };
+        match row {
+            DiffRow::Line { text, .. } => check(text),
+            DiffRow::File(index) => self.files.get(*index).is_some_and(|f| check(&f.path.to_string_lossy())),
+            DiffRow::Hunk { header, .. } => check(header),
+            DiffRow::Note { text, .. } => check(text),
+            DiffRow::Gap => false,
+        }
+    }
+
+    fn recompute_find_matches(&mut self, jump: bool) {
+        let Some(bar) = &self.find else { return };
+        let raw = bar.query.text();
+        if raw.is_empty() {
+            if let Some(bar) = &mut self.find {
+                bar.matches.clear();
+                bar.current = None;
+            }
+            return;
+        }
+        let case_sensitive = bar.case_sensitive;
+        let needle = if case_sensitive { raw.to_string() } else { raw.to_lowercase() };
+        let matches: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| self.row_matches(row, &needle, case_sensitive).then_some(i))
+            .collect();
+        let current = if matches.is_empty() {
+            None
+        } else {
+            let pos = matches.iter().position(|&row| row >= self.cursor).unwrap_or(0);
+            if jump {
+                self.cursor = matches[pos];
+            }
+            Some(pos)
+        };
+        if let Some(bar) = &mut self.find {
+            bar.matches = matches;
+            bar.current = current;
+        }
+    }
+
+    fn step_find_match(&mut self, forward: bool) {
+        let Some(bar) = &mut self.find else { return };
+        if bar.matches.is_empty() {
+            return;
+        }
+        let len = bar.matches.len();
+        let next = match bar.current {
+            Some(i) if forward => (i + 1) % len,
+            Some(i) => (i + len - 1) % len,
+            None => 0,
+        };
+        bar.current = Some(next);
+        self.cursor = bar.matches[next];
+    }
+
+    fn find_input_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let Some(bar) = &mut self.find else { return false };
+        match bar.query.handle_action(action) {
+            InputOutcome::Ignored => false,
+            InputOutcome::Moved => true,
+            InputOutcome::Edited => {
+                self.recompute_find_matches(true);
+                true
+            }
+            InputOutcome::Copied { text, edited } => {
+                cx.clipboard.set(&text, false);
+                if edited {
+                    self.recompute_find_matches(true);
+                }
+                true
+            }
+            InputOutcome::WantsPaste => {
+                if let Some(clip) = cx.clipboard.get() {
+                    bar.query.insert(&clip.text);
+                    self.recompute_find_matches(true);
+                }
+                true
+            }
+        }
+    }
+
+    fn render_find_bar(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
+        let bar = self.find.as_mut()?;
+        let theme = cx.theme;
+        let bar_bg = theme.surface;
+        let field_bg = theme.editor_bg;
+        canvas.fill(area, bar_bg);
+
+        let count_text = if bar.query.is_empty() {
+            String::new()
+        } else if let Some(current) = bar.current {
+            format!(" {}/{} ", current + 1, bar.matches.len())
+        } else {
+            " 0/0 ".to_string()
+        };
+        let case_badge = if bar.case_sensitive { "[Aa] " } else { "" };
+        let right_w = (count_text.len() + case_badge.len()) as u16;
+        let label = " Find ";
+        let label_w = label.len() as u16;
+        canvas.text(area.x, area.y, label, Style::colors(theme.text_muted, bar_bg), label_w);
+
+        let field_x = area.x + label_w;
+        let field_w = area.width.saturating_sub(label_w + right_w + 1);
+        let mut cursor = None;
+        if field_w >= 4 {
+            let field = Rect::new(field_x, area.y, field_w, 1);
+            canvas.fill(field, field_bg);
+            let inner = Rect::new(field.x + 1, field.y, field.width.saturating_sub(2), 1);
+            let input_style = Style::colors(theme.text, field_bg);
+            let selection_style = Style::colors(theme.text, theme.selection_bg);
+            let placeholder = Style::colors(theme.text_placeholder, field_bg);
+            let col = bar.query.render(canvas, inner, input_style, selection_style, "Find in diff", placeholder);
+            if bar.focused && cx.focused {
+                cursor = Some(Cursor { col, row: area.y, shape: CursorShape::Bar });
+            }
+        }
+
+        let mut rx = area.right().saturating_sub(right_w);
+        if !count_text.is_empty() {
+            let color = if bar.matches.is_empty() { theme.deleted } else { theme.text_muted };
+            let w = count_text.len() as u16;
+            canvas.text(rx, area.y, &count_text, Style::colors(color, bar_bg), w);
+            rx += w;
+        }
+        if !case_badge.is_empty() {
+            canvas.text(rx, area.y, case_badge, Style::colors(theme.text_accent, bar_bg), case_badge.len() as u16);
+        }
+        cursor
     }
 
     /// Copy the text of the highlighted diff row (code line without +/- prefix, file path,
@@ -365,6 +540,7 @@ impl ProjectDiff {
                 self.number_width = loaded.number_width;
                 self.left = 0;
                 self.error = None;
+                self.recompute_find_matches(false);
             }
             Err(error) => {
                 self.error = Some(error);
@@ -696,11 +872,20 @@ impl View for ProjectDiff {
     fn render(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
         let theme = cx.theme;
         canvas.fill(area, theme.editor_bg);
-        self.area = area;
-        self.height = area.height as usize;
         if area.width < 8 || area.height == 0 {
+            self.area = area;
+            self.height = area.height as usize;
             return None;
         }
+        let (find_cursor, content_area) = if self.find.is_some() && area.height >= 2 {
+            let bar_area = Rect::new(area.x, area.y, area.width, 1);
+            let cursor = self.render_find_bar(canvas, bar_area, cx);
+            (cursor, Rect::new(area.x, area.y + 1, area.width, area.height - 1))
+        } else {
+            (None, area)
+        };
+        self.area = content_area;
+        self.height = content_area.height as usize;
         if self.styles_theme != theme.name {
             self.styles = StyleCache::new();
             self.styles_theme = theme.name.clone();
@@ -719,13 +904,13 @@ impl View for ProjectDiff {
             None
         };
         if let Some((title, detail)) = message {
-            let top = area.y + 1.min(area.height - 1);
-            let width = area.width.saturating_sub(4);
-            canvas.text_truncated(area.x + 2, top, title, text, width);
-            if !detail.is_empty() && top + 1 < area.bottom() {
-                canvas.text_truncated(area.x + 2, top + 1, &detail, muted, width);
+            let top = content_area.y + 1.min(content_area.height - 1);
+            let width = content_area.width.saturating_sub(4);
+            canvas.text_truncated(content_area.x + 2, top, title, text, width);
+            if !detail.is_empty() && top + 1 < content_area.bottom() {
+                canvas.text_truncated(content_area.x + 2, top + 1, &detail, muted, width);
             }
-            return None;
+            return find_cursor;
         }
         let last = self.rows.len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
@@ -736,33 +921,79 @@ impl View for ProjectDiff {
         }
         self.scroll = self.scroll.min(last);
         let scrollbar = self.rows.len() > self.height;
-        let body = Rect::new(area.x, area.y, area.width - u16::from(scrollbar), area.height);
+        let body = Rect::new(content_area.x, content_area.y, content_area.width - u16::from(scrollbar), content_area.height);
         for (offset, index) in (self.scroll..self.rows.len()).take(self.height).enumerate() {
-            self.draw_row(canvas, body, area.y + offset as u16, index, cx);
+            self.draw_row(canvas, body, content_area.y + offset as u16, index, cx);
         }
         if scrollbar {
-            let marks = ScrollMarks {
-                marks: self
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, row)| match row {
-                        DiffRow::File(f) => Some((i, status_color(self.files[*f].status, theme))),
-                        _ => None,
-                    })
-                    .collect(),
-                cursor_line: Some(self.cursor),
-            };
-            paint::scrollbar(canvas, area.right() - 1, area.y, area.height, self.rows.len(), self.scroll, self.height, &marks, theme);
+            let mut marks: Vec<(usize, Rgb)> = self
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| match row {
+                    DiffRow::File(f) => Some((i, status_color(self.files[*f].status, theme))),
+                    _ => None,
+                })
+                .collect();
+            if let Some(bar) = &self.find {
+                for &row in &bar.matches {
+                    marks.push((row, theme.text_accent));
+                }
+            }
+            let scroll_marks = ScrollMarks { marks, cursor_line: Some(self.cursor) };
+            paint::scrollbar(canvas, content_area.right() - 1, content_area.y, content_area.height, self.rows.len(), self.scroll, self.height, &scroll_marks, theme);
         }
-        None
+        find_cursor
     }
 
     fn contexts(&self, out: &mut Vec<Context>) {
         out.push(Context::new("ProjectDiff"));
+        if self.find_focused() {
+            out.push(Context::new("BufferSearchBar"));
+            out.push(Context::new("Editor").value("mode", "single_line"));
+        }
     }
 
     fn handle_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        match action.name.as_str() {
+            "buffer_search::Deploy" | "search::FocusSearch" => {
+                self.open_find();
+                return true;
+            }
+            "buffer_search::Dismiss" => {
+                self.find = None;
+                return true;
+            }
+            "buffer_search::FocusEditor" if self.find.is_some() => {
+                if let Some(bar) = &mut self.find {
+                    bar.focused = false;
+                }
+                return true;
+            }
+            "search::SelectNextMatch" if self.find.is_some() => {
+                self.step_find_match(true);
+                return true;
+            }
+            "search::SelectPreviousMatch" if self.find.is_some() => {
+                self.step_find_match(false);
+                return true;
+            }
+            "search::ToggleCaseSensitive" if self.find.is_some() => {
+                if let Some(bar) = &mut self.find {
+                    bar.case_sensitive = !bar.case_sensitive;
+                }
+                self.recompute_find_matches(true);
+                return true;
+            }
+            "menu::Cancel" | "editor::Cancel" if self.find.is_some() => {
+                self.find = None;
+                return true;
+            }
+            _ => {}
+        }
+        if self.find_focused() && self.find_input_action(action, cx) {
+            return true;
+        }
         let page = self.height.max(1) as isize;
         match action.name.as_str() {
             "project_diff::LineDown" => self.move_cursor(1),
@@ -834,8 +1065,30 @@ impl View for ProjectDiff {
         true
     }
 
-    fn handle_key(&mut self, _key: &KeyEvent, _cx: &mut Cx<'_>) -> bool {
-        false
+    fn handle_key(&mut self, key: &KeyEvent, _cx: &mut Cx<'_>) -> bool {
+        if !self.find_focused() {
+            return false;
+        }
+        let Some(text) = key.text.as_deref().filter(|_| key.is_down()) else { return false };
+        if text.chars().all(char::is_control) {
+            return false;
+        }
+        if let Some(bar) = &mut self.find {
+            bar.query.insert(text);
+        }
+        self.recompute_find_matches(true);
+        true
+    }
+
+    fn handle_paste(&mut self, text: &str, _cx: &mut Cx<'_>) -> bool {
+        if !self.find_focused() {
+            return false;
+        }
+        if let Some(bar) = &mut self.find {
+            bar.query.insert(text);
+        }
+        self.recompute_find_matches(true);
+        true
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent, _area: Rect, cx: &mut Cx<'_>) -> bool {
@@ -855,6 +1108,15 @@ impl View for ProjectDiff {
             MouseKind::ScrollRight => self.left += WHEEL_COLUMNS,
             MouseKind::ScrollLeft => self.left = self.left.saturating_sub(WHEEL_COLUMNS),
             MouseKind::Press(MouseButton::Left) => {
+                if self.find.is_some() && event.row < self.area.y {
+                    if let Some(bar) = &mut self.find {
+                        bar.focused = true;
+                    }
+                    return true;
+                }
+                if let Some(bar) = &mut self.find {
+                    bar.focused = false;
+                }
                 let Some(row) = event.row.checked_sub(self.area.y) else { return true };
                 let index = self.scroll + row as usize;
                 if index >= self.rows.len() {
@@ -1196,5 +1458,38 @@ mod tests {
         diff.cursor = added_row;
         assert!(act(&mut harness, &mut diff, "project_diff::CopyLine"));
         assert_eq!(harness.clipboard.get().map(|c| c.text), Some("TWO".to_string()));
+    }
+
+    #[test]
+    fn find_bar_searches_and_steps_through_diff_matches() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\nALPHA\n").unwrap();
+        let (mut harness, mut diff) = loaded(dir.path());
+
+        assert!(act(&mut harness, &mut diff, "buffer_search::Deploy"));
+        assert!(diff.find_focused());
+        for ch in "alpha".chars() {
+            assert!(diff.handle_key(&KeyEvent::typed(ch), &mut harness.cx()));
+        }
+        // Should match both "alpha" and "ALPHA" (case-insensitive by default).
+        let bar = diff.find.as_ref().unwrap();
+        assert_eq!(bar.matches.len(), 2);
+        let first = diff.cursor;
+        assert!(matches!(&diff.rows[first], DiffRow::Line { text, .. } if text == "alpha"));
+
+        assert!(act(&mut harness, &mut diff, "search::SelectNextMatch"));
+        let second = diff.cursor;
+        assert_ne!(first, second);
+        assert!(matches!(&diff.rows[second], DiffRow::Line { text, .. } if text == "ALPHA"));
+
+        assert!(act(&mut harness, &mut diff, "search::SelectPreviousMatch"));
+        assert_eq!(diff.cursor, first);
+
+        // Renders cleanly with the find bar at the top.
+        let text = harness.draw(&mut diff, 60, 10).0;
+        assert!(text.lines().next().unwrap().contains("alpha"), "{text}");
+
+        assert!(act(&mut harness, &mut diff, "buffer_search::Dismiss"));
+        assert!(diff.find.is_none());
     }
 }

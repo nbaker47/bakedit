@@ -161,6 +161,7 @@
       "shift-enter": "search::SelectPreviousMatch",
       "alt-enter": "search::SelectAllMatches",
       "cmd-f": "search::FocusSearch",
+      "ctrl-f": "search::FocusSearch",
       "cmd-shift-h": "search::ToggleReplace",
       "cmd-shift-o": "outline::Toggle"
     }
@@ -520,6 +521,10 @@
       "}": "project_diff::NextFile",
       "{": "project_diff::PreviousFile",
       "enter": "project_diff::OpenFile",
+      "cmd-f": "buffer_search::Deploy",
+      "ctrl-f": "buffer_search::Deploy",
+      "cmd-g": "search::SelectNextMatch",
+      "cmd-shift-g": "search::SelectPreviousMatch",
       "cmd-c": "project_diff::CopyLine",
       "ctrl-c": "project_diff::CopyLine",
       "y": "project_diff::CopyLine",
