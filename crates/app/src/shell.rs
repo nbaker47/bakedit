@@ -123,7 +123,7 @@ pub struct Shell {
     /// Where the last frame drew the mode (NAV, EDIT) in the status bar: a click
     /// there switches the editor in front between nav and edit mode.
     mode_pill: Option<Rect>,
-    dragging: Option<DockPosition>,
+    dragging: Option<(DockPosition, PanelId)>,
     /// The view a mouse button went down in, and where it was drawn: it gets the drags and
     /// the release that follow.
     mouse_capture: Option<(Focus, Rect)>,
@@ -689,6 +689,16 @@ impl Shell {
         match name {
             "workspace::ToggleZoom" => self.with_workspace(|ws| ws.toggle_zoom()),
             "workspace::ToggleAllDocks" => self.with_workspace(|ws| ws.toggle_all_docks()),
+            "workspace::ToggleAllLeftPanels" => {
+                let mut on = false;
+                self.with_workspace(|ws| on = ws.toggle_show_all_left_panels());
+                let msg = if on {
+                    "All left panels: on (herdr, git, file tree)"
+                } else {
+                    "All left panels: off"
+                };
+                self.set_status(msg, false);
+            }
             "workspace::ToggleLeftDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Left)),
             "workspace::ToggleRightDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right)),
             "workspace::ToggleBottomDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Bottom)),
@@ -841,12 +851,19 @@ impl Shell {
 
     fn resize_active_dock(&mut self, delta: i32) {
         let Some(position) = self.workspace.active_dock() else { return };
-        let Some(area) = self.layout.dock(position).map(|dock| dock.rect) else { return };
+        let panel = match self.workspace.focus() {
+            Focus::Panel(id) if self.workspace.position_of(id) == Some(position) => id,
+            _ => match self.workspace.visible_panel(position) {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        let Some(area) = self.layout.panel(panel) else { return };
         let (current, max) = match position {
             DockPosition::Bottom => (area.height, self.screen.height.saturating_sub(layout::MIN_CENTER_HEIGHT + 2)),
             _ => (area.width, self.screen.width.saturating_sub(layout::MIN_CENTER_WIDTH + 2)),
         };
-        self.workspace.resize_dock(position, current, delta, layout::MIN_DOCK_WIDTH, max);
+        self.workspace.resize_panel(panel, current, delta, layout::MIN_DOCK_WIDTH, max);
     }
 
     // ---- files and tabs ----------------------------------------------------------------
@@ -1766,11 +1783,11 @@ impl Shell {
                 true
             }
             None => {
-                // Dragging a divider resizes its dock.
-                if let Some(position) = self.dragging {
+                // Dragging a divider resizes its dock panel.
+                if let Some((position, panel)) = self.dragging {
                     match event.kind {
                         MouseKind::Drag(MouseButton::Left) => {
-                            self.drag_divider(position, col, row);
+                            self.drag_divider(position, panel, col, row);
                             return true;
                         }
                         MouseKind::Release(_) => {
@@ -1794,7 +1811,7 @@ impl Shell {
                 }
                 if event.kind == MouseKind::Press(MouseButton::Left) {
                     if let Some(divider) = self.layout.dividers.iter().find(|d| inside(d.rect)) {
-                        self.dragging = Some(divider.position);
+                        self.dragging = Some((divider.position, divider.panel));
                         return true;
                     }
                     // The mode in the status bar belongs to the editor in front: a click on
@@ -1862,8 +1879,8 @@ impl Shell {
         }
     }
 
-    fn drag_divider(&mut self, position: DockPosition, col: u16, row: u16) {
-        let Some(area) = self.layout.dock(position).map(|dock| dock.rect) else { return };
+    fn drag_divider(&mut self, position: DockPosition, panel: PanelId, col: u16, row: u16) {
+        let Some(area) = self.layout.panel(panel) else { return };
         let (current, wanted, max) = match position {
             DockPosition::Left => (area.width, col.saturating_sub(area.x), self.screen.width.saturating_sub(layout::MIN_CENTER_WIDTH + 2)),
             DockPosition::Right => {
@@ -1876,7 +1893,7 @@ impl Shell {
             }
             DockPosition::Bottom => (area.height, area.bottom().saturating_sub(row + 1), self.screen.height.saturating_sub(layout::MIN_CENTER_HEIGHT + 2)),
         };
-        self.workspace.resize_dock(position, current, wanted as i32 - current as i32, layout::MIN_DOCK_WIDTH, max);
+        self.workspace.resize_panel(panel, current, wanted as i32 - current as i32, layout::MIN_DOCK_WIDTH, max);
     }
 
     // ---- drawing -----------------------------------------------------------------------
@@ -1901,7 +1918,7 @@ impl Shell {
         canvas.fill(screen, self.theme.background);
 
         for divider in &layout.dividers {
-            let focused = matches!(focus, Focus::Panel(id) if self.workspace.position_of(id) == Some(divider.position));
+            let focused = matches!(focus, Focus::Panel(id) if id == divider.panel);
             let color = if focused { self.theme.panel_focused_border } else { self.theme.border };
             let style = Style::colors(color, self.theme.background);
             if divider.rect.width == 1 {

@@ -32,6 +32,7 @@ pub struct DockArea {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Divider {
     pub position: DockPosition,
+    pub panel: PanelId,
     pub rect: Rect,
 }
 
@@ -95,99 +96,130 @@ pub fn compute_with(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId
         None => {}
     }
 
-    let left = ws.visible_panel(DockPosition::Left);
+    let left_panels: Vec<PanelId> = if ws.is_showing_all_left_panels() && ws.is_dock_open(DockPosition::Left) {
+        ws.panels_in(DockPosition::Left)
+    } else {
+        ws.visible_panel(DockPosition::Left).into_iter().collect()
+    };
     let right = ws.visible_panel(DockPosition::Right);
     let bottom = ws.visible_panel(DockPosition::Bottom);
 
-    // Side docks: take what they ask for, then give back until the centre has its minimum.
-    let wanted = |panel: Option<PanelId>| -> u16 {
-        panel.map(|p| ws.panel_size(p).unwrap_or_else(|| default_width(p)).max(MIN_DOCK_WIDTH)).unwrap_or(0)
+    // Side columns: each visible left panel plus the optional right panel.
+    // Take what they ask for, then give back until the centre has its share / minimum.
+    let mut columns: Vec<(DockPosition, PanelId, u16, bool)> = Vec::new();
+    for panel in left_panels {
+        let w = ws.panel_size(panel).unwrap_or_else(|| default_width(panel)).max(MIN_DOCK_WIDTH);
+        let at_default = ws.panel_size(panel).is_none();
+        columns.push((DockPosition::Left, panel, w, at_default));
+    }
+    if let Some(panel) = right {
+        let w = ws.panel_size(panel).unwrap_or_else(|| default_width(panel)).max(MIN_DOCK_WIDTH);
+        let at_default = ws.panel_size(panel).is_none();
+        columns.push((DockPosition::Right, panel, w, at_default));
+    }
+
+    let overflow_for = |cols: &[(DockPosition, PanelId, u16, bool)], center: u16| -> u16 {
+        let used: u16 = cols.iter().filter(|c| c.2 > 0).map(|c| c.2 + 1).sum();
+        (used + center).saturating_sub(body.width)
     };
-    let at_default = |panel: Option<PanelId>| panel.is_some_and(|p| ws.panel_size(p).is_none());
-    let (mut left_width, mut right_width) = (wanted(left), wanted(right));
-    let dividers = |l: u16, r: u16| (l > 0) as u16 + (r > 0) as u16;
-    let overflow_for = |l: u16, r: u16, center: u16| (l + r + dividers(l, r) + center).saturating_sub(body.width);
-    let overflow = |l: u16, r: u16| overflow_for(l, r, MIN_CENTER_WIDTH);
-    // Shrink the docks that may shrink in proportion to what each can give, down to the
-    // minimum each, by up to `excess` columns.
-    let shrink = |l: &mut u16, r: &mut u16, excess: u16, (left_may, right_may): (bool, bool)| {
-        let shrinkable_left = if left_may { l.saturating_sub(MIN_DOCK_WIDTH) } else { 0 };
-        let shrinkable_right = if right_may { r.saturating_sub(MIN_DOCK_WIDTH) } else { 0 };
-        let shrinkable = shrinkable_left + shrinkable_right;
-        if shrinkable > 0 {
-            let take = excess.min(shrinkable);
-            let from_left = ((take as u32 * shrinkable_left as u32).div_ceil(shrinkable as u32) as u16).min(shrinkable_left);
-            let from_right = (take - from_left.min(take)).min(shrinkable_right);
-            *l -= from_left;
-            *r -= from_right;
+    let overflow = |cols: &[(DockPosition, PanelId, u16, bool)]| overflow_for(cols, MIN_CENTER_WIDTH);
+
+    // Shrink eligible columns in proportion to what each can give, down to MIN_DOCK_WIDTH.
+    let shrink = |cols: &mut [(DockPosition, PanelId, u16, bool)], excess: u16, only_default: bool| {
+        let shrinkable: Vec<u16> = cols
+            .iter()
+            .map(|c| if c.2 > 0 && (!only_default || c.3) { c.2.saturating_sub(MIN_DOCK_WIDTH) } else { 0 })
+            .collect();
+        let total: u16 = shrinkable.iter().sum();
+        if total == 0 {
+            return;
+        }
+        let mut remaining = excess.min(total);
+        let mut rem_total = total;
+        for (col, &cap) in cols.iter_mut().zip(shrinkable.iter()) {
+            if cap == 0 || remaining == 0 {
+                continue;
+            }
+            let take = ((remaining as u32 * cap as u32).div_ceil(rem_total as u32) as u16).min(cap).min(remaining);
+            col.2 -= take;
+            remaining -= take;
+            rem_total -= cap;
         }
     };
+
     // First the docks at their default width make room for a fair share of the window.
     let share = (body.width / 5 * CENTER_SHARE_FIFTHS).max(MIN_CENTER_WIDTH);
-    let fair_excess = overflow_for(left_width, right_width, share);
+    let fair_excess = overflow_for(&columns, share);
     if fair_excess > 0 {
-        shrink(&mut left_width, &mut right_width, fair_excess, (at_default(left), at_default(right)));
+        shrink(&mut columns, fair_excess, true);
     }
     // Then any dock gives way, down to the centre's absolute minimum.
-    let mut excess = overflow(left_width, right_width);
+    let mut excess = overflow(&columns);
     if excess > 0 {
-        shrink(&mut left_width, &mut right_width, excess, (true, true));
-        excess = overflow(left_width, right_width);
+        shrink(&mut columns, excess, false);
+        excess = overflow(&columns);
     }
-    // Still too tight: drop the right dock, then the left, rather than squeeze the editor.
-    if excess > 0 && right_width > 0 && left_width > 0 {
-        right_width = 0;
-        excess = overflow(left_width, right_width);
+    // Still too tight: drop the right dock first, then extra left panels (keeping the active
+    // left panel last), rather than squeeze the editor.
+    if excess > 0 {
+        if let Some(col) = columns.iter_mut().find(|c| c.0 == DockPosition::Right && c.2 > 0) {
+            col.2 = 0;
+            excess = overflow(&columns);
+        }
+    }
+    if excess > 0 {
+        let active_left = ws.active_panel(DockPosition::Left);
+        for i in (0..columns.len()).rev() {
+            if excess == 0 {
+                break;
+            }
+            if columns[i].2 > 0 && Some(columns[i].1) != active_left {
+                columns[i].2 = 0;
+                excess = overflow(&columns);
+            }
+        }
     }
     if excess > 0 {
         let available = body.width.saturating_sub(MIN_CENTER_WIDTH + 1);
-        if left_width > 0 {
-            left_width = if available >= MIN_DOCK_WIDTH { left_width.min(available) } else { 0 };
-        } else if right_width > 0 {
-            right_width = if available >= MIN_DOCK_WIDTH { right_width.min(available) } else { 0 };
+        for col in &mut columns {
+            if col.2 > 0 {
+                col.2 = if available >= MIN_DOCK_WIDTH { col.2.min(available) } else { 0 };
+            }
         }
     }
 
     let mut x = body.x;
     let mut center_width = body.width;
-    if let (Some(panel), true) = (left, left_width > 0) {
-        layout.docks.push(DockArea {
-            position: DockPosition::Left,
-            panel,
-            rect: Rect::new(x, body.y, left_width, body.height),
-        });
-        layout.dividers.push(Divider {
-            position: DockPosition::Left,
-            rect: Rect::new(x + left_width, body.y, 1, body.height),
-        });
-        x += left_width + 1;
-        center_width -= left_width + 1;
-    }
-    if let (Some(panel), true) = (right, right_width > 0) {
-        if ws.is_right_dock_inner_left() {
+    for &(position, panel, width, _) in &columns {
+        if width == 0 {
+            continue;
+        }
+        if position == DockPosition::Left || ws.is_right_dock_inner_left() {
             layout.docks.push(DockArea {
-                position: DockPosition::Right,
+                position,
                 panel,
-                rect: Rect::new(x, body.y, right_width, body.height),
+                rect: Rect::new(x, body.y, width, body.height),
             });
             layout.dividers.push(Divider {
-                position: DockPosition::Right,
-                rect: Rect::new(x + right_width, body.y, 1, body.height),
+                position,
+                panel,
+                rect: Rect::new(x + width, body.y, 1, body.height),
             });
-            x += right_width + 1;
-            center_width -= right_width + 1;
+            x += width + 1;
+            center_width -= width + 1;
         } else {
-            let dock_x = body.right() - right_width;
+            let dock_x = body.right() - width;
             layout.docks.push(DockArea {
-                position: DockPosition::Right,
+                position,
                 panel,
-                rect: Rect::new(dock_x, body.y, right_width, body.height),
+                rect: Rect::new(dock_x, body.y, width, body.height),
             });
             layout.dividers.push(Divider {
-                position: DockPosition::Right,
+                position,
+                panel,
                 rect: Rect::new(dock_x - 1, body.y, 1, body.height),
             });
-            center_width -= right_width + 1;
+            center_width -= width + 1;
         }
     }
 
@@ -206,6 +238,7 @@ pub fn compute_with(ws: &Workspace, screen: Rect, default_width: impl Fn(PanelId
             });
             layout.dividers.push(Divider {
                 position: DockPosition::Bottom,
+                panel,
                 rect: Rect::new(x, dock_y - 1, center_width, 1),
             });
             center_height -= height + 1;
@@ -255,13 +288,55 @@ mod tests {
         ws.open_panel(Project);
         let layout = compute(&ws, screen(200, 50), widths);
         assert_eq!(layout.panel(Terminal), Some(Rect::new(0, 0, 85, 49)));
+        assert_eq!(layout.panel(Project), Some(Rect::new(86, 0, 33, 49)));
+        assert_eq!(layout.center, Some(Rect::new(120, 0, 80, 49)));
+        assert_eq!(layout.dividers.len(), 2);
+        assert_eq!(layout.dividers[0].rect, Rect::new(85, 0, 1, 49));
+        assert_eq!(layout.dividers[1].rect, Rect::new(119, 0, 1, 49));
+        // Every column is accounted for exactly once.
+        assert_eq!(85 + 1 + 33 + 1 + 80, 200);
+    }
+
+    #[test]
+    fn three_columns_far_right() {
+        let mut ws = workspace();
+        ws.toggle_right_dock_inner_left();
+        ws.open_panel(Terminal);
+        ws.open_panel(Project);
+        let layout = compute(&ws, screen(200, 50), widths);
+        assert_eq!(layout.panel(Terminal), Some(Rect::new(0, 0, 85, 49)));
         assert_eq!(layout.panel(Project), Some(Rect::new(167, 0, 33, 49)));
         assert_eq!(layout.center, Some(Rect::new(86, 0, 80, 49)));
         assert_eq!(layout.dividers.len(), 2);
         assert_eq!(layout.dividers[0].rect, Rect::new(85, 0, 1, 49));
         assert_eq!(layout.dividers[1].rect, Rect::new(166, 0, 1, 49));
-        // Every column is accounted for exactly once.
         assert_eq!(85 + 1 + 80 + 1 + 33, 200);
+    }
+
+    #[test]
+    fn show_all_left_panels_lays_out_terminal_git_and_project_on_the_left() {
+        let mut ws = workspace();
+        assert!(ws.toggle_show_all_left_panels());
+        let layout = compute(&ws, screen(260, 50), widths);
+        let term = layout.panel(Terminal).expect("terminal visible");
+        let git = layout.panel(Git).expect("git visible");
+        let proj = layout.panel(Project).expect("project visible");
+        let center = layout.center.expect("center visible");
+        assert_eq!(term.x, 0);
+        assert_eq!(git.x, term.right() + 1);
+        assert_eq!(proj.x, git.right() + 1);
+        assert_eq!(center.x, proj.right() + 1);
+        assert_eq!(term.width + 1 + git.width + 1 + proj.width + 1 + center.width, 260);
+        assert_eq!(layout.dividers.len(), 3);
+        assert_eq!(layout.dividers[0].panel, Terminal);
+        assert_eq!(layout.dividers[1].panel, Git);
+        assert_eq!(layout.dividers[2].panel, Project);
+        // Toggle off returns to single left panel.
+        assert!(!ws.toggle_show_all_left_panels());
+        let layout = compute(&ws, screen(260, 50), widths);
+        assert!(layout.panel(Terminal).is_some());
+        assert!(layout.panel(Git).is_none());
+        assert!(layout.panel(Project).is_some());
     }
 
     #[test]
@@ -315,9 +390,9 @@ mod tests {
             assert!(left.width < 85 && left.width >= MIN_DOCK_WIDTH, "{width}: {left:?}");
             assert!(right.width < 33 && right.width >= MIN_DOCK_WIDTH, "{width}: {right:?}");
             assert!(left.width > right.width, "they give way in proportion");
-            assert_eq!(left.width + 1 + center.width + 1 + right.width, width);
-            assert_eq!(center.x, left.width + 1);
-            assert_eq!(right.x, center.right() + 1);
+            assert_eq!(left.width + 1 + right.width + 1 + center.width, width);
+            assert_eq!(right.x, left.width + 1);
+            assert_eq!(center.x, right.right() + 1);
         }
     }
 

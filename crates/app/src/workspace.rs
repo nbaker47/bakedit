@@ -124,8 +124,12 @@ pub struct DockSnapshot {
     pub active: Option<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Workspace state as saved in a session file.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub left: Option<DockSnapshot>,
@@ -143,8 +147,27 @@ pub struct WorkspaceSnapshot {
     pub focus: Option<String>,
     /// When true, the right dock (file tree) sits immediately to the right of the left
     /// dock (git/terminal) instead of at the far right of the window.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub right_dock_inner_left: bool,
+    /// When true, every panel in the left dock (e.g. terminal/herdr and git) is shown
+    /// side-by-side at once alongside the file tree on the left.
+    #[serde(default)]
+    pub show_all_left_panels: bool,
+}
+
+impl Default for WorkspaceSnapshot {
+    fn default() -> Self {
+        Self {
+            left: None,
+            right: None,
+            bottom: None,
+            sizes: std::collections::BTreeMap::new(),
+            zoomed: Vec::new(),
+            focus: None,
+            right_dock_inner_left: true,
+            show_all_left_panels: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +177,7 @@ pub struct Workspace {
     center_zoomed: bool,
     last_open: Vec<DockPosition>,
     right_dock_inner_left: bool,
+    show_all_left_panels: bool,
 }
 
 impl Workspace {
@@ -174,7 +198,14 @@ impl Workspace {
                 dock.active = Some(0);
             }
         }
-        Workspace { docks, focus: Focus::Center, center_zoomed: false, last_open: Vec::new(), right_dock_inner_left: false }
+        Workspace {
+            docks,
+            focus: Focus::Center,
+            center_zoomed: false,
+            last_open: Vec::new(),
+            right_dock_inner_left: true,
+            show_all_left_panels: false,
+        }
     }
 
     /// True when the right dock (file tree) is placed immediately to the right of the left
@@ -188,6 +219,33 @@ impl Workspace {
     pub fn toggle_right_dock_inner_left(&mut self) -> bool {
         self.right_dock_inner_left = !self.right_dock_inner_left;
         self.right_dock_inner_left
+    }
+
+    /// True when all left-dock panels (herdr/terminal, git) are shown side-by-side at once.
+    pub fn is_showing_all_left_panels(&self) -> bool {
+        self.show_all_left_panels
+    }
+
+    /// Toggle showing all left-side panes simultaneously (herdr/terminal, git, and file tree
+    /// on the left). Returns the new state.
+    pub fn toggle_show_all_left_panels(&mut self) -> bool {
+        self.show_all_left_panels = !self.show_all_left_panels;
+        if self.show_all_left_panels {
+            self.center_zoomed = false;
+            for dock in &mut self.docks {
+                for panel in &mut dock.panels {
+                    panel.zoomed = false;
+                }
+            }
+            if self.dock(DockPosition::Left).active.is_some() {
+                self.dock_mut(DockPosition::Left).open = true;
+            }
+            self.right_dock_inner_left = true;
+            if self.dock(DockPosition::Right).active.is_some() {
+                self.dock_mut(DockPosition::Right).open = true;
+            }
+        }
+        self.show_all_left_panels
     }
 
     fn dock(&self, position: DockPosition) -> &Dock {
@@ -231,9 +289,15 @@ impl Workspace {
         self.dock(position).panels.iter().map(|p| p.id).collect()
     }
 
-    /// True when the panel is the one its (open) dock is showing.
+    /// True when the panel is currently shown in its open dock.
     pub fn is_panel_visible(&self, id: PanelId) -> bool {
-        self.position_of(id).is_some_and(|p| self.visible_panel(p) == Some(id))
+        self.position_of(id).is_some_and(|p| {
+            if self.show_all_left_panels && p == DockPosition::Left && self.is_dock_open(DockPosition::Left) {
+                true
+            } else {
+                self.visible_panel(p) == Some(id)
+            }
+        })
     }
 
     pub fn is_panel_zoomed(&self, id: PanelId) -> bool {
@@ -511,6 +575,21 @@ impl Workspace {
             .or_else(|| self.open_positions().into_iter().next())
     }
 
+    /// Change the size of `id` by `delta` cells, starting from `current` and clamped to `min..=max`.
+    pub fn resize_panel(&mut self, id: PanelId, current: u16, delta: i32, min: u16, max: u16) {
+        if let Some(panel) = self.panel_mut(id) {
+            let wanted = (current as i32 + delta).clamp(min as i32, max.max(min) as i32);
+            panel.size = Some(wanted as u16);
+        }
+    }
+
+    /// Forget the user's size for `id`.
+    pub fn reset_panel_size(&mut self, id: PanelId) {
+        if let Some(panel) = self.panel_mut(id) {
+            panel.size = None;
+        }
+    }
+
     /// Change the size of the panel shown in `position` by `delta` cells, starting from
     /// `current` (the size it is drawn at now) and clamped to `min..=max`.
     pub fn resize_dock(&mut self, position: DockPosition, current: u16, delta: i32, min: u16, max: u16) {
@@ -552,6 +631,7 @@ impl Workspace {
                 Focus::Panel(id) => Some(id.title().to_string()),
             },
             right_dock_inner_left: self.right_dock_inner_left,
+            show_all_left_panels: self.show_all_left_panels,
         }
     }
 
@@ -559,6 +639,7 @@ impl Workspace {
     /// consistent state (the focus never lands on a hidden panel).
     pub fn restore(&mut self, snapshot: &WorkspaceSnapshot) {
         self.right_dock_inner_left = snapshot.right_dock_inner_left;
+        self.show_all_left_panels = snapshot.show_all_left_panels;
         let by_title = |title: &str| PanelId::ALL.into_iter().find(|id| id.title() == title);
         for (title, &size) in &snapshot.sizes {
             if let Some(id) = by_title(title) {

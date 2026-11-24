@@ -568,7 +568,7 @@ fn the_frame_has_every_part() {
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].starts_with(" Terminal"), "{:?}", lines[0]);
     assert!(lines[0].contains(" a.rs "), "the tab bar: {:?}", lines[0]);
-    assert!(lines[0].contains(" b.rs "));
+    assert!(lines[0].contains(" b.rs"), "the tab bar: {:?}", lines[0]);
     assert!(lines[0].contains("[ProjectPanel]"));
     assert!(lines[1].contains("b.rs"), "the active item draws below the tabs: {:?}", lines[1]);
     assert_eq!(lines[0].matches('│').count(), 2, "one divider each side of the centre");
