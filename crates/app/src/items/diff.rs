@@ -115,6 +115,9 @@ pub struct ProjectDiff {
     cursor: usize,
     scroll: usize,
     left: usize,
+    /// When true (NAV mode), Markdown files in the diff render styled Markdown;
+    /// `bakedit::ToggleMode` (`Ctrl+Opt+I`) flips to raw Markdown (EDIT mode).
+    render_markdown: bool,
     height: usize,
     area: Rect,
     /// A file to scroll to once the diff has arrived.
@@ -259,6 +262,7 @@ impl ProjectDiff {
             cursor: 0,
             scroll: 0,
             left: 0,
+            render_markdown: true,
             height: 0,
             area: Rect::default(),
             wanted: None,
@@ -331,6 +335,7 @@ impl ProjectDiff {
                 self.files = loaded.files;
                 self.rows = loaded.rows;
                 self.number_width = loaded.number_width;
+                self.left = 0;
                 self.error = None;
             }
             Err(error) => {
@@ -596,7 +601,7 @@ impl ProjectDiff {
                 let numbers_end = area.x + 1 + nw * 2 + 2;
                 canvas.text_truncated(numbers_end, y, &header, Style::colors(theme.text_muted, bg).italic(), area.width.saturating_sub(numbers_end - area.x + 1));
             }
-            DiffRow::Line { kind, old, new, text, spans, .. } => {
+            DiffRow::Line { file, kind, old, new, text, spans } => {
                 let tint = match kind {
                     DiffLineKind::Added => Some(theme.created),
                     DiffLineKind::Removed => Some(theme.deleted),
@@ -621,7 +626,33 @@ impl ProjectDiff {
                     DiffLineKind::Context => " ",
                 };
                 canvas.text(area.x + 3 + nw * 2, y, marker, Style::colors(tint.unwrap_or(theme.text_muted), gutter_bg).bold(), 1);
-                self.draw_code(canvas, text_x, y, text_w, &text, &spans, line_bg, theme);
+                let is_md = self.render_markdown
+                    && self
+                        .files
+                        .get(file)
+                        .and_then(|f| f.path.extension())
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx"));
+                if is_md {
+                    let mut in_fence = false;
+                    for r in &self.rows[..index] {
+                        match r {
+                            DiffRow::File(f) if *f == file => in_fence = false,
+                            DiffRow::Line { file: f, text: t, .. } if *f == file && crate::markdown::is_fence(t) => {
+                                in_fence = !in_fence;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let fence_line = crate::markdown::is_fence(&text);
+                    if !in_fence || fence_line {
+                        crate::markdown::draw_line(canvas, text_x, y, text_w, self.left, &text, line_bg, theme, in_fence);
+                    } else {
+                        self.draw_code(canvas, text_x, y, text_w, &text, &spans, line_bg, theme);
+                    }
+                } else {
+                    self.draw_code(canvas, text_x, y, text_w, &text, &spans, line_bg, theme);
+                }
             }
             DiffRow::Note { text, .. } => {
                 let bg = if is_cursor { cursor_bg } else { theme.editor_bg };
@@ -712,15 +743,25 @@ impl View for ProjectDiff {
             "project_diff::PageUp" => self.move_cursor(-page),
             "project_diff::HalfPageDown" => self.move_cursor(page / 2),
             "project_diff::HalfPageUp" => self.move_cursor(-page / 2),
-            "project_diff::Top" => self.cursor = 0,
+            "project_diff::Top" => {
+                self.cursor = 0;
+                self.left = 0;
+            }
             "project_diff::Bottom" => self.cursor = self.rows.len().saturating_sub(1),
             "project_diff::NextHunk" => self.jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
             "project_diff::PreviousHunk" => self.jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
-            "project_diff::NextFile" => self.jump(true, |row| matches!(row, DiffRow::File(_))),
-            "project_diff::PreviousFile" => self.jump(false, |row| matches!(row, DiffRow::File(_))),
+            "project_diff::NextFile" => {
+                self.left = 0;
+                self.jump(true, |row| matches!(row, DiffRow::File(_)));
+            }
+            "project_diff::PreviousFile" => {
+                self.left = 0;
+                self.jump(false, |row| matches!(row, DiffRow::File(_)));
+            }
             "project_diff::ShowFile" => {
                 let Some(path) = action.arg_str("path").map(PathBuf::from) else { return false };
                 let Some(relative) = cx.project.git_path(&path) else { return false };
+                self.left = 0;
                 match self.file_row(&relative) {
                     Some(row) => {
                         self.cursor = row;
@@ -728,6 +769,14 @@ impl View for ProjectDiff {
                     }
                     None => self.wanted = Some(relative),
                 }
+            }
+            "bakedit::ToggleMode" => {
+                self.render_markdown = !self.render_markdown;
+                cx.status(if self.render_markdown { "Diff: rendered Markdown (NAV)" } else { "Diff: raw Markdown (EDIT)" });
+            }
+            "menu::Cancel" | "editor::Cancel" if !self.render_markdown => {
+                self.render_markdown = true;
+                cx.status("Diff: rendered Markdown (NAV)");
             }
             "project_diff::OpenFile" => match self.open_target(cx) {
                 Some(effect) => cx.push(effect),

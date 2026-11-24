@@ -274,6 +274,16 @@ impl EditorItem {
         };
 
         // ---- rows ---------------------------------------------------------------------
+        let render_md = self.language.id == "markdown" && self.modal && !self.insert;
+        let mut in_fence = false;
+        if render_md {
+            let buffer = self.editor.buffer();
+            for l in 0..self.scroll.line.min(line_count) {
+                if crate::markdown::is_fence(&buffer.line_text(l)) {
+                    in_fence = !in_fence;
+                }
+            }
+        }
         let mut shown: Vec<ShownRow> = Vec::with_capacity(rows);
         let mut scroll = self.scroll;
         scroll.row = scroll.row.min(self.rows_in(scroll.line).saturating_sub(1));
@@ -288,6 +298,12 @@ impl EditorItem {
             let line = scroll.line;
             let buffer = self.editor.buffer();
             let text = buffer.line_text(line);
+            let fence_line = render_md && crate::markdown::is_fence(&text);
+            let was_in_fence = in_fence;
+            if fence_line {
+                in_fence = !in_fence;
+            }
+            let use_md = render_md && (!was_in_fence || fence_line);
             let line_start = buffer.line_to_char(line);
             let line_len = buffer.line_len(line);
             let line_end = line_start + line_len;
@@ -342,19 +358,25 @@ impl EditorItem {
                     None
                 };
                 paint::gutter(canvas, body.x, y, gutter_width, GutterInfo { number, current, git }, numbers, theme);
-                let mut row = Row::plain(&text);
-                row.segment = range.clone();
-                row.syntax = &spans;
-                row.selections = &line_selections;
-                row.matches = &matches;
-                row.active_match = active.clone();
-                row.cursors = &cursors;
-                row.brackets = &brackets;
-                row.matching_brackets = &matching;
-                row.current_line = current;
-                row.indent_guides = guides;
-                row.active_guide = active_level;
-                paint::row(canvas, self.geo.text.x, y, text_width, &row, &options, theme);
+                if use_md && row_index == 0 && line_selections.is_empty() && matches.is_empty() {
+                    let row_bg = if current { theme.active_line_bg } else { theme.editor_bg };
+                    canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
+                    crate::markdown::draw_line(canvas, self.geo.text.x, y, text_width, self.left, &text, row_bg, theme, was_in_fence);
+                } else {
+                    let mut row = Row::plain(&text);
+                    row.segment = range.clone();
+                    row.syntax = &spans;
+                    row.selections = &line_selections;
+                    row.matches = &matches;
+                    row.active_match = active.clone();
+                    row.cursors = &cursors;
+                    row.brackets = &brackets;
+                    row.matching_brackets = &matching;
+                    row.current_line = current;
+                    row.indent_guides = guides;
+                    row.active_guide = active_level;
+                    paint::row(canvas, self.geo.text.x, y, text_width, &row, &options, theme);
+                }
                 shown.push(ShownRow { line, row: row_index });
                 y += 1;
             }

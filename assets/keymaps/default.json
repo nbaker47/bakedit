@@ -963,6 +963,13 @@
     }
   },
   {
+    "context": "ProjectDiff",
+    "bindings": {
+      "ctrl-alt-i": "bakedit::ToggleMode",
+      "ctrl-shift-i": "bakedit::ToggleMode"
+    }
+  },
+  {
     "context": "ProjectPanel && not_editing",
     "bindings": {
       "ctrl-n": "project_panel::NewFile",
