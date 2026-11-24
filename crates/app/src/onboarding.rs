@@ -68,10 +68,7 @@ pub struct KeymapsGuide {
 
 impl KeymapsGuide {
     /// Build the guide, adapting shortcut labels when `cmd_keys` is false (legacy terminals).
-    pub fn new(cmd_keys: bool) -> KeymapsGuide {
-        let m = |cmd: &str, legacy: &str| -> String {
-            if cmd_keys { cmd.to_string() } else { legacy.to_string() }
-        };
+    pub fn new(_cmd_keys: bool) -> KeymapsGuide {
         let mut lines = Vec::new();
         lines.push(GuideLine::plain("HOLD-; NAV LAYER (arrows & modifiers on home row)", GuideTone::Heading));
         lines.push(GuideLine::plain("  Hold ';' with your right pinky so your hands never leave home row:", GuideTone::Muted));
@@ -127,19 +124,92 @@ impl KeymapsGuide {
         lines.push(GuideLine::pair("ctrl-alt-space", "Focus Agent Dots floating bar (also ctrl-alt-shift-space)"));
 
         lines.push(GuideLine::blank());
+        lines.push(GuideLine::plain("HOLD-SPACE NUMBER LAYER (1–0 on home row)", GuideTone::Heading));
+        lines.push(GuideLine::plain("  Hold Space (≥160ms) to turn home row into 1–0 (Shift → ! @ # $ % ^ & * ( )):", GuideTone::Muted));
+        lines.push(GuideLine::blank());
+        lines.push(GuideLine::plain("   ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐", GuideTone::Muted));
+        lines.push(GuideLine {
+            spans: vec![
+                ("   │ ".into(), GuideTone::Muted),
+                ("A".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("S".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("D".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("F".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("G".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("H".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("J".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("K".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                ("L".into(), GuideTone::Key),
+                (" │ ".into(), GuideTone::Muted),
+                (";".into(), GuideTone::Key),
+                (" │".into(), GuideTone::Muted),
+            ],
+        });
+        lines.push(GuideLine {
+            spans: vec![
+                ("   │ ".into(), GuideTone::Muted),
+                ("1".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("2".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("3".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("4".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("5".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("6".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("7".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("8".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("9".into(), GuideTone::Success),
+                (" │ ".into(), GuideTone::Muted),
+                ("0".into(), GuideTone::Success),
+                (" │".into(), GuideTone::Muted),
+            ],
+        });
+        lines.push(GuideLine::plain("   └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘", GuideTone::Muted));
+        lines.push(GuideLine {
+            spans: vec![
+                ("             ┌───────────────────┐".into(), GuideTone::Muted),
+            ],
+        });
+        lines.push(GuideLine {
+            spans: vec![
+                ("             │    ".into(), GuideTone::Muted),
+                ("HOLD SPACE".into(), GuideTone::Warning),
+                ("     │  ".into(), GuideTone::Muted),
+                ("quick tap still types space".into(), GuideTone::Muted),
+            ],
+        });
+        lines.push(GuideLine::plain("             └───────────────────┘", GuideTone::Muted));
+
+        lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("NAV MODE vs EDIT MODE", GuideTone::Heading));
-        lines.push(GuideLine::pair("ctrl-alt-i", "Toggle between Nav mode and Edit mode (also ctrl-] i)"));
+        lines.push(GuideLine::pair("ctrl-alt-i / ctrl-shift-i", "Toggle between Nav mode (default) and Edit mode"));
         lines.push(GuideLine::pair("Esc", "Return to Nav mode (or close active modal)"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("FILES, SEARCH & COMMANDS", GuideTone::Heading));
-        lines.push(GuideLine::pair("ctrl-p", "File finder (fuzzy open)"));
-        lines.push(GuideLine::pair("ctrl-alt-p", "Command palette (run any command)"));
+        lines.push(GuideLine::pair("ctrl-p", "File finder (fuzzy open, works from any panel)"));
+        lines.push(GuideLine::pair("ctrl-shift-p / ctrl-alt-p", "Command palette (run any command)"));
+        lines.push(GuideLine::pair("ctrl-l", "Go to line number (negative counts from end)"));
         lines.push(GuideLine::pair("ctrl-alt-f", "Project search across all files (herdr search in Terminal)"));
         lines.push(GuideLine::pair("ctrl-alt-h", "Project search & replace across all files"));
         lines.push(GuideLine::pair("ctrl-f", "Find in current file"));
         lines.push(GuideLine::pair("ctrl-s / ctrl-alt-s", "Save file / Save all"));
         lines.push(GuideLine::pair("ctrl-n / ctrl-alt-n", "New file / New folder in file tree"));
+        lines.push(GuideLine::pair("ctrl-k ( [ { \" ' ` <", "Select between brackets or quotes"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("PANELS & DOCKS", GuideTone::Heading));
@@ -159,8 +229,9 @@ impl KeymapsGuide {
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("TABS, AGENT DOTS & APPEARANCE", GuideTone::Heading));
-        lines.push(GuideLine::pair("ctrl-w / ctrl-alt-t", "Close current code tab / Reopen closed tab"));
-        lines.push(GuideLine::pair("ctrl-alt-left / right", "Previous / next open code tab"));
+        lines.push(GuideLine::pair("ctrl-w / ctrl-k w", "Close current code tab / Close all code tabs"));
+        lines.push(GuideLine::pair("ctrl-alt-t", "Reopen closed code tab"));
+        lines.push(GuideLine::pair("ctrl-alt-left / right", "Previous / next open code tab (or ctrl-{ / ctrl-})"));
         lines.push(GuideLine::pair("ctrl-alt-space", "Focus Agent Dots bar (←/→ pick · ↑/Enter open · Esc close)"));
         lines.push(GuideLine::pair("Command Palette", "bakedit: onboarding / keymaps guide / select theme / dots"));
 
