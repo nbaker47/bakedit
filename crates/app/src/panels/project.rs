@@ -169,12 +169,36 @@ impl GitColors {
         }
         match base {
             DiffBase::Uncommitted => {
-                let Some(status) = project.status().map(Arc::clone) else { return };
-                let entries = status_entries(&status)
-                    .into_iter()
-                    .filter_map(|(rel, st)| project.abs_path(&rel).map(|abs| (abs, st)))
-                    .collect();
-                self.apply_entries(entries);
+                let uncommitted: Vec<(PathBuf, DisplayStatus)> = project
+                    .status()
+                    .map(|status| {
+                        status_entries(status)
+                            .into_iter()
+                            .filter_map(|(rel, st)| project.abs_path(&rel).map(|abs| (abs, st)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.apply_entries(uncommitted.clone());
+                // Also colour files changed on the current branch (`Since <base>`) so
+                // clean worktrees with committed branch work still show green/orange/red
+                // diff colours in the file tree. Uncommitted status takes priority.
+                if let (Some(repo), Some(top)) = (project.repo().cloned(), project.git_top().map(Path::to_path_buf)) {
+                    let generation = project.git_generation();
+                    self.diff_task = Some(project.spawn(move || {
+                        let mut merged: HashMap<PathBuf, DisplayStatus> = HashMap::new();
+                        if let Some(base_ref) = repo.default_base_ref() {
+                            if let Ok(files) = repo.diff_against_ref(&base_ref) {
+                                for file in files {
+                                    merged.insert(top.join(&file.path), diff_to_display(file.status));
+                                }
+                            }
+                        }
+                        for (path, status) in uncommitted {
+                            merged.insert(path, status);
+                        }
+                        (generation, DiffBase::Uncommitted, merged.into_iter().collect())
+                    }));
+                }
             }
             DiffBase::Branch(ref_name) => {
                 let (Some(repo), Some(top)) = (project.repo().cloned(), project.git_top().map(Path::to_path_buf)) else { return };
