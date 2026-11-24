@@ -508,6 +508,31 @@ impl Project {
         }
     }
 
+    /// Switch the active git repository to the repository containing `path` (discovering
+    /// newly created worktrees or deeper nested repos on demand). Returns `true` if the
+    /// active repository actually changed.
+    pub fn select_repo_for_path(&mut self, path: &Path) -> bool {
+        let target = if let Some(root) = self.repo_root_for_path(path) {
+            root
+        } else if let Some(repo) = Repo::discover(path) {
+            let root = repo.root().to_path_buf();
+            if !self.repos.iter().any(|r| r.repo.root() == root) {
+                let top = top_in_project_spelling(&self.root, &repo);
+                let label = repo_label(&self.root, &top);
+                self.repos.push(DiscoveredRepo { repo, top, label });
+                self.repos_version += 1;
+            }
+            root
+        } else {
+            return false;
+        };
+        if self.repo.as_ref().map(Repo::root) == Some(target.as_path()) {
+            return false;
+        }
+        self.select_repo(&target);
+        true
+    }
+
     /// Switch the active git repository to the repository at `repo_root` (a path from
     /// [`Project::repos`] or any path inside a repository). Clears cached status, bases
     /// and branches and triggers a fresh status read in the background.

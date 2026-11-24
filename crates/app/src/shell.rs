@@ -627,12 +627,22 @@ impl Shell {
         true
     }
 
+    fn sync_active_tab_repo(&mut self) {
+        let Some(path) = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) else {
+            return;
+        };
+        if self.project.select_repo_for_path(&path) {
+            self.git = self.project.git_summary();
+        }
+    }
+
     fn switch_tab(&mut self, change: impl FnOnce(&mut Pane)) {
         let focused = self.workspace.focus() == Focus::Center;
         if focused {
             self.notify_focus(Focus::Center, false);
         }
         change(&mut self.pane);
+        self.sync_active_tab_repo();
         if focused {
             self.notify_focus(Focus::Center, true);
         }
@@ -889,6 +899,7 @@ impl Shell {
             let mut cx = cx!(self);
             item.closed(&mut cx);
         }
+        self.sync_active_tab_repo();
     }
 
     /// Open a file in the centre (1-based position), remembering where the jump started.
@@ -933,6 +944,7 @@ impl Shell {
         }
         // The file finder lists what was opened lately first.
         self.project.touch_recent(path);
+        self.sync_active_tab_repo();
         if focus {
             if was_center {
                 self.notify_focus(Focus::Center, true);
