@@ -856,13 +856,20 @@
       "ctrl-alt-e": ["action::Sequence", ["workspace::FocusCenterPane", "workspace::ToggleAllDocks"]],
       "ctrl-alt-r": "git::SelectRepository",
       "ctrl-alt-d": "git::ToggleBranchDiff",
-      "ctrl-alt-b": "branches::OpenRecent"
+      "ctrl-alt-b": "branches::OpenRecent",
+      "ctrl-,": "zed::OpenSettingsFile",
+      "ctrl-k ctrl-s": "zed::OpenKeymap",
+      "ctrl-k ;": "bakedit::ToggleNavLayer"
     }
   },
   {
     "context": "Pane && !Terminal",
     "bindings": {
       "ctrl-f": "project_search::ToggleFocus",
+      "ctrl-alt-left": "pane::ActivatePreviousItem",
+      "ctrl-alt-right": "pane::ActivateNextItem",
+      "ctrl-{": "pane::ActivatePreviousItem",
+      "ctrl-}": "pane::ActivateNextItem",
       "ctrl-alt-1": ["pane::ActivateItem", 0],
       "ctrl-alt-2": ["pane::ActivateItem", 1],
       "ctrl-alt-3": ["pane::ActivateItem", 2],
@@ -901,7 +908,16 @@
   {
     "context": "Editor && mode == full",
     "bindings": {
-      "ctrl-g": "git_panel::Toggle"
+      "ctrl-g": "git_panel::Toggle",
+      "ctrl-alt-i": "bakedit::ToggleMode",
+      "ctrl-shift-i": "bakedit::ToggleMode"
+    }
+  },
+  {
+    "context": "BufferSearchBar",
+    "bindings": {
+      "ctrl-alt-i": "bakedit::ToggleMode",
+      "ctrl-shift-i": "bakedit::ToggleMode"
     }
   },
   {
@@ -910,6 +926,8 @@
       "ctrl-n": "project_panel::NewFile",
       "ctrl-alt-n": "project_panel::NewDirectory",
       "ctrl-shift-e": "workspace::CloseActiveDock",
+      "ctrl-k 0": "project_panel::CollapseAllEntries",
+      "ctrl-left": "project_panel::CollapseAllEntries",
       "ctrl-up": ["menu::SelectPrevious", { "lines": 5 }],
       "ctrl-down": ["menu::SelectNext", { "lines": 5 }]
     }
