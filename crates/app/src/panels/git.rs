@@ -644,7 +644,7 @@ impl GitPanel {
                 cx.push(Effect::SetCommitDiff { sha: commit.sha.clone(), label: commit.short.clone() });
             }
             cx.push(Effect::ShowProjectDiff { path: None, focus: false });
-            cx.status(format!("{} {}", commit.short, commit.subject));
+            cx.status(format!("{} · {} ({}) — {}", commit.short, commit.author, commit.relative_time, commit.subject));
         }
         true
     }
@@ -1566,16 +1566,31 @@ impl GitPanel {
     fn draw_commit_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
         let theme = cx.theme;
         let bg = theme.panel_bg;
+        let list_area = if area.height >= 2 {
+            if let Some(commit) = self.viewing_commit() {
+                let mut x = area.x + 1;
+                let max_w = area.width.saturating_sub(2);
+                let used = canvas.text_truncated(x, area.y, &commit.author, Style::colors(theme.text_accent, bg), max_w);
+                x += used;
+                let rem = (area.x + 1 + max_w).saturating_sub(x);
+                if rem > 3 && !commit.relative_time.is_empty() {
+                    canvas.text_truncated(x, area.y, &format!(" · {}", commit.relative_time), Style::colors(theme.text_muted, bg), rem);
+                }
+            }
+            Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+        } else {
+            area
+        };
         if let Some(error) = &self.commit_error {
-            canvas.text_truncated(area.x + 1, area.y, error, Style::colors(theme.error, bg), area.width.saturating_sub(2));
+            canvas.text_truncated(list_area.x + 1, list_area.y, error, Style::colors(theme.error, bg), list_area.width.saturating_sub(2));
             return;
         }
         if self.commit_changes.is_empty() {
             let msg = if self.commit_task.is_some() { "Loading commit…" } else { "No file changes in this commit" };
-            canvas.text_truncated(area.x + 1, area.y, msg, Style::colors(theme.text_muted, bg), area.width.saturating_sub(2));
+            canvas.text_truncated(list_area.x + 1, list_area.y, msg, Style::colors(theme.text_muted, bg), list_area.width.saturating_sub(2));
             return;
         }
-        let visible = area.height as usize;
+        let visible = list_area.height as usize;
         if self.commit_reveal {
             if self.commit_selected < self.commit_scroll {
                 self.commit_scroll = self.commit_selected;
@@ -1585,11 +1600,11 @@ impl GitPanel {
             self.commit_reveal = false;
         }
         self.commit_scroll = self.commit_scroll.min(self.commit_changes.len().saturating_sub(visible));
-        let scrollbar = self.commit_changes.len() > visible && area.width > 8;
-        let width = area.width - u16::from(scrollbar);
+        let scrollbar = self.commit_changes.len() > visible && list_area.width > 8;
+        let width = list_area.width - u16::from(scrollbar);
         if scrollbar {
             let marks = ScrollMarks { marks: Vec::new(), cursor_line: Some(self.commit_selected) };
-            paint::scrollbar(canvas, area.right() - 1, area.y, area.height, self.commit_changes.len(), self.commit_scroll, visible, &marks, theme);
+            paint::scrollbar(canvas, list_area.right() - 1, list_area.y, list_area.height, self.commit_changes.len(), self.commit_scroll, visible, &marks, theme);
         }
         let (mut add_w, mut del_w) = (0u16, 0u16);
         for change in self.commit_changes.iter().skip(self.commit_scroll).take(visible) {
@@ -1606,8 +1621,8 @@ impl GitPanel {
         let show_counts = counts_w > 0 && width > counts_w + 14;
         for (offset, change) in self.commit_changes.iter().skip(self.commit_scroll).take(visible).enumerate() {
             let index = self.commit_scroll + offset;
-            let y = area.y + offset as u16;
-            let line = Rect::new(area.x, y, width, 1);
+            let y = list_area.y + offset as u16;
+            let line = Rect::new(list_area.x, y, width, 1);
             let is_selected = self.active_section == ListSection::Uncommitted && index == self.commit_selected;
             let row_bg = if is_selected { theme.element_selected } else { bg };
             canvas.fill(line, row_bg);
@@ -2098,7 +2113,11 @@ impl View for GitPanel {
                 }
                 self.focus = PanelFocus::Changes;
                 if self.commit_offset > 0 {
-                    let index = self.commit_scroll + (event.row - self.list_area.y) as usize;
+                    let header_rows = u16::from(self.list_area.height >= 2);
+                    if event.row < self.list_area.y + header_rows {
+                        return true;
+                    }
+                    let index = self.commit_scroll + (event.row - self.list_area.y - header_rows) as usize;
                     if let Some(change) = self.commit_changes.get(index).cloned() {
                         self.select(index);
                         self.commit_reveal = false;
