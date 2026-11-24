@@ -58,6 +58,7 @@
 
 #![warn(missing_docs)]
 
+mod blame;
 mod branch;
 mod content;
 mod diff;
@@ -77,6 +78,7 @@ mod status;
 #[cfg(test)]
 mod testing;
 
+pub use blame::{format_relative_time, parse_blame_porcelain, BlameInfo, FileBlame};
 pub use branch::Branch;
 pub use diff::{
     parse_diff, DiffLine, DiffLineKind, DiffStatus, DiffTarget, FileDiff, Hunk,

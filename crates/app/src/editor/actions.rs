@@ -115,6 +115,10 @@ impl EditorItem {
             "editor::ReloadFromDisk" => self.reload_from_disk(cx),
             "editor::Format" => self.format_now(cx),
             "editor::CopyPermalinkToLine" => self.copy_permalink(cx),
+            "git::Blame" | "editor::ToggleBlameGutter" => {
+                self.blame.gutter_enabled = !self.blame.gutter_enabled;
+                true
+            }
             "editor::ToggleSoftWrap" => {
                 self.wrap_override = Some(!self.wrapping());
                 self.left = 0;

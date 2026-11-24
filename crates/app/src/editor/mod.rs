@@ -30,6 +30,7 @@
 //!   `marks.rs` works out the git marks off the keystroke path.
 
 mod actions;
+mod blame;
 mod files;
 mod find;
 mod layout;
@@ -53,6 +54,7 @@ use crate::settings::Settings;
 use crate::ui::Canvas;
 use crate::view::{Context, Cursor, Cx, FsChange, Item, ItemStatus, PickerKind, RenderCx, View};
 
+use self::blame::GitBlame;
 use self::files::FileState;
 use self::find::FindBar;
 use self::layout::{Geometry, Reveal, Scroll};
@@ -107,6 +109,7 @@ pub struct EditorItem {
     insert_mark: Option<usize>,
 
     git: GitMarks,
+    blame: GitBlame,
     find: Option<Box<FindBar>>,
     /// The search `n` repeats once the bar is closed.
     last_search: Option<bakedit_text::Search>,
@@ -205,6 +208,7 @@ impl EditorItem {
             insert: false,
             insert_mark: None,
             git: GitMarks::default(),
+            blame: GitBlame::default(),
             find: None,
             last_search: None,
             files: FileState::default(),
@@ -314,7 +318,9 @@ impl View for EditorItem {
     }
 
     fn tick(&mut self, cx: &mut Cx<'_>) -> bool {
-        self.on_tick(cx)
+        let mut dirty = self.on_tick(cx);
+        dirty |= self.refresh_git_blame(cx.project);
+        dirty
     }
 
     fn paths_changed(&mut self, change: &FsChange, cx: &mut Cx<'_>) {
@@ -409,7 +415,11 @@ impl Item for EditorItem {
     }
 
     fn save(&mut self, format: bool, cx: &mut Cx<'_>) -> Result<(), String> {
-        self.save_file(format, cx)
+        let res = self.save_file(format, cx);
+        if res.is_ok() {
+            self.blame.invalidate();
+        }
+        res
     }
 
     fn go_to(&mut self, line: u32, column: Option<u32>) {

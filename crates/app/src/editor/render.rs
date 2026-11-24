@@ -162,22 +162,47 @@ impl EditorItem {
         }
     }
 
-    fn draw_breadcrumbs(&self, canvas: &mut Canvas<'_>, rect: Rect, text: &str, theme: &Theme) {
+    fn draw_breadcrumbs(&self, canvas: &mut Canvas<'_>, rect: Rect, text: &str, now: i64, theme: &Theme) {
         canvas.fill(rect, theme.editor_bg);
-        let room = rect.width.saturating_sub(2) as usize;
         let muted = Style::colors(theme.text_muted, theme.editor_bg);
-        if ui::width(text) > room {
-            canvas.text(rect.x + 1, rect.y, &ui::truncate_start(text, room), muted, rect.width.saturating_sub(2));
+        let blame_text = if rect.width > 36 {
+            self.blame.last_commit().map(|info| super::blame::format_blame_header(info, now))
+        } else {
+            None
+        };
+        let mut blame_reserve = 0usize;
+        if let Some(ref label) = blame_text {
+            let max_blame = (rect.width as usize / 2).min(52);
+            let shown = if ui::width(label) > max_blame {
+                ui::truncate_end(label, max_blame)
+            } else {
+                label.clone()
+            };
+            let w = ui::width(&shown);
+            if w > 0 && w + 8 < rect.width as usize {
+                let bx = rect.right().saturating_sub(1 + w as u16);
+                let style = Style::colors(theme.text_muted, theme.editor_bg).italic();
+                canvas.text(bx, rect.y, &shown, style, w as u16);
+                blame_reserve = w + 2;
+            }
+        }
+        let room = (rect.width.saturating_sub(2) as usize).saturating_sub(blame_reserve);
+        if room == 0 {
             return;
         }
+        if ui::width(text) > room {
+            canvas.text(rect.x + 1, rect.y, &ui::truncate_start(text, room), muted, room as u16);
+            return;
+        }
+        let max_right = rect.x + 1 + room as u16;
         let mut x = rect.x + 1;
         let parts: Vec<&str> = text.split(" › ").collect();
         for (index, part) in parts.iter().enumerate() {
             let last = index + 1 == parts.len();
             let style = if last { Style::colors(theme.text, theme.editor_bg) } else { muted };
-            x += canvas.text(x, rect.y, part, style, rect.right().saturating_sub(x)) ;
+            x += canvas.text(x, rect.y, part, style, max_right.saturating_sub(x));
             if !last {
-                x += canvas.text(x, rect.y, " › ", muted, rect.right().saturating_sub(x));
+                x += canvas.text(x, rect.y, " › ", muted, max_right.saturating_sub(x));
             }
         }
     }
@@ -196,7 +221,9 @@ impl EditorItem {
         }
         self.request_highlights(cx.project);
         self.refresh_git_marks(cx.project);
+        self.refresh_git_blame(cx.project);
         self.find_refresh_matches(cx.project);
+        let now = super::blame::unix_now();
         let syntax = cx.project.syntax(self.doc_id);
         if let Some(result) = &syntax {
             self.shifts.prune(result.version);
@@ -224,13 +251,14 @@ impl EditorItem {
         let numbers = self.numbers_override.unwrap_or(settings.line_numbers);
         let relative = self.relative_override.unwrap_or(settings.relative_line_numbers);
         let gutter_width = paint::gutter_width(line_count, numbers).min(body.width);
-        let scrollbar = u16::from(body.width > gutter_width + 4);
-        let free = body.width - gutter_width - scrollbar;
+        let blame_width: u16 = if self.blame.gutter_enabled && body.width > gutter_width + 32 { 22 } else { 0 };
+        let scrollbar = u16::from(body.width > gutter_width + blame_width + 4);
+        let free = body.width - gutter_width - blame_width - scrollbar;
         let map_width = if self.minimap_shown(settings, free) { (free / 8).clamp(8, 16) } else { 0 };
         let text_width = free - map_width;
-        self.geo.gutter = Rect::new(body.x, body.y, gutter_width, body.height);
-        self.geo.text = Rect::new(body.x + gutter_width, body.y, text_width, body.height);
-        self.geo.minimap = Rect::new(body.x + gutter_width + text_width, body.y, map_width, body.height);
+        self.geo.gutter = Rect::new(body.x, body.y, gutter_width + blame_width, body.height);
+        self.geo.text = Rect::new(body.x + gutter_width + blame_width, body.y, text_width, body.height);
+        self.geo.minimap = Rect::new(body.x + gutter_width + blame_width + text_width, body.y, map_width, body.height);
         self.geo.scrollbar = Rect::new(body.right() - scrollbar, body.y, scrollbar, body.height);
         let rows = body.height as usize;
 
@@ -358,8 +386,34 @@ impl EditorItem {
                     None
                 };
                 paint::gutter(canvas, body.x, y, gutter_width, GutterInfo { number, current, git }, numbers, theme);
+                if blame_width > 0 {
+                    let bx = body.x + gutter_width;
+                    let bbg = if current { theme.active_line_bg } else { theme.gutter_bg };
+                    canvas.fill(Rect::new(bx, y, blame_width, 1), bbg);
+                    if row_index == 0 {
+                        let dirty_line = matches!(git, Some(crate::paint::GitMark::Added | crate::paint::GitMark::Modified));
+                        let (label, italic) = if dirty_line {
+                            ("You · uncommitted".to_string(), true)
+                        } else if let Some(info) = self.blame.line(line) {
+                            if info.uncommitted {
+                                ("You · uncommitted".to_string(), true)
+                            } else {
+                                let author = super::blame::short_author(&info.author, 11);
+                                let age = bakedit_git::format_relative_time(info.timestamp, now);
+                                (format!("{author:<11} {age:>6}"), false)
+                            }
+                        } else {
+                            (String::new(), false)
+                        };
+                        let mut st = Style::colors(if current { theme.text } else { theme.text_muted }, bbg);
+                        st.italic = italic;
+                        canvas.text_truncated(bx + 1, y, &label, st, blame_width.saturating_sub(3));
+                    }
+                    let sep_style = Style::colors(theme.border_variant, bbg);
+                    canvas.put(bx + blame_width - 1, y, "│", sep_style);
+                }
+                let row_bg = if current { theme.active_line_bg } else { theme.editor_bg };
                 if use_md && row_index == 0 && line_selections.is_empty() && matches.is_empty() {
-                    let row_bg = if current { theme.active_line_bg } else { theme.editor_bg };
                     canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
                     crate::markdown::draw_line(canvas, self.geo.text.x, y, text_width, self.left, &text, row_bg, theme, was_in_fence);
                 } else {
@@ -376,6 +430,32 @@ impl EditorItem {
                     row.indent_guides = guides;
                     row.active_guide = active_level;
                     paint::row(canvas, self.geo.text.x, y, text_width, &row, &options, theme);
+                }
+                if line == cursor_line && row_index == 0 && settings.inline_blame && blame_width == 0 && line_selections.is_empty() {
+                    let dirty_line = matches!(git, Some(crate::paint::GitMark::Added | crate::paint::GitMark::Modified));
+                    let inline_text = if dirty_line {
+                        Some("You, Uncommitted".to_string())
+                    } else {
+                        self.blame.line(line).map(|info| super::blame::format_blame_inline(info, now))
+                    };
+                    if let Some(blame_str) = inline_text {
+                        let mut line_cols = 0usize;
+                        for ch in text.chars() {
+                            if ch == '\t' {
+                                line_cols += tab - (line_cols % tab);
+                            } else {
+                                let mut buf = [0u8; 4];
+                                line_cols += ui::width(ch.encode_utf8(&mut buf)).max(1);
+                            }
+                        }
+                        let start_col = line_cols.saturating_sub(self.left) + 3;
+                        if start_col + 6 < text_width as usize {
+                            let avail = (text_width as usize - start_col) as u16;
+                            let fg = theme.text_muted.lerp(row_bg, 0.2);
+                            let st = Style::colors(fg, row_bg).italic();
+                            canvas.text_truncated(self.geo.text.x + start_col as u16, y, &blame_str, st, avail);
+                        }
+                    }
                 }
                 shown.push(ShownRow { line, row: row_index });
                 y += 1;
@@ -423,7 +503,7 @@ impl EditorItem {
         // ---- breadcrumbs and the find bar ---------------------------------------------
         if self.geo.breadcrumbs.height > 0 {
             if let Some(text) = self.breadcrumb_text(cx.root) {
-                self.draw_breadcrumbs(canvas, self.geo.breadcrumbs, &text, theme);
+                self.draw_breadcrumbs(canvas, self.geo.breadcrumbs, &text, now, theme);
             }
         }
         let find_cursor = if find_rows > 0 { self.draw_find(canvas, self.geo.find, cx) } else { None };

@@ -120,9 +120,8 @@ pub struct Shell {
     layout: Layout,
     screen: Rect,
     tab_hits: Vec<TabHit>,
-    /// Where the last frame drew the mode (NAV, EDIT) in the status bar: a click
-    /// there switches the editor in front between nav and edit mode.
-    mode_pill: Option<Rect>,
+    /// Clickable regions drawn in the bottom status bar (mode pill, zoom in/out).
+    status_hits: chrome::StatusBarHits,
     dragging: Option<(DockPosition, PanelId)>,
     /// The view a mouse button went down in, and where it was drawn: it gets the drags and
     /// the release that follow.
@@ -207,7 +206,7 @@ impl Shell {
             layout: Layout::default(),
             screen: Rect::default(),
             tab_hits: Vec::new(),
-            mode_pill: None,
+            status_hits: chrome::StatusBarHits::default(),
             dragging: None,
             mouse_capture: None,
             palette: actions::palette(),
@@ -698,6 +697,9 @@ impl Shell {
         }
         match name {
             "workspace::ToggleZoom" => self.with_workspace(|ws| ws.toggle_zoom()),
+            "bakedit::ZoomIn" => self.adjust_font_size("+1"),
+            "bakedit::ZoomOut" => self.adjust_font_size("-1"),
+            "bakedit::ZoomReset" => self.adjust_font_size("0"),
             "workspace::ToggleAllDocks" => self.with_workspace(|ws| ws.toggle_all_docks()),
             "workspace::ToggleAllLeftPanels" => {
                 let mut on = false;
@@ -1828,7 +1830,7 @@ impl Shell {
                     }
                     // The mode in the status bar belongs to the editor in front: a click on
                     // it switches that editor between nav and edit mode, as cmd-i does.
-                    if self.mode_pill.is_some_and(inside) {
+                    if self.status_hits.mode_pill.is_some_and(inside) {
                         let action = Action::new("bakedit::ToggleMode");
                         let mut cx = cx!(self);
                         if let Some(item) = self.pane.active_mut() {
@@ -1837,6 +1839,20 @@ impl Shell {
                         self.apply_effects();
                         return true;
                     }
+                    if self.status_hits.zoom_out.is_some_and(inside) {
+                        self.adjust_font_size("-1");
+                        return true;
+                    }
+                    if self.status_hits.zoom_in.is_some_and(inside) {
+                        self.adjust_font_size("+1");
+                        return true;
+                    }
+                }
+                if event.kind == MouseKind::Press(MouseButton::Right)
+                    && (self.status_hits.zoom_out.is_some_and(inside) || self.status_hits.zoom_in.is_some_and(inside))
+                {
+                    self.adjust_font_size("0");
+                    return true;
                 }
                 if let Some(hit) = self.tab_hits.iter().find(|hit| inside(hit.rect)).copied() {
                     match event.kind {
@@ -2032,7 +2048,7 @@ impl Shell {
             nav_layer: self.nav_layer,
             nerd_font: self.settings.icons == crate::settings::Icons::Nerd,
         };
-        self.mode_pill = chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
+        self.status_hits = chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
         if let Some(strip) = layout.usage {
             let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
             if self.settings.agent_dots {
@@ -2083,6 +2099,37 @@ impl Shell {
             None => {}
         }
         cursor
+    }
+
+    /// Adjust the host terminal's font size via Kitty remote control (`+1`, `-1`, or `0` to reset).
+    fn adjust_font_size(&mut self, delta: &str) {
+        let delta_owned = delta.to_string();
+        let listen_on = std::env::var("KITTY_LISTEN_ON").ok();
+        let kitty_pid = std::env::var("KITTY_PID").ok();
+        let target = listen_on.or_else(|| kitty_pid.map(|pid| format!("unix:/tmp/kitty-rc-{pid}")));
+        let msg = match delta {
+            "+1" => "Zoomed in",
+            "-1" => "Zoomed out",
+            _ => "Zoom reset",
+        };
+        if let Some(sock) = target {
+            std::thread::spawn(move || {
+                let run = |bin: &str| {
+                    std::process::Command::new(bin)
+                        .args(["@", "--to", &sock, "set-font-size", "--all", "--", &delta_owned])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                };
+                if run("kitty").is_err() {
+                    let _ = run("/Applications/kitty.app/Contents/MacOS/kitty");
+                }
+            });
+            self.set_status(msg, false);
+        } else {
+            self.set_status("Zoom requires Kitty remote control (Cmd+= / Cmd+-)", true);
+        }
     }
 }
 

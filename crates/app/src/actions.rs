@@ -78,6 +78,9 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("workspace::ToggleAllLeftPanels", None, Some("workspace: toggle all left panels (herdr, git, file tree)")),
     ("workspace::FocusCenterPane", None, Some("workspace: focus the editor")),
     ("workspace::ToggleZoom", None, Some("workspace: toggle fullscreen for the focused pane")),
+    ("bakedit::ZoomIn", None, Some("bakedit: zoom in (increase font size)")),
+    ("bakedit::ZoomOut", None, Some("bakedit: zoom out (decrease font size)")),
+    ("bakedit::ZoomReset", None, Some("bakedit: reset zoom (default font size)")),
     ("workspace::ToggleAllDocks", None, None),
     ("workspace::ToggleLeftDock", None, None),
     ("workspace::ToggleRightDock", None, None),
@@ -144,6 +147,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("editor::ToggleMinimap", None, None),
     ("editor::ToggleRelativeLineNumbers", None, None),
     ("editor::ScrollCursorCenter", None, None),
+    ("git::Blame", None, Some("git: toggle per-line blame gutter")),
     // Terminal and herdr
     ("terminal::Clear", None, None),
     ("terminal::Copy", None, None),

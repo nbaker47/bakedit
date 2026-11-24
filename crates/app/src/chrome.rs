@@ -165,16 +165,24 @@ impl Default for Status {
     }
 }
 
+/// Clickable regions drawn in the bottom status bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusBarHits {
+    pub mode_pill: Option<Rect>,
+    pub zoom_out: Option<Rect>,
+    pub zoom_in: Option<Rect>,
+}
+
 /// Draw the status bar in `area` (one row): mode and git on the left, the message in the
-/// middle, the cursor and file facts on the right. On a narrow screen the right side gives
-/// way first, least important item first, so the mode and branch never get cut. Returns
-/// where the mode pill (NAV, EDIT) was drawn, for clicks on it: `None` when there is
-/// no mode to show or no room.
-pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> Option<Rect> {
+/// middle, the cursor, file facts, and zoom controls on the right. On a narrow screen the
+/// right side gives way first, least important item first, so the mode and branch never get
+/// cut. Returns the clickable hit rects (mode pill and zoom in/out buttons).
+pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> StatusBarHits {
+    let mut hits = StatusBarHits::default();
     let bg = theme.status_bar_bg;
     canvas.fill(area, bg);
     if area.width == 0 || area.height == 0 {
-        return None;
+        return hits;
     }
     let y = area.y;
     let muted = Style::colors(theme.text_muted, bg);
@@ -188,10 +196,9 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
         ModeIndicator::Edit => Some(pill("EDIT", theme.success)),
         ModeIndicator::None => None,
     };
-    let mut pill = None;
     if let Some((label, style)) = mode {
         let width = canvas.text(x, y, &label, style, area.width);
-        pill = (width > 0).then(|| Rect::new(x, y, width, 1));
+        hits.mode_pill = (width > 0).then(|| Rect::new(x, y, width, 1));
         x += width;
         x += 1;
     } else {
@@ -244,23 +251,36 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
         right_items.push((text, Style::colors(theme.text, bg)));
     }
 
-    // Items are separated by two spaces and the bar ends with one cell of padding. Drop
-    // from the edge (the least important) until what is left fits beside the left side.
+    // Zoom out / in controls at the far right (` − ` ` + ` = 7 cells + 1 right margin).
     let left_end = x;
+    let mut right_edge = area.right().saturating_sub(1);
+    if right_edge.saturating_sub(left_end) >= 10 {
+        let btn_style = Style::colors(theme.text, theme.elevated_surface).bold();
+        let in_x = right_edge.saturating_sub(3);
+        canvas.text(in_x, y, " + ", btn_style, 3);
+        hits.zoom_in = Some(Rect::new(in_x, y, 3, 1));
+        let out_x = in_x.saturating_sub(4);
+        canvas.text(out_x, y, " − ", btn_style, 3);
+        hits.zoom_out = Some(Rect::new(out_x, y, 3, 1));
+        right_edge = out_x.saturating_sub(2);
+    }
+
+    // Items are separated by two spaces. Drop from the edge (the least important) until
+    // what is left fits beside the left side and zoom buttons.
     let total = |items: &[(String, Style)]| -> u16 {
-        items.iter().map(|(text, _)| ui::width(text) as u16).sum::<u16>() + 2 * items.len().saturating_sub(1) as u16 + 1
+        items.iter().map(|(text, _)| ui::width(text) as u16).sum::<u16>() + 2 * items.len().saturating_sub(1) as u16
     };
     let mut start = 0;
-    while start < right_items.len() && left_end + total(&right_items[start..]) + 1 > area.right() {
+    while start < right_items.len() && left_end + total(&right_items[start..]) + 2 > right_edge {
         start += 1;
     }
     let shown = &right_items[start..];
-    let mut right_start = area.right();
+    let mut right_start = right_edge;
     if !shown.is_empty() {
-        let mut rx = area.right() - 1;
+        let mut rx = right_edge;
         for (text, style) in shown {
             let w = ui::width(text) as u16;
-            rx -= w;
+            rx = rx.saturating_sub(w);
             canvas.text(rx, y, text, *style, w);
             right_start = rx;
             rx = rx.saturating_sub(2);
@@ -278,7 +298,7 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
             canvas.text_truncated(x, y, message, Style::colors(color, bg), room);
         }
     }
-    pill
+    hits
 }
 
 // ---- prompt ----------------------------------------------------------------------------
@@ -522,7 +542,18 @@ mod tests {
     fn status_bar_lays_out_left_middle_right() {
         let text = draw_status(&full_status(), 100);
         assert!(text.starts_with(" NAV  main ↑1 ↓2  ±3  Saved src/main.rs"), "{text:?}");
-        assert!(text.ends_with("12:5  Rust  Spaces: 4  LF  ;layer "), "{text:?}");
+        assert!(text.ends_with("12:5  Rust  Spaces: 4  LF  ;layer   −   +  "), "{text:?}");
+    }
+
+    #[test]
+    fn status_bar_reports_zoom_button_hit_rects() {
+        let area = Rect::new(0, 3, 60, 1);
+        let screen = Rect::new(0, 0, 80, 5);
+        let mut buf = Buffer::empty(screen);
+        let mut canvas = Canvas::new(&mut buf, screen);
+        let hits = status_bar(&mut canvas, area, &full_status(), &Theme::builtin());
+        assert_eq!(hits.zoom_in, Some(Rect::new(56, 3, 3, 1)));
+        assert_eq!(hits.zoom_out, Some(Rect::new(52, 3, 3, 1)));
     }
 
     #[test]
@@ -565,7 +596,7 @@ mod tests {
             let screen = Rect::new(0, 0, 80, 5);
             let mut buf = Buffer::empty(screen);
             let mut canvas = Canvas::new(&mut buf, screen);
-            status_bar(&mut canvas, area, &Status { mode, ..full_status() }, &Theme::builtin())
+            status_bar(&mut canvas, area, &Status { mode, ..full_status() }, &Theme::builtin()).mode_pill
         };
         assert_eq!(pill(ModeIndicator::Nav, Rect::new(0, 3, 60, 1)), Some(Rect::new(0, 3, 5, 1)), "\" NAV \"");
         assert_eq!(pill(ModeIndicator::Edit, Rect::new(10, 3, 60, 1)), Some(Rect::new(10, 3, 6, 1)));

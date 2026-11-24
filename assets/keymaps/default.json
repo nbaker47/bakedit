@@ -877,7 +877,22 @@
       "ctrl-alt-b": "branches::OpenRecent",
       "ctrl-,": "zed::OpenSettingsFile",
       "ctrl-k ctrl-s": "zed::OpenKeymap",
-      "ctrl-k ;": "bakedit::ToggleNavLayer"
+      "ctrl-k ;": "bakedit::ToggleNavLayer",
+      "ctrl-alt-left": "pane::ActivatePreviousItem",
+      "ctrl-alt-right": "pane::ActivateNextItem",
+      "ctrl-{": "pane::ActivatePreviousItem",
+      "ctrl-}": "pane::ActivateNextItem",
+      "ctrl-alt-[": "pane::ActivatePreviousItem",
+      "ctrl-alt-]": "pane::ActivateNextItem",
+      "ctrl-alt-1": ["pane::ActivateItem", 0],
+      "ctrl-alt-2": ["pane::ActivateItem", 1],
+      "ctrl-alt-3": ["pane::ActivateItem", 2],
+      "ctrl-alt-4": ["pane::ActivateItem", 3],
+      "ctrl-alt-5": ["pane::ActivateItem", 4],
+      "ctrl-alt-6": ["pane::ActivateItem", 5],
+      "ctrl-alt-7": ["pane::ActivateItem", 6],
+      "ctrl-alt-8": ["pane::ActivateItem", 7],
+      "ctrl-alt-9": ["pane::ActivateItem", 8]
     }
   },
   {
@@ -944,7 +959,8 @@
       "ctrl-k >": ["editor::SelectBetween", { "kind": "angle" }],
       "ctrl-k z": "editor::ToggleSoftWrap",
       "ctrl-k r": "editor::RevealInFileManager",
-      "ctrl-k p": "editor::CopyPath"
+      "ctrl-k p": "editor::CopyPath",
+      "ctrl-alt-shift-b": "git::Blame"
     }
   },
   {
@@ -1029,7 +1045,11 @@
       "ctrl-shift-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-p": "file_finder::Toggle",
       "ctrl-alt-p": "command_palette::Toggle",
-      "ctrl-shift-p": "command_palette::Toggle"
+      "ctrl-shift-p": "command_palette::Toggle",
+      "ctrl-{": "pane::ActivatePreviousItem",
+      "ctrl-}": "pane::ActivateNextItem",
+      "ctrl-alt-[": "pane::ActivatePreviousItem",
+      "ctrl-alt-]": "pane::ActivateNextItem"
     }
   }
 ]

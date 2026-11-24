@@ -409,20 +409,27 @@ impl TerminalPanel {
     fn open(choice: &LinkChoice, cx: &mut Cx<'_>) {
         match choice {
             // Focusing the editor also un-zooms the panel, so the file is visible.
-            LinkChoice::File(found) => cx.push(Effect::OpenFile {
-                path: found.path.clone(),
-                line: found.line,
-                column: found.col,
-                preview: false,
-                focus: true,
-            }),
+            LinkChoice::File(found) => {
+                if found.path.is_dir() {
+                    cx.push(Effect::RevealInProjectPanel(found.path.clone()));
+                } else {
+                    cx.push(Effect::OpenFile {
+                        path: found.path.clone(),
+                        line: found.line,
+                        column: found.col,
+                        preview: false,
+                        focus: true,
+                    });
+                }
+            }
             LinkChoice::Url(url) => cx.push(Effect::OpenExternally(url.clone())),
         }
     }
 
     fn link_modifier_held(mods: Mods, settings: &Settings) -> bool {
         match settings.link_click_modifier {
-            LinkModifier::Cmd => mods.contains(Mods::SUPER),
+            // Host terminals like Kitty often reserve Cmd+Click; accept Ctrl+Click too.
+            LinkModifier::Cmd => mods.contains(Mods::SUPER) || mods.contains(Mods::CTRL),
             LinkModifier::Alt => mods.contains(Mods::ALT),
             LinkModifier::Ctrl => mods.contains(Mods::CTRL),
             LinkModifier::None => true,
@@ -486,10 +493,10 @@ impl TerminalPanel {
             "workspace::NewTerminal" if self.tab().pending() => {}
             "workspace::NewTerminal" => self.new_tab(cx),
             "pane::CloseActiveItem" => self.close_active(cx),
-            "pane::ActivateNextItem" => self.activate((self.active + 1) % count),
-            "pane::ActivatePreviousItem" => self.activate((self.active + count - 1) % count),
-            "pane::ActivateLastItem" => self.activate(count - 1),
-            "pane::ActivateItem" => {
+            "pane::ActivateNextItem" if count > 1 => self.activate((self.active + 1) % count),
+            "pane::ActivatePreviousItem" if count > 1 => self.activate((self.active + count - 1) % count),
+            "pane::ActivateLastItem" if count > 1 => self.activate(count - 1),
+            "pane::ActivateItem" if count > 1 => {
                 let index = action.arg_i64("index").or_else(|| action.args.as_ref().and_then(|args| args.as_i64())).unwrap_or(0);
                 self.activate((index.max(0) as usize).min(count - 1));
             }
