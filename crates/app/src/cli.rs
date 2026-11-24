@@ -47,6 +47,8 @@ Options:
                             terminal, or in a Ghostty window with --window)
       --print-keymap        print the built-in keymap and exit
       --print-ghostty-config  print the Ghostty config of bakedit's window and exit
+      --dots                run the standalone terminal-style Agent Dots TUI
+      --onboarding          open the interactive onboarding wizard on startup
       --action <name> [json]  run an action in the running window and exit
       --log <file>          write a debug log
   -h, --help                show this help
@@ -69,6 +71,7 @@ pub enum Mode {
     Probe,
     PrintKeymap,
     PrintGhosttyConfig,
+    Dots,
     Action { name: String, args: Option<serde_json::Value> },
     Help,
     Version,
@@ -90,6 +93,7 @@ pub struct Args {
     pub cwd: Option<PathBuf>,
     pub terminal_command: Option<String>,
     pub no_restore: bool,
+    pub onboarding: bool,
     pub log_file: Option<PathBuf>,
     /// The arguments as given, minus the ones only the launching process acts on
     /// (`--window`, `--here`, `--no-window`, `--wait`, `--no-wait`, `-n`, `--new`, `--cwd`):
@@ -109,6 +113,7 @@ impl Default for Args {
             cwd: None,
             terminal_command: None,
             no_restore: false,
+            onboarding: false,
             log_file: None,
             forward: Vec::new(),
         }
@@ -163,6 +168,8 @@ where
                 forwarded.clear();
             }
             "--no-restore" => out.no_restore = true,
+            "--onboarding" => out.onboarding = true,
+            "--dots" => out.mode = Mode::Dots,
             "--terminal" => {
                 let command = value("--terminal")?;
                 forwarded.push(command.clone());

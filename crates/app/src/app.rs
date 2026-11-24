@@ -33,10 +33,13 @@ use crate::background::Waker;
 use crate::chrome::NavLayerIndicator;
 use crate::cli::PathSpec;
 use crate::clipboard::{Clipboard, MemoryBackend};
+use crate::dots::overlay::DotsOverlay;
+use crate::dots::DotsWatcher;
 use crate::factory::{AppFactory, AppSource};
 use crate::host::{self, Host, HostEvent};
 use crate::ipc;
 use crate::keys::KeyRouter;
+use crate::onboarding;
 use crate::panels::git::GitPanel;
 use crate::panels::project::ProjectPanel;
 use crate::panels::terminal::{TerminalLaunch, TerminalPanel};
@@ -84,6 +87,8 @@ pub struct StartOptions {
     pub terminal_command: Option<TerminalCommand>,
     /// Reopen the last session's tabs (`--no-restore` turns it off).
     pub restore: bool,
+    /// Open the onboarding wizard immediately (`--onboarding`).
+    pub onboarding: bool,
     /// Why bakedit runs here rather than in the Ghostty window it would have opened, shown
     /// once in the status bar.
     pub notice: Option<String>,
@@ -127,6 +132,8 @@ fn modal_name(modal: &Option<Modal>) -> Option<String> {
         Some(Modal::Picker { kind, .. }) => Some(format!("{kind:?}")),
         Some(Modal::Prompt { .. }) => Some("prompt".into()),
         Some(Modal::Input { purpose, .. }) => Some(format!("{purpose:?}")),
+        Some(Modal::Onboarding(_)) => Some("onboarding".into()),
+        Some(Modal::KeymapsGuide(_)) => Some("keymaps_guide".into()),
         None => None,
     }
 }
@@ -145,6 +152,8 @@ pub struct App {
     screen: Screen,
     ipc: Option<ipc::Server>,
     usage: Option<UsageWatcher>,
+    dots_watcher: Option<DotsWatcher>,
+    dots_overlay: DotsOverlay,
     terminal_command: TerminalCommand,
     state_dir: PathBuf,
     sessions_dir: PathBuf,
@@ -274,6 +283,7 @@ impl App {
 
         let nav_wanted = loaded.settings.nav_layer;
         let usage_meter = loaded.settings.usage_meter;
+        let agent_dots = loaded.settings.agent_dots;
         let mut shell = build_shell(
             &options.root,
             (loaded.settings, loaded.theme),
@@ -317,6 +327,17 @@ impl App {
             let waker = waker.clone();
             UsageWatcher::start(move || waker.wake())
         });
+        let dots_watcher = agent_dots.then(|| {
+            let waker = waker.clone();
+            DotsWatcher::start(move || waker.wake())
+        });
+        let mut dots_overlay = DotsOverlay::new(state_dir.clone(), agent_dots);
+        if agent_dots {
+            dots_overlay.sync_theme(&shell.theme);
+        }
+        if options.onboarding || onboarding::should_auto_open(&state_dir) {
+            shell.open_onboarding();
+        }
 
         let mut app = App {
             focus_key: (shell.workspace.focus(), None),
@@ -331,6 +352,8 @@ impl App {
             screen,
             ipc,
             usage,
+            dots_watcher,
+            dots_overlay,
             terminal_command,
             state_dir,
             sessions_dir,
@@ -438,6 +461,12 @@ impl App {
         if let Some(usage) = &mut self.usage {
             if usage.poll() {
                 self.shell.usage = usage.vendors().to_vec();
+                self.dirty = true;
+            }
+        }
+        if let Some(watcher) = &self.dots_watcher {
+            if let Some(snap) = watcher.poll() {
+                self.shell.dots = Some(snap);
                 self.dirty = true;
             }
         }
@@ -562,6 +591,7 @@ impl App {
                 self.shell.dispatch(&Action::new("workspace::SaveAll"));
             }
         }
+        self.dots_overlay.on_focus_changed(focused, &self.shell.theme);
         self.shell.with_focused_view(|view, cx| view.focus_changed(focused, cx));
     }
 
@@ -673,8 +703,87 @@ impl App {
                 self.shell.open_page("Key Bindings", &text, None);
             }
             Request::OpenProject(root) => self.open_project(root),
+            Request::PreviewTheme(name) => {
+                let preview_settings = Settings { theme: Some(name), ..self.shell.settings.clone() };
+                let (theme, _) = themes::load_with_palette(&preview_settings, &self.terminal_palette);
+                self.shell.theme = theme;
+                self.dots_overlay.sync_theme(&self.shell.theme);
+            }
+            Request::SelectTheme(name) => {
+                self.shell.settings.theme = Some(name.clone());
+                let (theme, warning) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
+                self.shell.theme = theme;
+                self.dots_overlay.sync_theme(&self.shell.theme);
+                let _ = settings::save_values(&settings::settings_path(), &[("theme", serde_json::Value::String(name.clone()))]);
+                self.config.changed();
+                if let Some(w) = warning {
+                    self.shell.set_status(w, true);
+                } else {
+                    self.shell.set_status(format!("Theme set to {name}"), false);
+                }
+            }
+            Request::ToggleAgentDots => {
+                let enabled = !self.shell.settings.agent_dots;
+                self.set_agent_dots(enabled);
+                let _ = settings::save_values(&settings::settings_path(), &[("agent_dots", serde_json::Value::Bool(enabled))]);
+                self.config.changed();
+                self.shell.set_status(
+                    if enabled {
+                        "Agent Dots enabled (floating bar appears when you leave bakedit)"
+                    } else {
+                        "Agent Dots disabled"
+                    },
+                    false,
+                );
+            }
+            Request::ApplyOnboarding { agent_dots, theme } => {
+                self.shell.settings.theme = Some(theme.clone());
+                let (loaded_theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
+                self.shell.theme = loaded_theme;
+                self.set_agent_dots(agent_dots);
+                let _ = settings::save_values(
+                    &settings::settings_path(),
+                    &[
+                        ("agent_dots", serde_json::Value::Bool(agent_dots)),
+                        ("theme", serde_json::Value::String(theme.clone())),
+                    ],
+                );
+                self.config.changed();
+                onboarding::mark_onboarded(&self.state_dir);
+                self.shell.set_status(
+                    format!(
+                        "Setup saved · theme: {theme} · Agent Dots: {}",
+                        if agent_dots { "on" } else { "off" }
+                    ),
+                    false,
+                );
+            }
+            Request::CancelOnboarding { restore_theme } => {
+                self.shell.settings.theme = restore_theme;
+                let (loaded_theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
+                self.shell.theme = loaded_theme;
+                self.dots_overlay.sync_theme(&self.shell.theme);
+                onboarding::mark_onboarded(&self.state_dir);
+            }
         }
         self.dirty = true;
+    }
+
+    fn set_agent_dots(&mut self, enabled: bool) {
+        self.shell.settings.agent_dots = enabled;
+        self.dots_overlay.set_enabled(enabled, &self.shell.theme);
+        self.dots_overlay.sync_theme(&self.shell.theme);
+        match (enabled, self.dots_watcher.is_some()) {
+            (true, false) => {
+                let waker = self.waker.clone();
+                self.dots_watcher = Some(DotsWatcher::start(move || waker.wake()));
+            }
+            (false, true) => {
+                self.dots_watcher = None;
+                self.shell.dots = None;
+            }
+            _ => {}
+        }
     }
 
     /// Read settings.json, keymap.json and the theme again. Settings that build the window
@@ -687,6 +796,7 @@ impl App {
         self.shell.binding_hint = self.router.binding_hint();
         self.shell.settings = loaded.settings;
         self.shell.theme = loaded.theme;
+        self.set_agent_dots(self.shell.settings.agent_dots);
         if nav_setting_changed {
             self.nav_wanted = self.shell.settings.nav_layer;
             self.apply_nav_layer(false);

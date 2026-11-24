@@ -179,7 +179,7 @@ impl PickerSource for AppSource {
             PickerKind::Branches => self.branch_rows(query, cx),
             PickerKind::RecentProjects => self.project_rows(query, cx),
             // The shell and the views fill the others.
-            PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links => Vec::new(),
+            PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Outline | PickerKind::Links | PickerKind::Themes => Vec::new(),
         }
     }
 

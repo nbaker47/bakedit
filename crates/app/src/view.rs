@@ -337,6 +337,7 @@ pub enum PickerKind {
     /// Paths and URLs visible in the terminal.
     Links,
     RecentProjects,
+    Themes,
 }
 
 /// Supplies rows for the pickers whose rows depend on what is typed and come from the

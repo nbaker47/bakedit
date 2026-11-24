@@ -18,15 +18,18 @@ use serde_json::json;
 use crate::actions;
 use crate::chrome::{self, ModeIndicator, NavLayerIndicator, Prompt, Status, TabHit};
 use crate::clipboard::Clipboard;
+use crate::dots::{self, DotsSnapshot};
 use crate::fuzzy;
 use crate::hints;
 use crate::layout::{self, Layout};
 use crate::line_input::{InputOutcome, LineInput};
+use crate::onboarding::{KeymapsGuide, OnboardingModal, OnboardingOutcome};
 use crate::pane::{CloseSet, Location, Pane};
 use crate::picker::{Picker, PickerEvent, PickerItem};
 pub use crate::project::GitSummary;
 use crate::project::{Project, ProjectEvent};
 use crate::settings::Settings;
+use crate::themes;
 use crate::ui::{self, Canvas, Style};
 use crate::usage::{self, Vendor};
 use crate::view::{
@@ -48,6 +51,8 @@ pub enum Modal {
     Picker { kind: PickerKind, picker: Picker },
     Prompt { prompt: Prompt, answers: Vec<Vec<Effect>> },
     Input { purpose: InputPurpose, input: LineInput, title: String },
+    Onboarding(OnboardingModal),
+    KeymapsGuide(KeymapsGuide),
 }
 
 /// Things only the app can do, collected for it to pick up after each event. (Git refreshes
@@ -62,6 +67,16 @@ pub enum Request {
     ShowKeybindings,
     /// Replace this project with another directory. Unsaved files have been dealt with.
     OpenProject(PathBuf),
+    /// Live-preview a built-in theme during onboarding or theme selection.
+    PreviewTheme(String),
+    /// Persist a chosen theme from the theme picker.
+    SelectTheme(String),
+    /// Toggle Agent Dots on or off and persist to settings.json.
+    ToggleAgentDots,
+    /// Save onboarding choices (`agent_dots` + `theme`) and write the onboarded marker.
+    ApplyOnboarding { agent_dots: bool, theme: String },
+    /// Cancel onboarding (restoring any previewed theme) and write the onboarded marker.
+    CancelOnboarding { restore_theme: Option<String> },
 }
 
 /// Looks up the keys bound to an action, for display.
@@ -82,6 +97,8 @@ pub struct Shell {
     pub requests: Vec<Request>,
     pub git: GitSummary,
     pub usage: Vec<Vendor>,
+    pub dots: Option<DotsSnapshot>,
+    pub dots_pulse: bool,
     pub nav_layer: NavLayerIndicator,
     /// The terminal sends cmd chords (the kitty keyboard protocol). Without them, hints name
     /// the `ctrl-]` prefix keys instead.
@@ -174,6 +191,8 @@ impl Shell {
             requests: Vec::new(),
             git: GitSummary::default(),
             usage: Vec::new(),
+            dots: None,
+            dots_pulse: false,
             nav_layer: NavLayerIndicator::Off,
             cmd_keys: true,
             pending_keys: None,
@@ -334,11 +353,14 @@ impl Shell {
                     PickerKind::Branches => "GitBranchSelector",
                     PickerKind::Links => "LinkPicker",
                     PickerKind::RecentProjects => "RecentProjects",
+                    PickerKind::Themes => "ThemeSelector",
                 }));
                 out.push(Context::new("Picker"));
                 out.push(Context::new("Editor").value("mode", "single_line"));
             }
             Some(Modal::Prompt { .. }) => out.push(Context::new("Prompt")),
+            Some(Modal::Onboarding(_)) => out.push(Context::new("Onboarding")),
+            Some(Modal::KeymapsGuide(_)) => out.push(Context::new("KeymapsGuide")),
             Some(Modal::Input { purpose, .. }) => {
                 out.push(Context::new(match purpose {
                     InputPurpose::GoToLine => "GoToLine",
@@ -409,6 +431,17 @@ impl Shell {
                 }
                 true
             }
+            Some(Modal::Onboarding(modal)) => {
+                let outcome = modal.handle_key(key);
+                self.handle_onboarding_outcome(outcome);
+                true
+            }
+            Some(Modal::KeymapsGuide(guide)) => {
+                if guide.handle_key(key) {
+                    self.modal = None;
+                }
+                true
+            }
             None => {
                 let mut cx = cx!(self);
                 match self.workspace.focus() {
@@ -432,7 +465,7 @@ impl Shell {
                 input.insert(text);
                 true
             }
-            Some(Modal::Prompt { .. }) => true,
+            Some(Modal::Prompt { .. }) | Some(Modal::Onboarding(_)) | Some(Modal::KeymapsGuide(_)) => true,
             None => {
                 let mut cx = cx!(self);
                 match self.workspace.focus() {
@@ -743,6 +776,12 @@ impl Shell {
             "bakedit::ToggleNavLayer" => self.requests.push(Request::ToggleNavLayer),
             "bakedit::ReloadConfig" => self.requests.push(Request::ReloadConfig),
             "bakedit::ShowKeybindings" => self.requests.push(Request::ShowKeybindings),
+            "bakedit::ShowKeymapsGuide" => {
+                self.modal = Some(Modal::KeymapsGuide(KeymapsGuide::new(self.cmd_keys)));
+            }
+            "bakedit::Onboarding" => self.open_onboarding(),
+            "bakedit::SelectTheme" => self.toggle_picker(PickerKind::Themes),
+            "bakedit::ToggleAgentDots" => self.requests.push(Request::ToggleAgentDots),
             "bakedit::ToggleEditMode" => {
                 self.settings.vim_mode = !self.settings.vim_mode;
                 let text = if self.settings.vim_mode {
@@ -1080,6 +1119,7 @@ impl Shell {
             PickerKind::Branches => "Switch branch",
             PickerKind::Links => "Open a path or link from the terminal",
             PickerKind::RecentProjects => "Open a recent project",
+            PickerKind::Themes => "Select a built-in theme",
         };
         let mut picker = Picker::new(placeholder);
         picker.empty_message = match kind {
@@ -1092,11 +1132,12 @@ impl Shell {
             PickerKind::Links if self.view_rows.is_empty() => "No paths or links on screen: they appear here when a program prints one",
             PickerKind::Links => "No matching paths or links",
             PickerKind::RecentProjects => "No recent projects",
+            PickerKind::Themes => "No matching themes",
         }
         .to_string();
         self.modal = Some(Modal::Picker { kind, picker });
         self.previewed = None;
-        if !view_backed(kind) && !matches!(kind, PickerKind::CommandPalette | PickerKind::TabSwitcher) {
+        if !view_backed(kind) && !matches!(kind, PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Themes) {
             let mut cx = cx!(self);
             self.source_version = self.source.version(kind, &mut cx);
             self.apply_effects();
@@ -1195,6 +1236,21 @@ impl Shell {
                     })
                     .unzip()
             }
+            PickerKind::Themes => {
+                let names: Vec<&str> = themes::BUILTIN_CHOICES.iter().map(|(n, _)| *n).collect();
+                fuzzy::filter(names, &query)
+                    .into_iter()
+                    .map(|m| {
+                        let (name, desc) = themes::BUILTIN_CHOICES[m.index];
+                        let mut item = PickerItem::new(name).matched(m.positions);
+                        item.detail = Some(desc.to_string());
+                        if self.theme.name == name {
+                            item.hint = Some("active".to_string());
+                        }
+                        (item, m.index)
+                    })
+                    .unzip()
+            }
             kind if view_backed(kind) => {
                 let labels: Vec<&str> = self.view_rows.iter().map(|row| row.label.as_str()).collect();
                 fuzzy::filter(labels, &query)
@@ -1257,7 +1313,13 @@ impl Shell {
                             pane.activate(index);
                         });
                     }
-                    (PickerKind::CommandPalette | PickerKind::TabSwitcher, None) => self.close_picker(true),
+                    (PickerKind::Themes, Some(index)) => {
+                        self.close_picker(true);
+                        if let Some((name, _)) = themes::BUILTIN_CHOICES.get(index) {
+                            self.requests.push(Request::SelectTheme((*name).to_string()));
+                        }
+                    }
+                    (PickerKind::CommandPalette | PickerKind::TabSwitcher | PickerKind::Themes, None) => self.close_picker(true),
                     (kind, Some(row)) if view_backed(kind) => {
                         self.close_picker(true);
                         self.with_picker_view(kind, |view, cx| view.picker_confirm(kind, row, secondary, cx));
@@ -1339,7 +1401,57 @@ impl Shell {
                     _ => true,
                 },
             },
+            Some(Modal::Onboarding(modal)) => {
+                let synthetic = match name {
+                    "menu::Cancel" => Some(bakedit_core::Key::Escape),
+                    "menu::Confirm" | "menu::SecondaryConfirm" => Some(bakedit_core::Key::Enter),
+                    "menu::SelectNext" => Some(bakedit_core::Key::Down),
+                    "menu::SelectPrevious" => Some(bakedit_core::Key::Up),
+                    _ => None,
+                };
+                if let Some(key) = synthetic {
+                    let ev = KeyEvent::new(key, Mods::empty());
+                    let outcome = modal.handle_key(&ev);
+                    self.handle_onboarding_outcome(outcome);
+                }
+                true
+            }
+            Some(Modal::KeymapsGuide(guide)) => {
+                match name {
+                    "menu::Cancel" => self.modal = None,
+                    "menu::SelectNext" => guide.scroll_by(1),
+                    "menu::SelectPrevious" => guide.scroll_by(-1),
+                    _ => {}
+                }
+                true
+            }
             None => false,
+        }
+    }
+
+    /// Open the 3-page interactive onboarding wizard.
+    pub fn open_onboarding(&mut self) {
+        self.modal = Some(Modal::Onboarding(OnboardingModal::new(
+            self.settings.agent_dots,
+            self.settings.theme.as_deref(),
+            self.cmd_keys,
+        )));
+    }
+
+    fn handle_onboarding_outcome(&mut self, outcome: OnboardingOutcome) {
+        match outcome {
+            OnboardingOutcome::Continue => {}
+            OnboardingOutcome::PreviewTheme(name) => {
+                self.requests.push(Request::PreviewTheme(name));
+            }
+            OnboardingOutcome::Finish { agent_dots, theme } => {
+                self.modal = None;
+                self.requests.push(Request::ApplyOnboarding { agent_dots, theme });
+            }
+            OnboardingOutcome::Cancel { restore_theme } => {
+                self.modal = None;
+                self.requests.push(Request::CancelOnboarding { restore_theme });
+            }
         }
     }
 
@@ -1604,6 +1716,14 @@ impl Shell {
                 }
                 true
             }
+            Some(Modal::Onboarding(modal)) => {
+                modal.handle_mouse(event);
+                true
+            }
+            Some(Modal::KeymapsGuide(guide)) => {
+                guide.handle_mouse(event);
+                true
+            }
             None => {
                 // Dragging a divider resizes its dock.
                 if let Some(position) = self.dragging {
@@ -1838,7 +1958,24 @@ impl Shell {
         self.mode_pill = chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
         if let Some(strip) = layout.usage {
             let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);
+            if self.settings.agent_dots {
+                if let Some(snap) = &self.dots {
+                    let dots_w = (strip.width / 2).min(60);
+                    let used = dots::render_inline_strip(
+                        &mut canvas,
+                        Rect::new(strip.x, strip.y, dots_w, strip.height),
+                        snap,
+                        self.dots_pulse,
+                        &self.theme,
+                    );
+                    let rest = Rect::new(strip.x + used, strip.y, strip.width.saturating_sub(used), strip.height);
+                    usage::render(&mut canvas, rest, &self.usage, now_unix, &self.theme);
+                } else {
+                    usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);
+                }
+            } else {
+                usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);
+            }
         }
 
         let body = Rect::new(screen.x, screen.y, screen.width, layout.status.y.saturating_sub(screen.y));
@@ -1856,6 +1993,15 @@ impl Shell {
             }
             Some(Modal::Input { input, title, .. }) => {
                 cursor = Some(draw_input_modal(&mut canvas, body, title, input, &self.theme));
+            }
+            Some(Modal::Onboarding(modal)) => {
+                modal.pulse_on = self.dots_pulse;
+                modal.render(&mut canvas, body, &self.theme);
+                cursor = None;
+            }
+            Some(Modal::KeymapsGuide(guide)) => {
+                guide.render_modal(&mut canvas, body, &self.theme);
+                cursor = None;
             }
             None => {}
         }
