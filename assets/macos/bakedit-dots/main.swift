@@ -755,6 +755,8 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     var lastApp: NSRunningApplication?
     var barVisible = true
     var suppressRestore = false
+    private var hotKeyRefs: [EventHotKeyRef?] = []
+    private var hotKeyHandler: EventHandlerRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -809,10 +811,59 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         store.start()
         centerBar()
         if barVisible { bar.orderFrontRegardless() }
+        registerGlobalHotKeys()
 
         if let idx = args.firstIndex(of: "--control-socket"), idx + 1 < args.count {
             startControlSocket(path: args[idx + 1])
         }
+    }
+
+    private func registerGlobalHotKeys() {
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        let callback: EventHandlerUPP = { _, _, userData in
+            guard let userData else { return noErr }
+            let delegate = Unmanaged<OverlayAppDelegate>.fromOpaque(userData).takeUnretainedValue()
+            Task { @MainActor in
+                delegate.handleGlobalHotKey()
+            }
+            return noErr
+        }
+        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, selfPtr, &hotKeyHandler)
+
+        let sig: OSType = 0x42444F54 // 'BDOT'
+        let combos: [(UInt32, UInt32)] = [
+            (1, UInt32(controlKey | optionKey)),             // Ctrl+Opt+Space
+            (2, UInt32(controlKey | optionKey | shiftKey)),  // Ctrl+Opt+Shift+Space
+            (3, UInt32(cmdKey | optionKey | shiftKey)),      // Cmd+Opt+Shift+Space
+        ]
+        for (id, mods) in combos {
+            var ref: EventHotKeyRef?
+            let hkID = EventHotKeyID(signature: sig, id: id)
+            if RegisterEventHotKey(UInt32(kVK_Space), mods, hkID, GetApplicationEventTarget(), 0, &ref) == noErr {
+                hotKeyRefs.append(ref)
+            }
+        }
+    }
+
+    private func handleGlobalHotKey() {
+        if drawer.isVisible {
+            store.closeDrawer()
+            return
+        }
+        if store.isKeyboardBarActive {
+            store.exitBar()
+            restoreApp()
+            return
+        }
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier {
+            lastApp = front
+        }
+        barVisible = true
+        centerBar()
+        bar.orderFrontRegardless()
+        store.enterBar()
     }
 
     private func setupEditMenu() {

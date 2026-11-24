@@ -120,48 +120,49 @@ impl KeymapsGuide {
         lines.push(GuideLine::blank());
         lines.push(GuideLine::pair("; + e / s / d / f", "Move cursor up / left / down / right"));
         lines.push(GuideLine::pair("; + j + e / s / d / f", "Select text while moving (Shift + arrows)"));
-        lines.push(GuideLine::pair("; + k + e / s / d / f", "Jump 5 lines or to line start / end (Cmd + arrows)"));
+        lines.push(GuideLine::pair("; + h + e / s / d / f", "Jump 5 lines or to line start / end (Ctrl + arrows)"));
         lines.push(GuideLine::pair("; + l + s / f", "Jump word left / word right (Option + arrows)"));
-        lines.push(GuideLine::pair("; + k + l + arrows", "Move focus between herdr panes (hops tab/workspace at edge)"));
-        lines.push(GuideLine::pair("; + j + k + l + arrows", "Swap / rearrange herdr panes"));
-        lines.push(GuideLine::pair("; + j + k + l + Space", "Focus Agent Dots floating bar"));
+        lines.push(GuideLine::pair("; + h + l + arrows", "Move focus between herdr panes (Ctrl+Opt+arrows)"));
+        lines.push(GuideLine::pair("; + h + j + l + arrows", "Swap / rearrange herdr panes (Ctrl+Opt+Shift+arrows)"));
+        lines.push(GuideLine::pair("ctrl-alt-space", "Focus Agent Dots floating bar (also ctrl-alt-shift-space)"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("NAV MODE vs EDIT MODE", GuideTone::Heading));
-        lines.push(GuideLine::pair(m("cmd-i", "ctrl-] i"), "Toggle between Nav mode and Edit mode"));
+        lines.push(GuideLine::pair("ctrl-alt-i", "Toggle between Nav mode and Edit mode (also ctrl-] i)"));
         lines.push(GuideLine::pair("Esc", "Return to Nav mode (or close active modal)"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("FILES, SEARCH & COMMANDS", GuideTone::Heading));
-        lines.push(GuideLine::pair(m("cmd-p", "ctrl-] p"), "File finder (fuzzy open)"));
-        lines.push(GuideLine::pair(m("cmd-shift-p", "ctrl-] P"), "Command palette (run any command)"));
-        lines.push(GuideLine::pair(m("cmd-shift-f", "ctrl-] F"), "Project search across all files"));
-        lines.push(GuideLine::pair(m("cmd-f", "ctrl-] f"), "Find in current file"));
-        lines.push(GuideLine::pair("ctrl-g", "Go to line (negative numbers count from end)"));
-        lines.push(GuideLine::pair(m("cmd-s", "ctrl-] s"), "Save file"));
+        lines.push(GuideLine::pair("ctrl-p", "File finder (fuzzy open)"));
+        lines.push(GuideLine::pair("ctrl-alt-p", "Command palette (run any command)"));
+        lines.push(GuideLine::pair("ctrl-alt-f", "Project search across all files (herdr search in Terminal)"));
+        lines.push(GuideLine::pair("ctrl-alt-h", "Project search & replace across all files"));
+        lines.push(GuideLine::pair("ctrl-f", "Find in current file"));
+        lines.push(GuideLine::pair("ctrl-s / ctrl-alt-s", "Save file / Save all"));
+        lines.push(GuideLine::pair("ctrl-n / ctrl-alt-n", "New file / New folder in file tree"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("PANELS & DOCKS", GuideTone::Heading));
-        lines.push(GuideLine::pair(m("cmd-t", "ctrl-] t"), "Toggle terminal panel (herdr)"));
-        lines.push(GuideLine::pair(m("cmd-g", "ctrl-] g"), "Toggle git panel (second press collapses)"));
-        lines.push(GuideLine::pair(m("cmd-shift-e", "ctrl-] e"), "Toggle file explorer (second press collapses)"));
-        lines.push(GuideLine::pair(m("cmd-e", "ctrl-] c"), "Focus centre code editor"));
-        lines.push(GuideLine::pair(m("cmd-alt-f", "ctrl-] z"), "Toggle all docks / fullscreen focused pane"));
+        lines.push(GuideLine::pair("ctrl-j / ctrl-alt-j", "Toggle terminal panel (herdr) / Terminal fullscreen"));
+        lines.push(GuideLine::pair("ctrl-g / ctrl-alt-g", "Toggle git panel / Project diff fullscreen"));
+        lines.push(GuideLine::pair("ctrl-alt-e", "Focus / reveal file explorer (second press collapses)"));
+        lines.push(GuideLine::pair("ctrl-e", "Focus centre code editor"));
+        lines.push(GuideLine::pair("ctrl-alt-z", "Toggle all docks / fullscreen focused pane"));
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("HERDR PANES & WORKSPACES", GuideTone::Heading));
-        lines.push(GuideLine::pair("cmd-alt-arrows", "Focus neighbour pane (hops tab / workspace at edge)"));
-        lines.push(GuideLine::pair("cmd-alt-shift-arrows", "Move / swap focused pane"));
-        lines.push(GuideLine::pair("cmd-alt-z / c / a", "Zoom / collapse / expand focused pane"));
-        lines.push(GuideLine::pair("cmd-alt-1..9", "Switch to herdr workspace 1..9"));
-        lines.push(GuideLine::pair("shift-↑/↓ (cmd 3x)", "Scroll focused herdr agent pane up / down"));
+        lines.push(GuideLine::pair("ctrl-alt-arrows", "Focus neighbour pane (hops tab / workspace at edge)"));
+        lines.push(GuideLine::pair("ctrl-alt-shift-arrows", "Move / swap focused pane"));
+        lines.push(GuideLine::pair("ctrl-alt-z / c / a", "Zoom / collapse / expand focused pane"));
+        lines.push(GuideLine::pair("ctrl-alt-1..9", "Switch herdr workspace 1..9 (code tabs outside Terminal)"));
+        lines.push(GuideLine::pair("shift-↑/↓", "Scroll focused herdr agent pane up / down"));
 
         lines.push(GuideLine::blank());
-        lines.push(GuideLine::plain("TABS & APPEARANCE", GuideTone::Heading));
-        lines.push(GuideLine::pair(m("cmd-w", "ctrl-] w"), "Close current tab"));
-        lines.push(GuideLine::pair(m("cmd-shift-t", "ctrl-] T"), "Reopen closed tab"));
-        lines.push(GuideLine::pair("cmd-tab", "Tab switcher"));
-        lines.push(GuideLine::pair("Command Palette", "bakedit: onboarding / keymaps guide / select theme"));
+        lines.push(GuideLine::plain("TABS, AGENT DOTS & APPEARANCE", GuideTone::Heading));
+        lines.push(GuideLine::pair("ctrl-w / ctrl-alt-t", "Close current code tab / Reopen closed tab"));
+        lines.push(GuideLine::pair("ctrl-alt-left / right", "Previous / next open code tab"));
+        lines.push(GuideLine::pair("ctrl-alt-space", "Focus Agent Dots bar (←/→ pick · ↑/Enter open · Esc close)"));
+        lines.push(GuideLine::pair("Command Palette", "bakedit: onboarding / keymaps guide / select theme / dots"));
 
         KeymapsGuide { lines, scroll: 0, last_body_height: 16 }
     }
@@ -544,6 +545,15 @@ impl OnboardingModal {
                 max_w,
             ),
             Style::colors(theme.text_muted, bg), u16::MAX);
+        y += 1;
+        canvas.text(
+            area.x,
+            y,
+            &ui::truncate_end(
+                "Focus anywhere with Ctrl+Opt+Space (or Ctrl+Opt+Shift+Space): ←/→ pick · ↑/Enter open · Esc close.",
+                max_w,
+            ),
+            Style::colors(theme.text_accent, bg), u16::MAX);
         y += 2;
 
         // Interactive toggle row
