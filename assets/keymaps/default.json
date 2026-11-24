@@ -832,10 +832,13 @@
   //    terminal config — leaves Cmd free for the host terminal's tabs/copy/paste)
   // ─────────────────────────────────────────────────────────────────────────────────────
   {
-    // Unbind no-context ctrl-p (menu::SelectPrevious) so ctrl-p opens the file finder
-    // from GitPanel, ProjectPanel, ProjectSearchView, and every other non-Terminal panel.
+    // Unbind no-context menu::SelectPrevious on ctrl-p and menu::Cancel on ctrl-c
+    // using zed::Unbind (not null, which would also block Workspace-level bindings)
+    // so ctrl-p opens file finder from every panel and ctrl-c copies relative path
+    // in ProjectPanel / GitPanel (Esc still cancels menus & pickers).
     "bindings": {
-      "ctrl-p": null
+      "ctrl-p": ["zed::Unbind", "menu::SelectPrevious"],
+      "ctrl-c": ["zed::Unbind", "menu::Cancel"]
     }
   },
   {
@@ -961,12 +964,23 @@
     "bindings": {
       "ctrl-n": "project_panel::NewFile",
       "ctrl-alt-n": "project_panel::NewDirectory",
+      "ctrl-c": "workspace::CopyRelativePath",
+      "ctrl-alt-c": "workspace::CopyRelativePath",
+      "ctrl-alt-shift-c": "workspace::CopyPath",
       "ctrl-alt-e": "workspace::CloseActiveDock",
       "ctrl-shift-e": "workspace::CloseActiveDock",
       "ctrl-k 0": "project_panel::CollapseAllEntries",
       "ctrl-left": "project_panel::CollapseAllEntries",
       "ctrl-up": ["menu::SelectPrevious", { "lines": 5 }],
       "ctrl-down": ["menu::SelectNext", { "lines": 5 }]
+    }
+  },
+  {
+    "context": "GitPanel && ChangesList",
+    "bindings": {
+      "ctrl-c": "workspace::CopyRelativePath",
+      "ctrl-alt-c": "workspace::CopyRelativePath",
+      "ctrl-alt-shift-c": "workspace::CopyPath"
     }
   },
   {
