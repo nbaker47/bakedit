@@ -526,7 +526,12 @@ impl ProjectPanel {
     fn cut_or_copy(&mut self, cut: bool, cx: &mut Cx<'_>) -> bool {
         let done = if cut { self.tree.cut_selected() } else { self.tree.copy_selected() };
         if let (true, Some(row)) = (done, self.selected_row()) {
-            let message = format!("{} {}", if cut { "Cut" } else { "Copied" }, row.name);
+            let rel = row.path.strip_prefix(cx.root).unwrap_or(&row.path).to_string_lossy().into_owned();
+            let shown = if rel.is_empty() { ".".to_string() } else { rel };
+            if !cut {
+                cx.clipboard.set(&shown, false);
+            }
+            let message = format!("{} {}", if cut { "Cut" } else { "Copied" }, if cut { row.name.clone() } else { shown });
             cx.status(message);
         }
         done
