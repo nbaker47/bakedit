@@ -540,12 +540,19 @@ fn draw_cells(canvas: &mut Canvas<'_>, body: Rect, terminal: &Terminal, theme: &
         }
         let mut symbol = String::new();
         symbol.push(if cell.ch == '\0' { ' ' } else { cell.ch });
-        symbol.extend(cell.zerowidth.iter());
+        if cell.wide {
+            symbol.extend(cell.zerowidth.iter());
+        } else {
+            // Strip emoji variation selector (VS16) and ZWJ on 1-cell glyphs so host
+            // terminals like Kitty do not widen them to 2 cells and shift pane borders.
+            symbol.extend(cell.zerowidth.iter().copied().filter(|&c| c != '\u{fe0f}' && c != '\u{200d}'));
+        }
         // A wide character needs its second cell inside the panel.
         if cell.wide && x + 1 >= body.right() {
             symbol = " ".to_string();
         }
         if let Some(target) = canvas.cell_mut(x, y) {
+            target.set_skip(false);
             target.set_symbol(&symbol);
             target.set_fg(ui::color(fg));
             target.set_bg(ui::color(bg));
@@ -567,6 +574,13 @@ fn draw_cells(canvas: &mut Canvas<'_>, body: Rect, terminal: &Terminal, theme: &
                 modifier |= Modifier::CROSSED_OUT;
             }
             target.modifier = modifier;
+        }
+        if cell.wide && x + 1 < body.right() && ui::width(&symbol) > 1 {
+            if let Some(spacer) = canvas.cell_mut(x + 1, y) {
+                spacer.set_symbol(" ");
+                spacer.set_bg(ui::color(bg));
+                spacer.set_skip(true);
+            }
         }
     });
 }

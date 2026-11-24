@@ -1020,6 +1020,7 @@
       "ctrl-alt-shift-e": "project_panel::SwapPosition",
       "ctrl-alt-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-shift-f": ["terminal::SendText", "\u0002[/"],
+      "ctrl-p": "file_finder::Toggle",
       "ctrl-alt-p": "command_palette::Toggle",
       "ctrl-shift-p": "command_palette::Toggle"
     }
