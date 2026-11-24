@@ -107,6 +107,15 @@ pub struct ProjectPanel {
     edit: Option<Edit>,
     /// Letters typed to jump to an entry, and when the last one came.
     typed: Option<(String, Instant)>,
+    /// In-tree find bar (`Ctrl+F` / `Cmd+F`).
+    find: Option<PanelFindBar>,
+}
+
+struct PanelFindBar {
+    query: LineInput,
+    focused: bool,
+    matches: Vec<usize>,
+    current: Option<usize>,
 }
 
 #[derive(Default)]
@@ -280,6 +289,7 @@ impl ProjectPanel {
             colors: GitColors::default(),
             edit: None,
             typed: None,
+            find: None,
         }
     }
 
@@ -406,7 +416,163 @@ impl ProjectPanel {
         if offset == 0 {
             return (!self.tree.rows().is_empty()).then_some(Line::Entry(0));
         }
-        self.shown.get(self.scroll + offset - 1).copied()
+        let header_rows = 1 + usize::from(self.find.is_some());
+        if offset < header_rows {
+            return None;
+        }
+        self.shown.get(self.scroll + offset - header_rows).copied()
+    }
+
+    // ---- find bar (ctrl-f / cmd-f) ------------------------------------------------------
+
+    fn open_find(&mut self) {
+        self.edit = None;
+        self.typed = None;
+        if let Some(bar) = &mut self.find {
+            bar.focused = true;
+            bar.query.select_all();
+        } else {
+            self.find = Some(PanelFindBar {
+                query: LineInput::new(),
+                focused: true,
+                matches: Vec::new(),
+                current: None,
+            });
+        }
+    }
+
+    fn find_focused(&self) -> bool {
+        self.find.as_ref().is_some_and(|bar| bar.focused)
+    }
+
+    fn recompute_find_matches(&mut self, hide: bool, jump: bool, cx: &mut Cx<'_>) {
+        let Some(bar) = &self.find else { return };
+        let raw = bar.query.text();
+        if raw.is_empty() {
+            if let Some(bar) = &mut self.find {
+                bar.matches.clear();
+                bar.current = None;
+            }
+            return;
+        }
+        let needle = raw.to_lowercase();
+        let root = self.tree.rows().first().map(|r| r.path.clone());
+        let matches: Vec<usize> = self
+            .lines(hide)
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Entry(index) => {
+                    let row = self.tree.rows().get(index)?;
+                    let rel = root
+                        .as_deref()
+                        .and_then(|r| row.path.strip_prefix(r).ok())
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or_else(|| row.name.as_str().into());
+                    (row.name.to_lowercase().contains(&needle) || rel.to_lowercase().contains(&needle)).then_some(index)
+                }
+                Line::Input(_) => None,
+            })
+            .collect();
+        let current = if matches.is_empty() {
+            None
+        } else {
+            let selected = self.tree.selected().unwrap_or(0);
+            let pos = matches.iter().position(|&idx| idx >= selected).unwrap_or(0);
+            if jump {
+                self.tree.select(matches[pos]);
+                self.reveal = Some(true);
+                self.sync_git_repo(cx);
+            }
+            Some(pos)
+        };
+        if let Some(bar) = &mut self.find {
+            bar.matches = matches;
+            bar.current = current;
+        }
+    }
+
+    fn step_find_match(&mut self, forward: bool, cx: &mut Cx<'_>) {
+        let target = {
+            let Some(bar) = &mut self.find else { return };
+            if bar.matches.is_empty() {
+                return;
+            }
+            let len = bar.matches.len();
+            let next = match bar.current {
+                Some(i) if forward => (i + 1) % len,
+                Some(i) => (i + len - 1) % len,
+                None => 0,
+            };
+            bar.current = Some(next);
+            bar.matches[next]
+        };
+        self.tree.select(target);
+        self.reveal = Some(true);
+        self.sync_git_repo(cx);
+    }
+
+    fn find_input_action(&mut self, action: &Action, hide: bool, cx: &mut Cx<'_>) -> bool {
+        let Some(bar) = &mut self.find else { return false };
+        match bar.query.handle_action(action) {
+            InputOutcome::Ignored => false,
+            InputOutcome::Moved => true,
+            InputOutcome::Edited => {
+                self.recompute_find_matches(hide, true, cx);
+                true
+            }
+            InputOutcome::Copied { text, edited } => {
+                cx.clipboard.set(&text, false);
+                if edited {
+                    self.recompute_find_matches(hide, true, cx);
+                }
+                true
+            }
+            InputOutcome::WantsPaste => {
+                if let Some(clip) = cx.clipboard.get() {
+                    bar.query.insert(&clip.text);
+                    self.recompute_find_matches(hide, true, cx);
+                }
+                true
+            }
+        }
+    }
+
+    fn render_find_bar(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) -> Option<Cursor> {
+        let bar = self.find.as_mut()?;
+        let theme = cx.theme;
+        let bar_bg = theme.surface;
+        let field_bg = theme.editor_bg;
+        canvas.fill(area, bar_bg);
+
+        let count_text = if bar.query.is_empty() {
+            String::new()
+        } else if let Some(current) = bar.current {
+            format!(" {}/{} ", current + 1, bar.matches.len())
+        } else {
+            " 0/0 ".to_string()
+        };
+        let right_w = count_text.len() as u16;
+        let field_x = area.x + 1;
+        let field_w = area.width.saturating_sub(1 + right_w + 1);
+        let mut cursor = None;
+        if field_w >= 4 {
+            let field = Rect::new(field_x, area.y, field_w, 1);
+            canvas.fill(field, field_bg);
+            let inner = Rect::new(field.x + 1, field.y, field.width.saturating_sub(2), 1);
+            let input_style = Style::colors(theme.text, field_bg);
+            let selection_style = Style::colors(theme.text, theme.selection_bg);
+            let placeholder = Style::colors(theme.text_placeholder, field_bg);
+            let col = bar.query.render(canvas, inner, input_style, selection_style, "Find in tree", placeholder);
+            if bar.focused && cx.focused {
+                cursor = Some(Cursor { col, row: area.y, shape: CursorShape::Bar });
+            }
+        }
+        if !count_text.is_empty() {
+            let color = if bar.matches.is_empty() { theme.deleted } else { theme.text_muted };
+            let rx = area.right().saturating_sub(right_w);
+            canvas.text(rx, area.y, &count_text, Style::colors(color, bar_bg), right_w);
+        }
+        cursor
     }
 
     // ---- typing to find an entry --------------------------------------------------------
@@ -764,7 +930,9 @@ impl View for ProjectPanel {
         let bg = theme.panel_bg;
         canvas.fill(area, bg);
         self.area = area;
-        self.height = (area.height as usize).saturating_sub(1);
+        let has_find = self.find.is_some() && area.height >= 2;
+        let header_rows = 1 + usize::from(has_find);
+        self.height = (area.height as usize).saturating_sub(header_rows);
         if area.width == 0 || area.height == 0 {
             return None;
         }
@@ -813,7 +981,13 @@ impl View for ProjectPanel {
             canvas.text_truncated(area.x + 3, area.y, &name, Style::colors(theme.text, row_bg).bold(), room);
         }
 
-        let mut cursor = None;
+        let mut cursor = if has_find {
+            self.render_find_bar(canvas, Rect::new(area.x, area.y + 1, area.width, 1), cx)
+        } else {
+            None
+        };
+        let list_y = area.y + header_rows as u16;
+        let rows = self.tree.rows();
         let cut: HashSet<&Path> = match self.tree.clipboard() {
             Some(clip) if clip.cut => clip.paths.iter().map(PathBuf::as_path).collect(),
             _ => HashSet::new(),
@@ -826,7 +1000,7 @@ impl View for ProjectPanel {
         let new_is_dir = matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::NewDir { .. }));
         let mut field = self.edit.as_mut().map(|edit| &mut edit.input);
         for (offset, line) in lines.iter().enumerate().skip(self.scroll).take(self.height) {
-            let y = area.y + 1 + (offset - self.scroll) as u16;
+            let y = list_y + (offset - self.scroll) as u16;
             match *line {
                 Line::Input(depth) => {
                     let Some(input) = field.as_deref_mut() else { continue };
@@ -893,6 +1067,11 @@ impl View for ProjectPanel {
     }
 
     fn contexts(&self, out: &mut Vec<Context>) {
+        if self.find_focused() {
+            out.push(Context::new("BufferSearchBar"));
+            out.push(Context::new("Editor").value("mode", "single_line"));
+            return;
+        }
         let editing = self.edit.is_some();
         out.push(Context::new("ProjectPanel").flag(if editing { "editing" } else { "not_editing" }));
         if editing {
@@ -901,13 +1080,45 @@ impl View for ProjectPanel {
     }
 
     fn handle_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
+        let hide = Self::hides_ignored(cx);
+        match action.name.as_str() {
+            "buffer_search::Deploy" | "search::FocusSearch" => {
+                self.open_find();
+                return true;
+            }
+            "buffer_search::Dismiss" => {
+                self.find = None;
+                return true;
+            }
+            "buffer_search::FocusEditor" if self.find.is_some() => {
+                if let Some(bar) = &mut self.find {
+                    bar.focused = false;
+                }
+                return true;
+            }
+            "search::SelectNextMatch" if self.find.is_some() => {
+                self.step_find_match(true, cx);
+                return true;
+            }
+            "search::SelectPreviousMatch" if self.find.is_some() => {
+                self.step_find_match(false, cx);
+                return true;
+            }
+            "menu::Cancel" | "editor::Cancel" if self.find.is_some() => {
+                self.find = None;
+                return true;
+            }
+            _ => {}
+        }
+        if self.find_focused() && self.find_input_action(action, hide, cx) {
+            return true;
+        }
         if self.edit.is_some() {
             if let Some(handled) = self.edit_action(action, cx) {
                 return handled;
             }
         }
         let page = self.height.max(1);
-        let hide = Self::hides_ignored(cx);
         match action.name.as_str() {
             "menu::SelectNext" => {
                 let steps = action.args.as_ref().and_then(|v| v.get("lines")).and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
@@ -984,6 +1195,17 @@ impl View for ProjectPanel {
 
     fn handle_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
         let Some(text) = key.text.as_deref().filter(|_| key.is_down()) else { return false };
+        if self.find_focused() {
+            if text.chars().all(char::is_control) {
+                return false;
+            }
+            if let Some(bar) = &mut self.find {
+                bar.query.insert(text);
+            }
+            let hide = Self::hides_ignored(cx);
+            self.recompute_find_matches(hide, true, cx);
+            return true;
+        }
         if let Some(edit) = self.edit.as_mut() {
             edit.input.insert(text);
             return true;
@@ -1000,7 +1222,15 @@ impl View for ProjectPanel {
         moved
     }
 
-    fn handle_paste(&mut self, text: &str, _cx: &mut Cx<'_>) -> bool {
+    fn handle_paste(&mut self, text: &str, cx: &mut Cx<'_>) -> bool {
+        if self.find_focused() {
+            if let Some(bar) = &mut self.find {
+                bar.query.insert(text);
+            }
+            let hide = Self::hides_ignored(cx);
+            self.recompute_find_matches(hide, true, cx);
+            return true;
+        }
         match self.edit.as_mut() {
             Some(edit) => {
                 edit.input.insert(text);
@@ -1018,6 +1248,15 @@ impl View for ProjectPanel {
             }
             MouseKind::ScrollUp => self.scroll = self.scroll.saturating_sub(WHEEL_ROWS),
             MouseKind::Press(MouseButton::Left) => {
+                if self.find.is_some() && event.row == self.area.y + 1 {
+                    if let Some(bar) = &mut self.find {
+                        bar.focused = true;
+                    }
+                    return true;
+                }
+                if let Some(bar) = &mut self.find {
+                    bar.focused = false;
+                }
                 let Some(line) = self.hit(event.row) else { return true };
                 let Line::Entry(index) = line else { return true };
                 self.edit = None;
@@ -1894,5 +2133,37 @@ mod tests {
         act(&mut panel, &mut harness, "project_panel::ScrollCursorCenter");
         let rows = lines(&harness.draw(&mut panel, 30, 11).0);
         assert_eq!(rows[6].trim(), "· file20.txt", "{rows:?}");
+    }
+
+    #[test]
+    fn find_bar_searches_and_steps_through_tree_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["alpha.rs", "beta.rs", "gamma_alpha.rs"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let mut harness = Harness::new(dir.path());
+        let mut panel = ProjectPanel::new(&mut harness.cx());
+
+        assert!(act(&mut panel, &mut harness, "buffer_search::Deploy"));
+        assert!(panel.find_focused());
+        let mut ctxs = Vec::new();
+        panel.contexts(&mut ctxs);
+        assert!(ctxs.iter().all(|c| c.name != "ProjectPanel"), "find bar suppresses ProjectPanel keys: {ctxs:?}");
+        assert!(ctxs.iter().any(|c| c.name == "BufferSearchBar"));
+
+        for ch in "alpha".chars() {
+            assert!(panel.handle_key(&KeyEvent::typed(ch), &mut harness.cx()));
+        }
+        assert_eq!(panel.selected_row().unwrap().name, "alpha.rs");
+        assert!(act(&mut panel, &mut harness, "search::SelectNextMatch"));
+        assert_eq!(panel.selected_row().unwrap().name, "gamma_alpha.rs");
+        assert!(act(&mut panel, &mut harness, "search::SelectPreviousMatch"));
+        assert_eq!(panel.selected_row().unwrap().name, "alpha.rs");
+
+        let rows = lines(&harness.draw(&mut panel, 30, 8).0);
+        assert!(rows[1].contains("alpha"), "find bar renders on row 1: {rows:?}");
+
+        assert!(act(&mut panel, &mut harness, "buffer_search::Dismiss"));
+        assert!(panel.find.is_none());
     }
 }

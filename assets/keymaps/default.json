@@ -429,7 +429,10 @@
   {
     "context": "ProjectPanel && not_editing",
     "bindings": {
-      "space": "project_panel::Open"
+      "space": "project_panel::Open",
+      "cmd-f": "buffer_search::Deploy",
+      "cmd-g": "search::SelectNextMatch",
+      "cmd-shift-g": "search::SelectPreviousMatch"
     }
   },
   {
@@ -1011,6 +1014,7 @@
   {
     "context": "ProjectPanel && not_editing",
     "bindings": {
+      "ctrl-f": "buffer_search::Deploy",
       "ctrl-n": "project_panel::NewFile",
       "ctrl-alt-n": "project_panel::NewDirectory",
       "ctrl-c": "workspace::CopyRelativePath",
@@ -1064,6 +1068,7 @@
       "ctrl-alt-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
       "ctrl-shift-e": ["action::Sequence", ["project_panel::ToggleFocus", "project_panel::ScrollCursorCenter"]],
       "ctrl-alt-shift-e": "project_panel::SwapPosition",
+      "ctrl-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-alt-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-shift-f": ["terminal::SendText", "\u0002[/"],
       "ctrl-p": "file_finder::Toggle",
