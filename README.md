@@ -3,7 +3,7 @@
 A fast, lean terminal IDE in Rust, built around [herdr](https://github.com/ogulcancelik/herdr),
 **Agent Dots**, and two home-row keyboard layers.
 
-![bakedit: herdr AI agents on the left, Rust editor with tree-sitter highlighting in the middle, file tree on the right, and live Agent Dots at the bottom](docs/img/hero-ide.png)
+![bakedit: herdr AI agents on the left, Rust editor with tree-sitter highlighting in the middle, file tree on the right, and live Agent Dots at the bottom](docs/img/bakedit-hero.png)
 
 ## Why
 
