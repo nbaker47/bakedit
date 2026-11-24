@@ -229,7 +229,8 @@ impl KeymapsGuide {
 
         lines.push(GuideLine::blank());
         lines.push(GuideLine::plain("TABS, AGENT DOTS & APPEARANCE", GuideTone::Heading));
-        lines.push(GuideLine::pair("ctrl-w / ctrl-k w", "Close current code tab / Close all code tabs"));
+        lines.push(GuideLine::pair("ctrl-w / ctrl-k w", "Close current code tab / Close all unpinned tabs"));
+        lines.push(GuideLine::pair("ctrl-k shift-p", "Pin / unpin current code tab (also ctrl-k shift-enter)"));
         lines.push(GuideLine::pair("ctrl-alt-t", "Reopen closed code tab"));
         lines.push(GuideLine::pair("ctrl-alt-left / right", "Previous / next open code tab (or ctrl-{ / ctrl-})"));
         lines.push(GuideLine::pair("ctrl-alt-space", "Focus Agent Dots bar (←/→ pick · ↑/Enter open · Esc close)"));

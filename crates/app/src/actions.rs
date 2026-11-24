@@ -50,6 +50,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("pane::DeploySearch", None, Some("project search: find in files")),
     ("pane::DeploySearch", Some(r#"{"replace_enabled": true}"#), Some("project search: replace in files")),
     ("tab_switcher::Toggle", None, Some("tab switcher: switch tab")),
+    ("pane::TogglePinTab", None, Some("pane: toggle pin tab")),
     ("pane::CloseActiveItem", None, Some("pane: close tab")),
     ("pane::CloseOtherItems", None, Some("pane: close other tabs")),
     ("pane::CloseCleanItems", None, Some("pane: close saved tabs")),

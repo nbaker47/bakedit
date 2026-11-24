@@ -16,6 +16,8 @@ pub struct Tab {
     pub dirty: bool,
     /// A preview tab (opened by a single selection in the tree; replaced by the next one).
     pub preview: bool,
+    /// A pinned tab (kept on the left and skipped by close actions unless forced).
+    pub pinned: bool,
     pub icon: Option<(String, Rgb)>,
 }
 
@@ -27,9 +29,10 @@ pub struct TabHit {
 }
 
 fn tab_width(tab: &Tab) -> u16 {
-    // " icon title ● " : a cell of padding each side, icon + gap, title, gap + marker.
+    // " ◆ icon title ● " : a cell of padding each side, optional pin + gap, icon + gap, title, gap + marker.
+    let pin = if tab.pinned { 2 } else { 0 };
     let icon = tab.icon.as_ref().map(|(glyph, _)| ui::width(glyph) + 1).unwrap_or(0);
-    (1 + icon + ui::width(&tab.title) + 2 + 1) as u16
+    (1 + pin + icon + ui::width(&tab.title) + 2 + 1) as u16
 }
 
 /// Draw the tab bar in `area` (one row). `first` is the index of the leftmost tab shown and
@@ -67,34 +70,48 @@ pub fn tab_bar(
     }
     for (index, tab) in tabs.iter().enumerate().skip(*first) {
         let width = tab_width(tab);
-        let is_last_visible = x + width > area.right();
-        if is_last_visible {
-            // Not enough room for the whole tab: say there are more and stop.
-            if x < area.right() {
-                canvas.put(area.right() - 1, area.y, "›", Style::colors(theme.text_muted, theme.tab_bar_bg));
+        let overflows = x + width > area.right();
+        let right_limit = if overflows { area.right().saturating_sub(1) } else { area.right() };
+        let avail = right_limit.saturating_sub(x);
+        if avail > 0 {
+            let draw_width = width.min(avail);
+            let is_active = index == active;
+            let bg = if is_active { theme.tab_active_bg } else { theme.tab_inactive_bg };
+            let fg = if is_active { theme.text } else { theme.text_muted };
+            let rect = Rect::new(x, area.y, draw_width, 1);
+            canvas.fill(rect, bg);
+            let mut cx = x + 1;
+            let max_x = x + draw_width;
+            if tab.pinned && cx < max_x {
+                let pin_color = if is_active { theme.text_accent } else { theme.text_accent.lerp(theme.tab_bar_bg, 0.35) };
+                canvas.put(cx, area.y, "◆", Style::colors(pin_color, bg));
+                cx += 2;
+            }
+            if let Some((glyph, color)) = &tab.icon {
+                if cx < max_x {
+                    let icon_color = if is_active { *color } else { color.lerp(theme.tab_bar_bg, 0.35) };
+                    cx += canvas.text(cx, area.y, glyph, Style::colors(icon_color, bg), max_x.saturating_sub(cx).min(2));
+                    cx += 1;
+                }
+            }
+            if cx < max_x {
+                let mut title = Style::colors(fg, bg);
+                title.italic = tab.preview;
+                title.bold = is_active && focused;
+                cx += canvas.text(cx, area.y, &tab.title, title, max_x.saturating_sub(cx));
+            }
+            if tab.dirty && cx + 1 < max_x {
+                canvas.put(cx + 1, area.y, "●", Style::colors(theme.modified, bg));
+            }
+            hits.push(TabHit { index, rect });
+            x += draw_width;
+        }
+        if overflows {
+            if area.right() > area.x {
+                canvas.put(area.right() - 1, area.y, "›", Style::colors(theme.text, theme.tab_bar_bg));
             }
             break;
         }
-        let is_active = index == active;
-        let bg = if is_active { theme.tab_active_bg } else { theme.tab_inactive_bg };
-        let fg = if is_active { theme.text } else { theme.text_muted };
-        let rect = Rect::new(x, area.y, width, 1);
-        canvas.fill(rect, bg);
-        let mut cx = x + 1;
-        if let Some((glyph, color)) = &tab.icon {
-            let icon_color = if is_active { *color } else { color.lerp(theme.tab_bar_bg, 0.35) };
-            cx += canvas.text(cx, area.y, glyph, Style::colors(icon_color, bg), 2);
-            cx += 1;
-        }
-        let mut title = Style::colors(fg, bg);
-        title.italic = tab.preview;
-        title.bold = is_active && focused;
-        cx += canvas.text(cx, area.y, &tab.title, title, width);
-        if tab.dirty {
-            canvas.put(cx + 1, area.y, "●", Style::colors(theme.modified, bg));
-        }
-        hits.push(TabHit { index, rect });
-        x += width;
     }
     hits
 }
@@ -524,9 +541,23 @@ mod tests {
         assert!(hits.is_empty());
         let list = tabs(&["a-very-long-file-name-that-does-not-fit.rs"]);
         let mut first = 3;
-        let (_, hits, _) = draw_tabs(&list, 7, &mut first, 10);
+        let (text, hits, _) = draw_tabs(&list, 7, &mut first, 10);
         assert_eq!(first, 0, "out-of-range values are clamped");
-        assert!(hits.is_empty(), "a tab that cannot fit is not half drawn");
+        assert_eq!(hits.len(), 1, "overflowing tab fills remaining width up to ›");
+        assert_eq!(hits[0].rect, Rect::new(0, 0, 9, 1));
+        assert!(text.ends_with('›'), "overflow chevron at right edge: {text:?}");
+        assert!(text.starts_with(" a-very-l"), "truncated title fills tab bar: {text:?}");
+    }
+
+    #[test]
+    fn overflowing_tabs_fill_full_width_without_dead_gap() {
+        let list = tabs(&["alpha.rs", "beta.rs", "gamma-very-long-name.rs"]);
+        let mut first = 0;
+        let (text, hits, _) = draw_tabs(&list, 0, &mut first, 35);
+        assert_eq!(hits.len(), 3, "third tab peeks in instead of leaving a dead gap");
+        assert_eq!(hits[2].rect.right(), 34);
+        assert!(text.ends_with('›'), "{text:?}");
+        assert!(text.contains("gamma-"), "partial third tab is visible: {text:?}");
     }
 
     fn draw_status(status: &Status, width: u16) -> String {

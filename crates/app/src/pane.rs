@@ -22,6 +22,7 @@ pub struct Location {
 pub struct Slot {
     pub item: Box<dyn Item>,
     pub preview: bool,
+    pub pinned: bool,
     id: u64,
 }
 
@@ -102,21 +103,23 @@ impl Pane {
     }
 
     /// Add a tab and bring it to the front. A preview tab takes the place of the existing
-    /// preview tab if there is one; any other tab goes right after the active one. Returns
-    /// the new tab's index and the item that was replaced, if any.
+    /// preview tab if there is one; any other tab goes right after the active one (never
+    /// inside the pinned tabs on the left). Returns the new tab's index and the item that
+    /// was replaced, if any.
     pub fn add(&mut self, item: Box<dyn Item>, preview: bool) -> (usize, Option<Box<dyn Item>>) {
         let id = self.next_id;
         self.next_id += 1;
         let existing_preview = self.slots.iter().position(|slot| slot.preview);
         let (index, replaced) = match existing_preview {
             Some(index) if preview => {
-                let old = std::mem::replace(&mut self.slots[index], Slot { item, preview: true, id });
+                let old = std::mem::replace(&mut self.slots[index], Slot { item, preview: true, pinned: false, id });
                 self.recency.retain(|other| *other != old.id);
                 (index, Some(old.item))
             }
             _ => {
-                let index = if self.slots.is_empty() { 0 } else { self.active + 1 };
-                self.slots.insert(index, Slot { item, preview, id });
+                let pinned = self.pinned_count();
+                let index = if self.slots.is_empty() { 0 } else { (self.active + 1).max(pinned) };
+                self.slots.insert(index, Slot { item, preview, pinned: false, id });
                 (index, None)
             }
         };
@@ -180,6 +183,59 @@ impl Pane {
         self.slots.get(index).is_some_and(|slot| slot.preview)
     }
 
+    pub fn is_pinned(&self, index: usize) -> bool {
+        self.slots.get(index).is_some_and(|slot| slot.pinned)
+    }
+
+    pub fn pinned_count(&self) -> usize {
+        self.slots.iter().take_while(|slot| slot.pinned).count()
+    }
+
+    /// Pin or unpin tab `index`, moving it to the pinned group on the left (or just after
+    /// the pinned group when unpinning). Pinning a preview tab makes it permanent. Returns
+    /// the new pinned state.
+    pub fn toggle_pin(&mut self, index: usize) -> bool {
+        if index >= self.slots.len() {
+            return false;
+        }
+        let pinned_count = self.pinned_count();
+        if self.slots[index].pinned {
+            self.slots[index].pinned = false;
+            let target = pinned_count.saturating_sub(1);
+            if index != target {
+                let slot = self.slots.remove(index);
+                self.slots.insert(target, slot);
+                if self.active == index {
+                    self.active = target;
+                } else if index < self.active && self.active <= target {
+                    self.active -= 1;
+                }
+            }
+            false
+        } else {
+            self.slots[index].pinned = true;
+            self.slots[index].preview = false;
+            let target = pinned_count;
+            if index != target {
+                let slot = self.slots.remove(index);
+                self.slots.insert(target, slot);
+                if self.active == index {
+                    self.active = target;
+                } else if target <= self.active && self.active < index {
+                    self.active += 1;
+                }
+            }
+            true
+        }
+    }
+
+    /// Pin tab `index` if it is not already pinned.
+    pub fn pin(&mut self, index: usize) {
+        if index < self.slots.len() && !self.slots[index].pinned {
+            self.toggle_pin(index);
+        }
+    }
+
     /// Close a tab and return its item. The tab that comes to the front is the one that was
     /// in front most recently. A closed file is remembered for "reopen closed tab".
     pub fn close(&mut self, index: usize) -> Option<Box<dyn Item>> {
@@ -220,30 +276,43 @@ impl Pane {
         None
     }
 
-    /// Move the active tab one place left or right, keeping it active.
+    /// Move the active tab one place left or right, keeping it active (within its pinned or
+    /// unpinned group).
     pub fn swap_active(&mut self, right: bool) {
         if self.slots.len() < 2 {
             return;
         }
+        let pinned = self.pinned_count();
+        let (min, max) = if self.slots[self.active].pinned {
+            (0, pinned)
+        } else {
+            (pinned, self.slots.len())
+        };
         let target = if right { self.active + 1 } else { self.active.wrapping_sub(1) };
-        if target < self.slots.len() {
+        if target >= min && target < max {
             self.slots.swap(self.active, target);
             self.active = target;
         }
     }
 
     /// The tabs a bulk close would close, highest index first so they can be closed in
-    /// order without the indices shifting.
-    pub fn close_candidates(&self, which: CloseSet) -> Vec<usize> {
+    /// order without the indices shifting. Pinned tabs are skipped unless `close_pinned` is
+    /// true.
+    pub fn close_candidates(&self, which: CloseSet, close_pinned: bool) -> Vec<usize> {
         let active = self.active;
         (0..self.slots.len())
             .rev()
-            .filter(|&index| match which {
-                CloseSet::All => true,
-                CloseSet::Others => index != active,
-                CloseSet::ToTheLeft => index < active,
-                CloseSet::ToTheRight => index > active,
-                CloseSet::Clean => !self.slots[index].item.is_dirty(),
+            .filter(|&index| {
+                if !close_pinned && self.slots[index].pinned {
+                    return false;
+                }
+                match which {
+                    CloseSet::All => true,
+                    CloseSet::Others => index != active,
+                    CloseSet::ToTheLeft => index < active,
+                    CloseSet::ToTheRight => index > active,
+                    CloseSet::Clean => !self.slots[index].item.is_dirty(),
+                }
             })
             .collect()
     }
@@ -570,11 +639,46 @@ mod tests {
         pane.add(FakeItem::file("/c"), false);
         pane.add(FakeItem::file("/d"), false);
         pane.activate(1);
-        assert_eq!(pane.close_candidates(CloseSet::All), vec![3, 2, 1, 0]);
-        assert_eq!(pane.close_candidates(CloseSet::Others), vec![3, 2, 0]);
-        assert_eq!(pane.close_candidates(CloseSet::ToTheLeft), vec![0]);
-        assert_eq!(pane.close_candidates(CloseSet::ToTheRight), vec![3, 2]);
-        assert_eq!(pane.close_candidates(CloseSet::Clean), vec![3, 2, 0]);
+        assert_eq!(pane.close_candidates(CloseSet::All, false), vec![3, 2, 1, 0]);
+        assert_eq!(pane.close_candidates(CloseSet::Others, false), vec![3, 2, 0]);
+        assert_eq!(pane.close_candidates(CloseSet::ToTheLeft, false), vec![0]);
+        assert_eq!(pane.close_candidates(CloseSet::ToTheRight, false), vec![3, 2]);
+        assert_eq!(pane.close_candidates(CloseSet::Clean, false), vec![3, 2, 0]);
+    }
+
+    #[test]
+    fn pinning_tabs_groups_and_protects_them() {
+        let mut pane = pane_with(&["/a", "/b", "/c"]);
+        // Pinning /c moves it to the left and keeps it active.
+        assert!(pane.toggle_pin(2));
+        assert_eq!(names(&pane), ["c", "a", "b"]);
+        assert_eq!(active_name(&pane), "c");
+        assert!(pane.is_pinned(0));
+        assert_eq!(pane.pinned_count(), 1);
+
+        // Opening a new tab while on a pinned tab puts it after the pinned group.
+        pane.add(FakeItem::file("/d"), false);
+        assert_eq!(names(&pane), ["c", "d", "a", "b"]);
+        assert_eq!(active_name(&pane), "d");
+
+        // CloseAll with close_pinned=false skips /c; close_pinned=true includes it.
+        assert_eq!(pane.close_candidates(CloseSet::All, false), vec![3, 2, 1]);
+        assert_eq!(pane.close_candidates(CloseSet::All, true), vec![3, 2, 1, 0]);
+
+        // Unpinning a tab keeps it just after any remaining pinned tabs.
+        assert!(pane.toggle_pin(2)); // pin /a -> ["c", "a", "d", "b"]
+        assert_eq!(names(&pane), ["c", "a", "d", "b"]);
+        assert!(!pane.toggle_pin(0)); // unpin /c -> ["a", "c", "d", "b"]
+        assert_eq!(names(&pane), ["a", "c", "d", "b"]);
+        assert_eq!(pane.pinned_count(), 1);
+
+        // Swapping never crosses the pinned/unpinned boundary.
+        pane.activate(0);
+        pane.swap_active(true);
+        assert_eq!(names(&pane), ["a", "c", "d", "b"]);
+        pane.activate(1);
+        pane.swap_active(false);
+        assert_eq!(names(&pane), ["a", "c", "d", "b"]);
     }
 
     #[test]
