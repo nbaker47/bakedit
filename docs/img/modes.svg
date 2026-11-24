@@ -1,21 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 830 300" width="830" height="300" role="img" aria-label="Mode diagram: NAV and EDIT, with the nav layer available in both">
-<title>Mode diagram: NAV and EDIT, with the nav layer available in both</title>
-<rect width="830" height="300" rx="14" fill="#11111b"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 830 326" width="830" height="326" role="img" aria-label="Mode diagram: NAV (default) and EDIT, with the nav layer and number layer available in both">
+<title>Mode diagram: NAV (default) and EDIT, with the nav layer and number layer available in both</title>
+<rect width="830" height="326" rx="14" fill="#11111b"/>
 <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7f849c"/></marker></defs>
 <text x="415.0" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#cdd6f4" text-anchor="middle" font-weight="700">Two modes, no vim keys to memorise</text>
-<text x="415.0" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#7f849c" text-anchor="middle" font-weight="400">NAV moves and acts, EDIT types. The nav layer works in both.</text>
+<text x="415.0" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#7f849c" text-anchor="middle" font-weight="400">NAV is the default (moves and acts), EDIT types. Both home-row layers work in either.</text>
 <rect x="70" y="100" width="250" height="110" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="2"/>
-<text x="195" y="135" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#89b4fa" text-anchor="middle" font-weight="700">NAV</text>
-<text x="195" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">arrows, cmd-keys</text>
+<text x="195" y="135" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" fill="#89b4fa" text-anchor="middle" font-weight="700">NAV (default)</text>
+<text x="195" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">arrows, ctrl-keys</text>
 <text x="195" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">letters type nothing</text>
 <rect x="510" y="100" width="250" height="110" rx="8" fill="#181825" stroke="#a6e3a1" stroke-width="2"/>
-<text x="635" y="135" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#a6e3a1" text-anchor="middle" font-weight="700">EDIT</text>
-<text x="635" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">type, paste, cmd-keys</text>
-<text x="635" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">all Zed shortcuts still work</text>
+<text x="635" y="135" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" fill="#a6e3a1" text-anchor="middle" font-weight="700">EDIT</text>
+<text x="635" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">type, paste, ctrl-keys</text>
+<text x="635" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#cdd6f4" text-anchor="middle" font-weight="400">all shortcuts still work</text>
 <path d="M320 134 H510" stroke="#7f849c" stroke-width="2" fill="none" marker-end="url(#a)"/>
-<text x="415" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#a6e3a1" text-anchor="middle" font-weight="400">cmd-i</text>
+<text x="415" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#a6e3a1" text-anchor="middle" font-weight="400">ctrl-alt-i</text>
 <path d="M510 180 H320" stroke="#7f849c" stroke-width="2" fill="none" marker-end="url(#a)"/>
-<text x="415" y="202" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#89b4fa" text-anchor="middle" font-weight="400">cmd-i   or   esc</text>
-<rect x="205" y="236" width="420" height="40" rx="8" fill="#1e1e2e" stroke="#313244" stroke-width="1.5"/>
-<text x="415" y="261" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#f9e2af" text-anchor="middle" font-weight="400">hold ;  →  arrows + modifiers, in either mode</text>
+<text x="415" y="202" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#89b4fa" text-anchor="middle" font-weight="400">ctrl-alt-i   or   esc</text>
+<rect x="120" y="236" width="590" height="62" rx="8" fill="#1e1e2e" stroke="#313244" stroke-width="1.5"/>
+<text x="415" y="261" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#f9e2af" text-anchor="middle" font-weight="400">hold ;  →  arrows + modifiers (e s d f / h j k l)</text>
+<text x="415" y="283" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#a6e3a1" text-anchor="middle" font-weight="400">hold Space  →  home-row numbers 1–0 (a s d f g h j k l ;)</text>
 </svg>
