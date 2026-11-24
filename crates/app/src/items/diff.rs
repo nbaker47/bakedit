@@ -304,6 +304,34 @@ impl ProjectDiff {
         }));
     }
 
+    /// Copy the text of the highlighted diff row (code line without +/- prefix, file path,
+    /// hunk header, or note) to the clipboard.
+    fn copy_current_row(&self, cx: &mut Cx<'_>) {
+        let Some(row) = self.rows.get(self.cursor) else { return };
+        match row {
+            DiffRow::Line { text, .. } => {
+                cx.clipboard.set(text, false);
+                cx.status("Copied line");
+            }
+            DiffRow::File(index) => {
+                if let Some(file) = self.files.get(*index) {
+                    let path = file.path.to_string_lossy();
+                    cx.clipboard.set(&path, false);
+                    cx.status(format!("Copied path: {path}"));
+                }
+            }
+            DiffRow::Hunk { header, .. } => {
+                cx.clipboard.set(header, false);
+                cx.status("Copied hunk header");
+            }
+            DiffRow::Note { text, .. } => {
+                cx.clipboard.set(text, false);
+                cx.status("Copied note");
+            }
+            DiffRow::Gap => {}
+        }
+    }
+
     fn anchor(&self) -> Option<Anchor> {
         let row = self.rows.get(self.cursor)?;
         let file = self.files.get(row.file()?)?;
@@ -782,6 +810,9 @@ impl View for ProjectDiff {
                 Some(effect) => cx.push(effect),
                 None => return self.file_under_cursor().is_some(),
             },
+            "project_diff::CopyLine" | "editor::Copy" => {
+                self.copy_current_row(cx);
+            }
             "git::ToggleStaged" => {
                 let Some(index) = self.file_index_under_cursor() else { return false };
                 return self.toggle_staged(index, cx);
@@ -1143,5 +1174,27 @@ mod tests {
         for (w, h) in [(8, 1), (10, 3), (24, 6), (120, 2), (50, 40)] {
             harness.draw(&mut diff, w, h);
         }
+    }
+
+    #[test]
+    fn copy_line_copies_code_or_file_path_to_clipboard() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a.txt"), "one\nTWO\n").unwrap();
+        let (mut harness, mut diff) = loaded(dir.path());
+
+        // On the file header row, CopyLine copies the relative path.
+        diff.cursor = 0;
+        assert!(act(&mut harness, &mut diff, "project_diff::CopyLine"));
+        assert_eq!(harness.clipboard.get().map(|c| c.text), Some("a.txt".to_string()));
+
+        // On a diff line row, CopyLine copies the raw line without +/- prefix.
+        let added_row = diff
+            .rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::Line { text, .. } if text == "TWO"))
+            .expect("added line in diff");
+        diff.cursor = added_row;
+        assert!(act(&mut harness, &mut diff, "project_diff::CopyLine"));
+        assert_eq!(harness.clipboard.get().map(|c| c.text), Some("TWO".to_string()));
     }
 }

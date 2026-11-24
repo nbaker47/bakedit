@@ -91,6 +91,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("workspace::ResetActiveDockSize", None, None),
     // Git
     ("git::Diff", None, Some("git: project diff")),
+    ("project_diff::CopyLine", None, Some("project diff: copy line")),
     ("git::Commit", None, None),
     ("git::Amend", None, None),
     ("git::StageAll", None, None),

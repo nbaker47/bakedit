@@ -520,6 +520,10 @@
       "}": "project_diff::NextFile",
       "{": "project_diff::PreviousFile",
       "enter": "project_diff::OpenFile",
+      "cmd-c": "project_diff::CopyLine",
+      "ctrl-c": "project_diff::CopyLine",
+      "y": "project_diff::CopyLine",
+      "shift-y": "project_diff::CopyLine",
       "space": "git::ToggleStaged",
       "cmd-y": "git::StageFile",
       "cmd-shift-y": "git::UnstageFile",
@@ -731,6 +735,8 @@
     "context": "Editor && mode == full && vim_mode == normal",
     "bindings": {
       "escape": "editor::Cancel",
+      "y": "editor::Copy",
+      "shift-y": "editor::Copy",
       // The plain keys that edit, and their emacs ctrl aliases: off in nav mode (null, so a
       // key nobody takes is dropped). A legacy terminal sends ctrl-h for backspace.
       "enter": null,
