@@ -669,6 +669,18 @@ impl Shell {
                         });
                     }
                     "ToggleZoom" => self.with_workspace(|ws| ws.toggle_panel_zoom(id)),
+                    "SwapPosition" if id == PanelId::Project => {
+                        let inner_left = self.workspace.toggle_right_dock_inner_left();
+                        if !self.workspace.is_dock_open(DockPosition::Right) {
+                            self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right));
+                        }
+                        let msg = if inner_left {
+                            "File tree: right of git/terminal"
+                        } else {
+                            "File tree: far right"
+                        };
+                        self.set_status(msg, false);
+                    }
                     _ => return false,
                 }
                 return true;
@@ -679,18 +691,6 @@ impl Shell {
             "workspace::ToggleAllDocks" => self.with_workspace(|ws| ws.toggle_all_docks()),
             "workspace::ToggleLeftDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Left)),
             "workspace::ToggleRightDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right)),
-            "project_panel::SwapPosition" => {
-                let inner_left = self.workspace.toggle_right_dock_inner_left();
-                if !self.workspace.is_dock_open(DockPosition::Right) {
-                    self.with_workspace(|ws| ws.toggle_dock(DockPosition::Right));
-                }
-                let msg = if inner_left {
-                    "File tree: right of git/terminal"
-                } else {
-                    "File tree: far right"
-                };
-                self.set_status(msg, false);
-            }
             "workspace::ToggleBottomDock" => self.with_workspace(|ws| ws.toggle_dock(DockPosition::Bottom)),
             "workspace::CloseActiveDock" => {
                 let mut closed = false;
