@@ -4,6 +4,7 @@
 The nav-layer mapping mirrors NavLayerConfig::default() in crates/input/src/nav.rs.
 Each SVG carries its own dark background so it reads the same on GitHub light and dark.
 """
+import html
 import pathlib
 
 OUT = pathlib.Path(__file__).resolve().parent.parent / "docs" / "img"
@@ -26,7 +27,7 @@ def svg(w, h, body, title):
 
 def text(x, y, s, size=14, fill=TEXT, anchor="middle", weight="400", font=SANS):
     return (f'<text x="{x}" y="{y}" font-family="{font}" font-size="{size}" fill="{fill}" '
-            f'text-anchor="{anchor}" font-weight="{weight}">{s}</text>\n')
+            f'text-anchor="{anchor}" font-weight="{weight}">{html.escape(s)}</text>\n')
 
 
 def rect(x, y, w, h, fill, stroke=None, r=8, sw=1.5):

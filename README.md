@@ -48,6 +48,8 @@ their live status (idle, thinking, waiting for input, error) in two places:
   away from your terminal. Hit **`Ctrl+Opt+Space`** from anywhere on macOS/Linux to focus it,
   `←`/`→` to pick an agent, `↑`/`Enter` to reply or jump straight to its pane, and `Esc` to dismiss.
 
+![Agent Dots floating over the desktop: focus with Ctrl+Opt+Space, pick an agent, and reply inline](docs/img/agent-dots-desktop.gif)
+
 ![Agent Dots onboarding preview and live inline status strip](docs/img/agent-dots-onboarding.png)
 
 ## Home-row keyboard layers
