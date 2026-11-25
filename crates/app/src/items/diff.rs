@@ -134,6 +134,8 @@ pub struct ProjectDiff {
     area: Rect,
     /// A file to scroll to once the diff has arrived.
     wanted: Option<PathBuf>,
+    /// True once we fell back from Uncommitted to Branch diff while looking for `wanted`.
+    wanted_fallback: bool,
     /// A discard that was confirmed: the file index to land on when its file is gone.
     after_discard: Option<(usize, PathBuf)>,
     discards: Vec<DiscardJob>,
@@ -280,6 +282,7 @@ impl ProjectDiff {
             height: 0,
             area: Rect::default(),
             wanted: None,
+            wanted_fallback: false,
             after_discard: None,
             discards: Vec::new(),
             styles: StyleCache::new(),
@@ -551,9 +554,15 @@ impl ProjectDiff {
             if let Some(row) = self.file_row(&path) {
                 self.cursor = row;
                 self.scroll = row;
+                self.wanted_fallback = false;
                 return;
             }
-            self.wanted = Some(path);
+            if self.diff_base == crate::project::DiffBase::Uncommitted && !self.wanted_fallback {
+                self.wanted = Some(path);
+                self.wanted_fallback = true;
+            } else {
+                self.wanted_fallback = false;
+            }
         }
         if let Some((index, path)) = self.after_discard.take() {
             if self.files.iter().all(|file| file.path != path) {
@@ -1024,12 +1033,27 @@ impl View for ProjectDiff {
                 let Some(path) = action.arg_str("path").map(PathBuf::from) else { return false };
                 let Some(relative) = cx.project.git_path(&path) else { return false };
                 self.left = 0;
+                self.wanted_fallback = false;
                 match self.file_row(&relative) {
                     Some(row) => {
                         self.cursor = row;
                         self.scroll = row;
                     }
-                    None => self.wanted = Some(relative),
+                    None => {
+                        self.wanted = Some(relative);
+                        if self.task.is_none()
+                            && self.generation.is_some()
+                            && self.diff_base == crate::project::DiffBase::Uncommitted
+                        {
+                            self.wanted_fallback = true;
+                            let base = cx
+                                .project
+                                .repo()
+                                .and_then(bakedit_git::Repo::default_base_ref)
+                                .unwrap_or_else(|| "main".to_string());
+                            cx.push(Effect::SetDiffBase(Some(base)));
+                        }
+                    }
                 }
             }
             "bakedit::ToggleMode" => {
@@ -1148,6 +1172,17 @@ impl View for ProjectDiff {
         if let Some(result) = result {
             self.take_result(result);
             dirty = true;
+            if self.wanted.is_some()
+                && self.wanted_fallback
+                && self.diff_base == crate::project::DiffBase::Uncommitted
+            {
+                let base = cx
+                    .project
+                    .repo()
+                    .and_then(bakedit_git::Repo::default_base_ref)
+                    .unwrap_or_else(|| "main".to_string());
+                cx.push(Effect::SetDiffBase(Some(base)));
+            }
         }
         if finished {
             self.task = None;
