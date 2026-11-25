@@ -1931,6 +1931,21 @@ impl View for GitPanel {
             }
         }
         match action.name.as_str() {
+            "git_panel::SelectFile" => {
+                let Some(path) = action.arg_str("path").map(PathBuf::from) else { return false };
+                let Some(relative) = cx.project.git_path(&path) else { return false };
+                if let Some(index) = self.changes.iter().position(|c| c.path == relative) {
+                    self.active_section = ListSection::Uncommitted;
+                    self.select(index);
+                    return true;
+                }
+                if let Some(index) = self.branch_changes.iter().position(|c| c.path == relative) {
+                    self.active_section = ListSection::Branch;
+                    self.select_branch(index);
+                    return true;
+                }
+                return false;
+            }
             "menu::SelectNext" | "git_panel::NextEntry" if in_list => self.move_selection(1),
             "menu::SelectPrevious" | "git_panel::PreviousEntry" if in_list => self.move_selection(-1),
             "git_panel::PreviousCommit" if in_list && (self.active_section == ListSection::Uncommitted || self.changes.is_empty()) => {

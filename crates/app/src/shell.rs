@@ -1691,6 +1691,13 @@ impl Shell {
                     view.handle_action(&action, &mut cx);
                 }
             }
+            Effect::SelectInGitPanel(path) => {
+                let action = Action::with_args("git_panel::SelectFile", json!({ "path": path.to_string_lossy() }));
+                let mut cx = cx!(self);
+                if let Some(view) = self.panels.get_mut(&PanelId::Git) {
+                    view.handle_action(&action, &mut cx);
+                }
+            }
             Effect::ShowProjectDiff { path, focus } => {
                 let before = self.workspace.focus();
                 self.show_singleton("project_diff", |factory, cx| factory.project_diff(cx));

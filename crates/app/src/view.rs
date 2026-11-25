@@ -97,6 +97,8 @@ pub enum Effect {
     Dispatch(Action),
     /// Select and scroll to a path in the project panel (opening the panel if needed).
     RevealInProjectPanel(PathBuf),
+    /// Select a path in the git panel without moving focus.
+    SelectInGitPanel(PathBuf),
     /// Show the project diff, scrolled to a file if one is given.
     ShowProjectDiff { path: Option<PathBuf>, focus: bool },
     /// A line in the status bar. Errors stay until the next message; others fade.

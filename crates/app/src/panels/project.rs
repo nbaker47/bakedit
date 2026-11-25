@@ -410,6 +410,20 @@ impl ProjectPanel {
         cx.push(Effect::SelectRepo(repo_root));
     }
 
+    /// While walking files in the tree, keep the git panel selection and git diff tab
+    /// synced to the highlighted file (without stealing keyboard focus from the tree).
+    fn sync_git_selection(&self, cx: &mut Cx<'_>) {
+        self.sync_git_repo(cx);
+        let Some(row) = self.selected_row() else { return };
+        if row.is_dir() || cx.project.repo_root_for_path(&row.path).is_none() {
+            return;
+        }
+        cx.push(Effect::SelectInGitPanel(row.path.clone()));
+        if self.colors.files.contains_key(&row.path) {
+            cx.push(Effect::ShowProjectDiff { path: Some(row.path.clone()), focus: false });
+        }
+    }
+
     /// The tree row under screen row `y`: 0 is the header, then the list lines.
     fn hit(&self, y: u16) -> Option<Line> {
         let offset = y.checked_sub(self.area.y)? as usize;
@@ -481,7 +495,7 @@ impl ProjectPanel {
             if jump {
                 self.tree.select(matches[pos]);
                 self.reveal = Some(true);
-                self.sync_git_repo(cx);
+                self.sync_git_selection(cx);
             }
             Some(pos)
         };
@@ -508,7 +522,7 @@ impl ProjectPanel {
         };
         self.tree.select(target);
         self.reveal = Some(true);
-        self.sync_git_repo(cx);
+        self.sync_git_selection(cx);
     }
 
     fn find_input_action(&mut self, action: &Action, hide: bool, cx: &mut Cx<'_>) -> bool {
@@ -1189,7 +1203,20 @@ impl View for ProjectPanel {
         if self.reveal.is_none() {
             self.reveal = Some(false);
         }
-        self.sync_git_repo(cx);
+        let is_walk = matches!(
+            action.name.as_str(),
+            "menu::SelectNext"
+                | "menu::SelectPrevious"
+                | "menu::SelectFirst"
+                | "menu::SelectLast"
+                | "project_panel::SelectNextPage"
+                | "project_panel::SelectPreviousPage"
+        );
+        if is_walk {
+            self.sync_git_selection(cx);
+        } else {
+            self.sync_git_repo(cx);
+        }
         true
     }
 
@@ -1217,7 +1244,7 @@ impl View for ProjectPanel {
         let hide = Self::hides_ignored(cx);
         let moved = self.type_ahead(text, cx.now, hide);
         if moved {
-            self.sync_git_repo(cx);
+            self.sync_git_selection(cx);
         }
         moved
     }
