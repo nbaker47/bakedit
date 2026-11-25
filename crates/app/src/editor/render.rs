@@ -251,7 +251,7 @@ impl EditorItem {
         let numbers = self.numbers_override.unwrap_or(settings.line_numbers);
         let relative = self.relative_override.unwrap_or(settings.relative_line_numbers);
         let gutter_width = paint::gutter_width(line_count, numbers).min(body.width);
-        let blame_width: u16 = if self.blame.gutter_enabled && body.width > gutter_width + 32 { 22 } else { 0 };
+        let blame_width: u16 = if self.blame.gutter_enabled && body.width > gutter_width + 24 { 22 } else { 0 };
         let scrollbar = u16::from(body.width > gutter_width + blame_width + 4);
         let free = body.width - gutter_width - blame_width - scrollbar;
         let map_width = if self.minimap_shown(settings, free) { (free / 8).clamp(8, 16) } else { 0 };

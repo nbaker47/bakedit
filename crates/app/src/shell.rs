@@ -693,7 +693,25 @@ impl Shell {
                             view.handle_action(action, &mut cx);
                         }
                     }
-                    "Toggle" => self.with_workspace(|ws| ws.toggle_panel(id)),
+                    "Toggle" => {
+                        if id == PanelId::Git && self.workspace.focus() == Focus::Center {
+                            let active_file = self
+                                .pane
+                                .active()
+                                .filter(|item| item.kind() == "editor")
+                                .and_then(|item| item.path())
+                                .map(Path::to_path_buf);
+                            if let Some(path) = active_file {
+                                if self.project.select_repo_for_path(&path) {
+                                    self.git = self.project.git_summary();
+                                }
+                                self.with_workspace(|ws| ws.open_panel(PanelId::Git));
+                                self.effects.push(Effect::ShowProjectDiff { path: Some(path), focus: true });
+                                return true;
+                            }
+                        }
+                        self.with_workspace(|ws| ws.toggle_panel(id));
+                    }
                     "ToggleFocus" => {
                         let close = self.settings.close_panel_on_toggle;
                         self.with_workspace(|ws| {
@@ -816,7 +834,20 @@ impl Shell {
                     });
                 }
             }
-            "git::Diff" => self.effects.push(Effect::ShowProjectDiff { path: None, focus: true }),
+            "git::Diff" => {
+                let path = self
+                    .pane
+                    .active()
+                    .filter(|item| item.kind() == "editor")
+                    .and_then(|item| item.path())
+                    .map(Path::to_path_buf);
+                if let Some(p) = &path {
+                    if self.project.select_repo_for_path(p) {
+                        self.git = self.project.git_summary();
+                    }
+                }
+                self.effects.push(Effect::ShowProjectDiff { path, focus: true });
+            }
             "workspace::CopyPath" | "editor::CopyPath" | "workspace::CopyRelativePath" => {
                 let Some(path) = self.pane.active().and_then(|item| item.path()).map(Path::to_path_buf) else { return false };
                 let shown = if name == "workspace::CopyRelativePath" {

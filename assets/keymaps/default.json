@@ -282,7 +282,8 @@
       "cmd-|": "editor::MoveToEnclosingBracket",
       "ctrl-m": "editor::MoveToEnclosingBracket",
       "cmd-k r": "editor::RevealInFileManager",
-      "cmd-k p": "editor::CopyPath"
+      "cmd-k p": "editor::CopyPath",
+      "cmd-k b": "git::Blame"
     }
   },
   {
@@ -980,6 +981,7 @@
       "ctrl-k z": "editor::ToggleSoftWrap",
       "ctrl-k r": "editor::RevealInFileManager",
       "ctrl-k p": "editor::CopyPath",
+      "ctrl-k b": "git::Blame",
       "ctrl-alt-shift-b": "git::Blame",
       "ctrl-alt-left": ["herdr::Navigate", "left"],
       "ctrl-alt-right": ["herdr::Navigate", "right"],

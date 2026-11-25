@@ -117,6 +117,11 @@ impl EditorItem {
             "editor::CopyPermalinkToLine" => self.copy_permalink(cx),
             "git::Blame" | "editor::ToggleBlameGutter" => {
                 self.blame.gutter_enabled = !self.blame.gutter_enabled;
+                cx.status(if self.blame.gutter_enabled {
+                    "Git blame gutter: on"
+                } else {
+                    "Git blame gutter: off"
+                });
                 true
             }
             "editor::ToggleSoftWrap" => {
