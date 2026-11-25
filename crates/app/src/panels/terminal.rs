@@ -341,15 +341,18 @@ impl TerminalPanel {
 
     fn herdr_action(&mut self, action: &Action, cx: &mut Cx<'_>) -> bool {
         let Some(operation) = herdr::operation(action) else { return false };
+        // When the active tab is not our local herdr tab (for example, a second tab SSH'd
+        // into another machine running its own herdr), send the prefix chord to the active
+        // tab instead of switching back to tab 1 and driving the local socket.
+        if !self.tab().herdr {
+            self.send_chord_to(self.active, operation.chord());
+            return true;
+        }
         let Some(client) = self.launch.herdr.clone() else {
             // No session of ours to drive: the user's own herdr, if any, is in the terminal.
-            self.type_chord(operation.chord());
+            self.send_chord_to(self.active, operation.chord());
             return true;
         };
-        // The actions are about the terminal that runs herdr: show it.
-        if let Some(index) = self.tabs.iter().position(|tab| tab.herdr) {
-            self.activate(index);
-        }
         if self.worker.is_none() {
             self.worker = herdr::Worker::start(client, cx.project.waker().clone());
         }
@@ -365,6 +368,10 @@ impl TerminalPanel {
     /// does.
     fn type_chord(&mut self, chord: &str) {
         let index = self.tabs.iter().position(|tab| tab.herdr).unwrap_or(self.active);
+        self.send_chord_to(index, chord);
+    }
+
+    fn send_chord_to(&self, index: usize, chord: &str) {
         let tab = &self.tabs[index];
         if tab.exited.is_none() {
             if let Some(terminal) = &tab.terminal {

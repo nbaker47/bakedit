@@ -452,6 +452,27 @@ fn herdr_actions_use_the_socket_and_fall_back_to_the_prefix_chord() {
     }
 }
 
+#[test]
+fn herdr_actions_on_a_non_herdr_tab_send_chords_there_instead_of_switching_to_local_herdr() {
+    use bakedit_herdr::mock::MockServer;
+    let dir = tempfile::tempdir().unwrap();
+    let mut harness = Harness::new(dir.path());
+    let server = MockServer::start();
+    let mut panel = herdr_panel(dir.path(), RAW_CAT, server.client());
+    // Make new tabs run RAW_CAT as well so we can observe chords typed into tab 2.
+    panel.launch.shell = panel.launch.config.clone();
+    harness.draw(&mut panel, 50, 6);
+
+    assert!(panel.handle_action(&Action::new("workspace::NewTerminal"), &mut harness.cx()));
+    harness.draw(&mut panel, 50, 6);
+    assert_eq!(panel.active, 1);
+
+    assert!(panel.handle_action(&Action::with_args("herdr::Navigate", serde_json::json!("right")), &mut harness.cx()));
+    assert_eq!(panel.active, 1, "stays on the SSH/shell tab instead of switching back to tab 1");
+    until(&mut panel, &mut harness, |p| p.screen_text().contains("^Bl"));
+    assert!(server.methods().is_empty(), "did not hit the local herdr socket: {:?}", server.methods());
+}
+
 fn panel_with_cat(dir: &Path) -> TerminalPanel {
     panel(dir, RAW_CAT)
 }
