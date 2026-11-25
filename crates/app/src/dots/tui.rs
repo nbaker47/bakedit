@@ -419,7 +419,12 @@ impl DotsTui {
             let unread = self.unread.contains(&agent.pane_id);
             let selected = idx == self.selected_idx;
             let (glyph, color) = status_glyph_and_color(agent.status, unread, self.pulse_on, theme);
-            let label = format!(" {glyph} {}·{} ", agent.display_agent(), agent.pane_id);
+            let pill_name = if agent.session_name.is_some() {
+                agent.display_label(16)
+            } else {
+                format!("{}·{}", agent.display_agent(), agent.pane_id)
+            };
+            let label = format!(" {glyph} {pill_name} ");
             let w = ui::width(&label) as u16;
             if x + w > max_x {
                 break;
@@ -437,7 +442,7 @@ impl DotsTui {
             canvas.text(
                 x + 1 + ui::width(glyph) as u16,
                 y,
-                &format!(" {}·{} ", agent.display_agent(), agent.pane_id),
+                &format!(" {pill_name} "),
                 if selected { Style::colors(fg, pill_bg).bold() } else { Style::colors(fg, pill_bg) }, u16::MAX);
             x += w + 1;
         }
@@ -462,7 +467,11 @@ impl DotsTui {
         if let Some(agent) = self.selected() {
             let (glyph, color) = status_glyph_and_color(agent.status, false, self.pulse_on, theme);
             canvas.text(area.x + 2, header_y, glyph, Style::colors(color, bg).bold(), u16::MAX);
-            let title = format!(" {} · {}  ({})  [{}]", agent.display_agent(), agent.pane_id, agent.short_dir(), agent.status.label());
+            let title = if let Some(name) = &agent.session_name {
+                format!(" {name}  ({} · {} · {})  [{}]", agent.display_agent(), agent.pane_id, agent.short_dir(), agent.status.label())
+            } else {
+                format!(" {} · {}  ({})  [{}]", agent.display_agent(), agent.pane_id, agent.short_dir(), agent.status.label())
+            };
             canvas.text(area.x + 3, header_y, &ui::truncate_end(&title, area.width.saturating_sub(24) as usize), Style::colors(theme.text, bg).bold(), u16::MAX);
         }
         let scroll_hint = "Shift+↑/↓:scroll  Ctrl+F:focus";

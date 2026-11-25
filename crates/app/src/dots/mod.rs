@@ -199,7 +199,8 @@ pub fn render_inline_strip(
     for (idx, agent) in snapshot.agents.iter().enumerate() {
         let unread = snapshot.unread.contains(&agent.pane_id);
         let (glyph, color) = status_glyph_and_color(agent.status, unread, pulse_on, theme);
-        let label = format!(" {glyph} {} ", agent.display_agent());
+        let name = agent.display_label(14);
+        let label = format!(" {glyph} {name} ");
         let w = ui::width(&label) as u16;
         if x + w > max_x {
             break;
@@ -217,7 +218,7 @@ pub fn render_inline_strip(
         canvas.text(
             x + 1 + gw,
             area.y,
-            &format!(" {} ", agent.display_agent()),
+            &format!(" {name} "),
             Style::colors(if unread || agent.focused { theme.text } else { theme.text_muted }, pill_bg),
             w.saturating_sub(1 + gw),
         );

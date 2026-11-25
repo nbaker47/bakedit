@@ -69,9 +69,16 @@ struct HerdrAgent: Identifiable, Equatable, Sendable {
     let completionSeq: Int
     let focused: Bool
     let sessionId: String?
+    let sessionName: String?
 
     var id: String { paneId }
     var displayAgent: String { agent.isEmpty ? "agent" : agent }
+    var pillLabel: String {
+        if let name = sessionName, !name.isEmpty {
+            return name.count > 16 ? String(name.prefix(15)) + "…" : name
+        }
+        return "\(displayAgent)·\(paneId)"
+    }
     var shortDir: String {
         let trimmed = cwd.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return trimmed.split(separator: "/").last.map(String.init) ?? cwd
@@ -125,18 +132,51 @@ enum HerdrCLI {
         }
         let agents: [HerdrAgent] = raw.compactMap { item in
             guard let paneId = item["pane_id"] as? String else { return nil }
+            let agentKind = item["agent"] as? String ?? "agent"
             let sid = (item["agent_session"] as? [String: Any])?["value"] as? String
+            let termTitle = item["terminal_title_stripped"] as? String ?? ""
+            let sname = resolveSessionName(agent: agentKind, sessionId: sid, title: termTitle)
             return HerdrAgent(
                 paneId: paneId,
-                agent: item["agent"] as? String ?? "agent",
+                agent: agentKind,
                 status: item["agent_status"] as? String ?? "unknown",
                 cwd: item["foreground_cwd"] as? String ?? (item["cwd"] as? String ?? ""),
                 completionSeq: item["completion_seq"] as? Int ?? 0,
                 focused: item["focused"] as? Bool ?? false,
-                sessionId: sid
+                sessionId: sid,
+                sessionName: sname
             )
         }
         return (agents, nil)
+    }
+
+    private static func resolveSessionName(agent: String, sessionId: String?, title: String) -> String? {
+        if agent == "agy", let sid = sessionId {
+            let path = NSHomeDirectory() + "/.gemini/antigravity-cli/annotations/\(sid).pbtxt"
+            if let raw = try? String(contentsOfFile: path, encoding: .utf8) {
+                for line in raw.split(separator: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("title:") {
+                        let rest = trimmed.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                        if rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2 {
+                            let inner = String(rest.dropFirst().dropLast())
+                                .replacingOccurrences(of: "\\\"", with: "\"")
+                                .replacingOccurrences(of: "\\\\", with: "\\")
+                                .trimmingCharacters(in: .whitespaces)
+                            if !inner.isEmpty { return inner }
+                        }
+                    }
+                }
+            }
+        }
+        if agent == "claude" {
+            let t = title.trimmingCharacters(in: .whitespaces)
+            let low = t.lowercased()
+            if !t.isEmpty && low != "claude" && low != "claude code" && !low.hasPrefix("claude ") {
+                return t
+            }
+        }
+        return nil
     }
 
     static func readOutput(paneId: String, lines: Int = 160) -> String {
@@ -559,7 +599,7 @@ struct TerminalBarView: View {
                     } label: {
                         HStack(spacing: 5) {
                             Text(glyph).font(monoFont(size: 11, weight: .bold)).foregroundColor(col)
-                            Text("\(a.displayAgent)·\(a.paneId)")
+                            Text(a.pillLabel)
                                 .font(monoFont(size: 11, weight: isSel || isUnread ? .semibold : .regular))
                                 .foregroundColor(isSel || isUnread ? t.text : t.muted)
                         }
@@ -589,7 +629,9 @@ struct TerminalDrawerView: View {
             // Header
             HStack(spacing: 8) {
                 if let a = store.selectedAgent {
-                    Text("\(a.displayAgent) · \(a.paneId)  [\(a.statusLabel)]  \(a.shortDir)")
+                    let head = a.sessionName.map { "\($0)  (\(a.displayAgent)·\(a.paneId))  [\(a.statusLabel)]  \(a.shortDir)" }
+                        ?? "\(a.displayAgent) · \(a.paneId)  [\(a.statusLabel)]  \(a.shortDir)"
+                    Text(head)
                         .font(monoFont(size: 11.5, weight: .semibold))
                         .foregroundColor(t.text)
                         .lineLimit(1)

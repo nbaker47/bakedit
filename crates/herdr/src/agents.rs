@@ -73,8 +73,10 @@ pub struct AgentInfo {
     pub state_change_seq: u64,
     /// Whether this pane currently has focus in herdr.
     pub focused: bool,
-    /// Optional agent session id (e.g. Claude Code UUID for JSONL transcript lookup).
+    /// Optional agent session id (e.g. Claude Code UUID or Antigravity conversation UUID).
     pub session_id: Option<String>,
+    /// Optional human-readable session name (e.g. from `agy` `/rename` or Claude title).
+    pub session_name: Option<String>,
 }
 
 impl AgentInfo {
@@ -92,6 +94,78 @@ impl AgentInfo {
             &self.agent
         }
     }
+
+    /// Compact pill label: prefers `session_name` (truncated to `max_chars`), falling back
+    /// to [`Self::display_agent`].
+    pub fn display_label(&self, max_chars: usize) -> String {
+        if let Some(name) = self.session_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let count = name.chars().count();
+            if count <= max_chars || max_chars < 2 {
+                return name.to_string();
+            }
+            let mut out: String = name.chars().take(max_chars - 1).collect();
+            out.push('…');
+            return out;
+        }
+        self.display_agent().to_string()
+    }
+}
+
+/// Extract `title:"..."` from an Antigravity CLI `.pbtxt` annotation file.
+pub fn parse_pbtxt_title(raw: &str) -> Option<String> {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("title:") else { continue };
+        let rest = rest.trim();
+        let Some(inner) = rest.strip_prefix('"') else { continue };
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                }
+                '"' => {
+                    let s = out.trim();
+                    return (!s.is_empty()).then(|| s.to_string());
+                }
+                _ => out.push(c),
+            }
+        }
+    }
+    None
+}
+
+fn read_agy_title(session_id: &str) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let path = PathBuf::from(home)
+        .join(".gemini/antigravity-cli/annotations")
+        .join(format!("{session_id}.pbtxt"));
+    let raw = fs::read_to_string(path).ok()?;
+    parse_pbtxt_title(&raw)
+}
+
+fn resolve_session_name(agent: &str, session_id: Option<&str>, title: &str) -> Option<String> {
+    if agent == "agy" {
+        if let Some(sid) = session_id {
+            if let Some(name) = read_agy_title(sid) {
+                return Some(name);
+            }
+        }
+    }
+    if agent == "claude" {
+        let t = title.trim();
+        if !t.is_empty()
+            && !t.eq_ignore_ascii_case("claude")
+            && !t.eq_ignore_ascii_case("claude code")
+            && !t.starts_with("claude ")
+        {
+            return Some(t.to_string());
+        }
+    }
+    None
 }
 
 /// List all agents currently known to herdr.
@@ -116,18 +190,22 @@ pub fn list_agents(client: &Client) -> Result<Vec<AgentInfo>, HerdrError> {
             .and_then(|s| s.get("value"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let agent_kind = item.get("agent").and_then(Value::as_str).unwrap_or("agent").to_string();
+        let title = item.get("terminal_title_stripped").and_then(Value::as_str).unwrap_or("").to_string();
+        let session_name = resolve_session_name(&agent_kind, session_id.as_deref(), &title);
         out.push(AgentInfo {
             pane_id: pane_id.to_string(),
             workspace_id: item.get("workspace_id").and_then(Value::as_str).unwrap_or("").to_string(),
             tab_id: item.get("tab_id").and_then(Value::as_str).unwrap_or("").to_string(),
-            agent: item.get("agent").and_then(Value::as_str).unwrap_or("agent").to_string(),
+            agent: agent_kind,
             status: AgentStatus::parse(item.get("agent_status").and_then(Value::as_str).unwrap_or("unknown")),
             cwd,
-            title: item.get("terminal_title_stripped").and_then(Value::as_str).unwrap_or("").to_string(),
+            title,
             completion_seq: item.get("completion_seq").and_then(Value::as_u64).unwrap_or(0),
             state_change_seq: item.get("state_change_seq").and_then(Value::as_u64).unwrap_or(0),
             focused: item.get("focused").and_then(Value::as_bool).unwrap_or(false),
             session_id,
+            session_name,
         });
     }
     Ok(out)
