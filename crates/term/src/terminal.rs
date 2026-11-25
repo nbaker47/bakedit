@@ -874,6 +874,11 @@ impl Terminal {
         self.write(text.as_bytes())
     }
 
+    /// PID of the direct child process running on this terminal's pty.
+    pub fn child_pid(&self) -> u32 {
+        self.child.pid()
+    }
+
     /// Answer the oldest unanswered [`TermEvent::ClipboardLoad`] with the clipboard's
     /// text. Returns `false` when the child is not waiting for one.
     pub fn respond_clipboard(&self, text: &str) -> bool {

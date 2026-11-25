@@ -345,6 +345,14 @@ impl TerminalPanel {
         // into another machine running its own herdr), send the prefix chord to the active
         // tab instead of switching back to tab 1 and driving the local socket.
         if !self.tab().herdr {
+            if let Some(cmd) = operation.remote_command() {
+                if let Some(pid) = self.terminal().map(|t| t.child_pid()) {
+                    if let Some(remote) = herdr::detect_remote(pid) {
+                        herdr::run_remote_async(remote, cmd.to_string());
+                        return true;
+                    }
+                }
+            }
             self.send_chord_to(self.active, operation.chord());
             return true;
         }
