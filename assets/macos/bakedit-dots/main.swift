@@ -188,7 +188,8 @@ enum HerdrCLI {
     }
 
     static func splitOutputAndStatus(_ raw: String) -> (body: String, statusLines: [String]) {
-        let all = raw.components(separatedBy: .newlines)
+        let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let all = normalized.components(separatedBy: "\n")
         let plainAll = all.map { stripANSI($0) }
         var s = 0
         while s < all.count && plainAll[s].trimmingCharacters(in: .whitespaces).isEmpty { s += 1 }
@@ -265,7 +266,8 @@ enum HerdrCLI {
 
     static func renderMarkdown(_ md: String) -> String {
         var out: [String] = [], inCode = false
-        for line in md.components(separatedBy: .newlines) {
+        let normalized = md.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        for line in normalized.components(separatedBy: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("```") { inCode.toggle(); continue }
             if inCode { out.append("  \u{1B}[94m\(line)\u{1B}[0m"); continue }
@@ -641,6 +643,23 @@ struct TerminalDrawerView: View {
                 .background(t.surface)
             }
 
+            if let b = store.banner {
+                Rectangle().fill(t.border).frame(height: 1)
+                HStack(spacing: 6) {
+                    Text(b.0 ? "✗" : "✓")
+                        .font(monoFont(size: 10.5, weight: .bold))
+                        .foregroundColor(b.0 ? t.red : t.green)
+                    Text(b.1)
+                        .font(monoFont(size: 10.5))
+                        .foregroundColor(b.0 ? t.red : t.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(t.surface)
+            }
+
             Rectangle().fill(t.border).frame(height: 1)
 
             // Composer
@@ -695,7 +714,7 @@ final class BarPanel: NSPanel {
 }
 
 final class DrawerPanel: NSPanel {
-    var onEscape: (() -> Void)?, onDown: (() -> Void)?, onScrollChanged: ((Bool) -> Void)?
+    var onEscape: (() -> Void)?, onDown: (() -> Void)?, onPasteImage: (() -> Bool)?, onScrollChanged: ((Bool) -> Void)?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -708,6 +727,9 @@ final class DrawerPanel: NSPanel {
         if event.type == .keyDown {
             let m = event.modifierFlags.intersection([.command, .control, .option, .shift])
             if event.keyCode == 53 && m.isEmpty { onEscape?(); return }
+            if (m == .command || m == .control) && event.charactersIgnoringModifiers?.lowercased() == "v" {
+                if onPasteImage?() == true { return }
+            }
             if (event.keyCode == 125 || event.keyCode == 126) && (m == .shift || m == [.shift, .command]) {
                 scrollOutput(up: event.keyCode == 126, delta: m.contains(.command) ? 144 : 48)
                 return
@@ -796,6 +818,9 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             self.store.closeDrawer()
             self.store.enterBar(prefer: cur)
         }
+        drawer.onPasteImage = { [weak self] in
+            self?.pasteImageFromClipboardIntoDraft() ?? false
+        }
         drawer.onScrollChanged = { [weak self] atBottom in self?.store.isAutoScroll = atBottom }
         drawer.contentView = NSHostingView(rootView: TerminalDrawerView(store: store))
 
@@ -873,6 +898,33 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         item.submenu = edit; m.addItem(item); NSApp.mainMenu = m
+    }
+
+    private func pasteImageFromClipboardIntoDraft() -> Bool {
+        let pb = NSPasteboard.general
+        // If clipboard has plain text (or no image), let normal Cmd+V paste text into the TextField.
+        if let types = pb.types {
+            if types.contains(.string) { return false }
+            if !types.contains(.png) && !types.contains(.tiff) { return false }
+        }
+        guard let image = NSImage(pasteboard: pb),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return false
+        }
+        let shortId = String(UUID().uuidString.prefix(8)).lowercased()
+        let path = "/tmp/bakedit-dots-paste-\(shortId).png"
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+        } catch {
+            store.banner = (true, "Failed to save clipboard image")
+            return true
+        }
+        let needsSpace = !store.draft.isEmpty && !store.draft.hasSuffix(" ") && !store.draft.hasSuffix("\n")
+        store.draft += (needsSpace ? " " : "") + path + " "
+        store.banner = (false, "Attached image: \(path)")
+        return true
     }
 
     func windowDidResize(_ notification: Notification) { centerBar() }

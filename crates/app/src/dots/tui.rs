@@ -726,6 +726,19 @@ fn handle_tui_key(tui: &mut DotsTui, key: &KeyEvent, client: &Client) -> bool {
                 let _ = focus_agent(client, &a.pane_id);
             }
         }
+        (Key::Char('v'), m) if m == Mods::CTRL || m == Mods::CMD => {
+            if let Some(path) = save_clipboard_image() {
+                if !tui.draft.is_empty() && !tui.draft.ends_with(' ') && !tui.draft.ends_with('\n') {
+                    tui.draft.push(' ');
+                }
+                tui.draft.push_str(&path);
+                tui.draft.push(' ');
+                tui.banner = Some((false, format!("Attached image: {path}")));
+            } else if let Some(clip) = crate::clipboard::Clipboard::new().get() {
+                tui.draft.push_str(&clip.text);
+                tui.banner = None;
+            }
+        }
         (Key::Enter, m) if m.is_empty() => {
             let text = tui.draft.trim().to_string();
             if let Some(a) = tui.selected().cloned() {
@@ -755,6 +768,72 @@ fn handle_tui_key(tui: &mut DotsTui, key: &KeyEvent, client: &Client) -> bool {
         _ => {}
     }
     false
+}
+
+/// If the system clipboard holds an image (and no plain text), save it to a temp PNG and
+/// return its path so the agent can read it.
+fn save_clipboard_image() -> Option<String> {
+    use std::process::{Command, Stdio};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let path = format!("/tmp/bakedit-dots-paste-{stamp:x}.png");
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"use framework "AppKit"
+on run argv
+    set outPath to item 1 of argv
+    set pb to current application's NSPasteboard's generalPasteboard()
+    set types to pb's types()
+    if (types's containsObject:(current application's NSPasteboardTypeString)) as boolean then return "no"
+    set hasPng to (types's containsObject:(current application's NSPasteboardTypePNG)) as boolean
+    set hasTiff to (types's containsObject:(current application's NSPasteboardTypeTIFF)) as boolean
+    if not hasPng and not hasTiff then return "no"
+    set img to current application's NSImage's alloc()'s initWithPasteboard:pb
+    if img is missing value then return "no"
+    set tiff to img's TIFFRepresentation()
+    if tiff is missing value then return "no"
+    set rep to current application's NSBitmapImageRep's imageRepWithData:tiff
+    if rep is missing value then return "no"
+    set png to rep's representationUsingType:(current application's NSBitmapImageFileTypePNG) |properties|:(missing value)
+    if png is missing value then return "no"
+    png's writeToFile:outPath atomically:true
+    return "ok"
+end run"#;
+        let out = Command::new("osascript")
+            .args(["-e", script, "--", &path])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok" {
+            return Some(path);
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let png = Command::new("wl-paste")
+            .args(["--no-newline", "--type", "image/png"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success() && !o.stdout.is_empty())
+            .or_else(|| {
+                Command::new("xclip")
+                    .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+                    .stdin(Stdio::null())
+                    .stderr(Stdio::null())
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success() && !o.stdout.is_empty())
+            })?;
+        std::fs::write(&path, &png.stdout).ok()?;
+        Some(path)
+    }
 }
 
 #[cfg(test)]

@@ -265,6 +265,16 @@ fn ensure_macos_overlay_running(
             return Err(format!("swiftc failed: {}", err.trim()));
         }
         let _ = std::fs::write(&hash_path, &hash_str);
+        // If an older overlay daemon is already running, ask it to quit so we spawn the rebuilt one.
+        if UnixStream::connect(sock_path).is_ok() {
+            send_control_line(sock_path, r#"{"cmd":"quit"}"#);
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if UnixStream::connect(sock_path).is_err() {
+                    break;
+                }
+            }
+        }
     }
 
     // If an overlay daemon is already listening on the socket, just sync theme.
