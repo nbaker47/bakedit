@@ -325,13 +325,14 @@ pub fn read_agent_output(
 }
 
 fn extract_read_text(val: &Value) -> String {
-    if let Some(s) = val.get("text").and_then(Value::as_str) {
+    let inner = val.get("read").unwrap_or(val);
+    if let Some(s) = inner.get("text").and_then(Value::as_str) {
         return s.to_string();
     }
-    if let Some(s) = val.get("output").and_then(Value::as_str) {
+    if let Some(s) = inner.get("output").and_then(Value::as_str) {
         return s.to_string();
     }
-    if let Some(lines) = val.get("lines").and_then(Value::as_array) {
+    if let Some(lines) = inner.get("lines").and_then(Value::as_array) {
         let joined: Vec<&str> = lines.iter().filter_map(Value::as_str).collect();
         return joined.join("\n");
     }
