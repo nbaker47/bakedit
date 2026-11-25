@@ -5,7 +5,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::paths::literal_pathspec;
 use crate::repo::Repo;
 
 /// Metadata for a single blamed line (shared across all lines from the same commit).
@@ -151,7 +150,7 @@ impl Repo {
         let output = self
             .git()
             .args(["blame", "--porcelain", "--"])
-            .arg(literal_pathspec(&relative))
+            .arg(&relative)
             .run()?;
         Ok(parse_blame_porcelain(&output.stdout))
     }
