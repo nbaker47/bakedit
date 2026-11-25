@@ -163,11 +163,14 @@ pub fn inline_width(snapshot: &DotsSnapshot, max_width: u16, pulse_on: bool, the
     if max_width < 10 || snapshot.offline || snapshot.agents.is_empty() {
         return 0;
     }
+    let count = snapshot.agents.len().max(1);
+    let per_pill = (max_width as usize / count).saturating_sub(4).clamp(4, 16);
     let mut x = 0u16;
     for (idx, agent) in snapshot.agents.iter().enumerate() {
         let unread = snapshot.unread.contains(&agent.pane_id);
         let (glyph, _) = status_glyph_and_color(agent.status, unread, pulse_on, theme);
-        let label = format!(" {glyph} {} ", agent.display_agent());
+        let name = agent.display_label(per_pill);
+        let label = format!(" {glyph} {name} ");
         let w = ui::width(&label) as u16;
         if x + w > max_width {
             break;
@@ -196,10 +199,14 @@ pub fn render_inline_strip(
     let bg = theme.status_bar_bg;
     let sep_style = Style::colors(theme.border, bg);
 
+    let count = snapshot.agents.len().max(1);
+    // Reserve ~4 cells per pill (" " + glyph + " " + " " + separator) so every agent fits.
+    let per_pill = (area.width as usize / count).saturating_sub(4).clamp(4, 16);
+
     for (idx, agent) in snapshot.agents.iter().enumerate() {
         let unread = snapshot.unread.contains(&agent.pane_id);
         let (glyph, color) = status_glyph_and_color(agent.status, unread, pulse_on, theme);
-        let name = agent.display_label(14);
+        let name = agent.display_label(per_pill);
         let label = format!(" {glyph} {name} ");
         let w = ui::width(&label) as u16;
         if x + w > max_x {

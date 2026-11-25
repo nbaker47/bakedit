@@ -2138,8 +2138,9 @@ impl Shell {
             .unwrap_or(0);
         let max_inline = layout.status.width.saturating_sub(36);
         let dots_snap = if self.settings.agent_dots { self.dots.as_ref() } else { None };
+        let dots_budget = max_inline.saturating_sub(42).max(max_inline / 2);
         let dots_w = dots_snap
-            .map(|snap| dots::inline_width(snap, (max_inline / 2).min(60), self.dots_pulse, &self.theme))
+            .map(|snap| dots::inline_width(snap, dots_budget, self.dots_pulse, &self.theme))
             .unwrap_or(0);
         let usage_budget = max_inline.saturating_sub(dots_w + if dots_w > 0 { 2 } else { 0 });
         let usage_w = if self.settings.usage_meter {

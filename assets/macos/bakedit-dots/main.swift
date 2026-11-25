@@ -130,12 +130,13 @@ enum HerdrCLI {
               let raw = res["agents"] as? [[String: Any]] else {
             return ([], err.isEmpty ? "herdr offline" : err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        let agyRenames = loadAgyRenames()
         let agents: [HerdrAgent] = raw.compactMap { item in
             guard let paneId = item["pane_id"] as? String else { return nil }
             let agentKind = item["agent"] as? String ?? "agent"
             let sid = (item["agent_session"] as? [String: Any])?["value"] as? String
             let termTitle = item["terminal_title_stripped"] as? String ?? ""
-            let sname = resolveSessionName(agent: agentKind, sessionId: sid, title: termTitle)
+            let sname = resolveSessionName(paneId: paneId, agent: agentKind, sessionId: sid, title: termTitle, agyRenames: agyRenames)
             return HerdrAgent(
                 paneId: paneId,
                 agent: agentKind,
@@ -150,24 +151,52 @@ enum HerdrCLI {
         return (agents, nil)
     }
 
-    private static func resolveSessionName(agent: String, sessionId: String?, title: String) -> String? {
-        if agent == "agy", let sid = sessionId {
-            let path = NSHomeDirectory() + "/.gemini/antigravity-cli/annotations/\(sid).pbtxt"
-            if let raw = try? String(contentsOfFile: path, encoding: .utf8) {
-                for line in raw.split(separator: "\n") {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("title:") {
-                        let rest = trimmed.dropFirst(6).trimmingCharacters(in: .whitespaces)
-                        if rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2 {
-                            let inner = String(rest.dropFirst().dropLast())
-                                .replacingOccurrences(of: "\\\"", with: "\"")
-                                .replacingOccurrences(of: "\\\\", with: "\\")
-                                .trimmingCharacters(in: .whitespaces)
-                            if !inner.isEmpty { return inner }
-                        }
-                    }
+    private static func loadAgyRenames() -> [String: String] {
+        var map: [String: String] = [:]
+        let path = NSHomeDirectory() + "/.gemini/antigravity-cli/history.jsonl"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return map }
+        for line in raw.split(separator: "\n") where line.contains("/rename") {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let display = obj["display"] as? String,
+                  let cid = obj["conversationId"] as? String else { continue }
+            let trimmed = display.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("/rename ") else { continue }
+            let name = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { map[cid] = name }
+        }
+        return map
+    }
+
+    private static func readModelLabel(paneId: String) -> String? {
+        let (code, out, _) = run(["agent", "read", paneId, "--source", "visible", "--format", "text"], timeout: 1.5)
+        guard code == 0 else { return nil }
+        for line in out.split(separator: "\n").suffix(10).reversed() {
+            var s = line.trimmingCharacters(in: .whitespaces)
+            guard s.hasPrefix("[") else { continue }
+            var stripped = false
+            while s.hasPrefix("["), let end = s.firstIndex(of: "]") {
+                s = String(s[s.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+                stripped = true
+            }
+            guard stripped && !s.isEmpty else { continue }
+            for prefix in ["Gemini 4 ", "Gemini 3 ", "Gemini 2.5 ", "Gemini ", "Claude "] {
+                if s.hasPrefix(prefix) {
+                    s = String(s.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+                    break
                 }
             }
+            if !s.isEmpty && s.count <= 40 { return s }
+        }
+        return nil
+    }
+
+    private static func resolveSessionName(paneId: String, agent: String, sessionId: String?, title: String, agyRenames: [String: String]) -> String? {
+        if agent == "agy" {
+            if let sid = sessionId, let name = agyRenames[sid] {
+                return name
+            }
+            return readModelLabel(paneId: paneId)
         }
         if agent == "claude" {
             let t = title.trimmingCharacters(in: .whitespaces)
@@ -175,6 +204,7 @@ enum HerdrCLI {
             if !t.isEmpty && low != "claude" && low != "claude code" && !low.hasPrefix("claude ") {
                 return t
             }
+            return readModelLabel(paneId: paneId)
         }
         return nil
     }

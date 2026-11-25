@@ -3,6 +3,7 @@
 //! Used by bakedit's bundled Agent Dots (both the inline status strip, the standalone
 //! `bakedit --dots` terminal TUI, and the macOS/Linux floating overlay).
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -138,22 +139,100 @@ pub fn parse_pbtxt_title(raw: &str) -> Option<String> {
     None
 }
 
-fn read_agy_title(session_id: &str) -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home)
-        .join(".gemini/antigravity-cli/annotations")
-        .join(format!("{session_id}.pbtxt"));
-    let raw = fs::read_to_string(path).ok()?;
-    parse_pbtxt_title(&raw)
+/// Read explicit `/rename <name>` commands from `~/.gemini/antigravity-cli/history.jsonl`,
+/// returning a map of `conversationId -> latest renamed title`.
+pub fn parse_agy_renames(raw: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in raw.lines() {
+        if !line.contains("/rename") {
+            continue;
+        }
+        let Ok(val) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(display) = val.get("display").and_then(Value::as_str) else { continue };
+        let Some(cid) = val.get("conversationId").and_then(Value::as_str) else { continue };
+        let trimmed = display.trim();
+        let Some(rest) = trimmed.strip_prefix("/rename") else { continue };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let name = rest.trim();
+        if !name.is_empty() {
+            map.insert(cid.to_string(), name.to_string());
+        }
+    }
+    map
 }
 
-fn resolve_session_name(agent: &str, session_id: Option<&str>, title: &str) -> Option<String> {
-    if agent == "agy" {
-        if let Some(sid) = session_id {
-            if let Some(name) = read_agy_title(sid) {
-                return Some(name);
+fn read_agy_renames() -> HashMap<String, String> {
+    let Some(home) = std::env::var_os("HOME") else { return HashMap::new() };
+    let path = PathBuf::from(home).join(".gemini/antigravity-cli/history.jsonl");
+    let Ok(raw) = fs::read_to_string(path) else { return HashMap::new() };
+    parse_agy_renames(&raw)
+}
+
+/// Extract a compact model + effort label (e.g. `"Neon (Medium)"`, `"Sonnet 5.5"`) from an
+/// agent pane's visible status bar lines (`[Code] [cluster] Gemini 4 Neon (Medium)`).
+pub fn extract_model_label(visible: &str) -> Option<String> {
+    for line in visible.lines().rev().take(10) {
+        let mut s = line.trim();
+        if !s.starts_with('[') {
+            continue;
+        }
+        // Strip leading `[tag]` segments such as `[Code] [starbase-prod]`.
+        let mut stripped_any = false;
+        while s.starts_with('[') {
+            let Some(end) = s.find(']') else { break };
+            s = s[end + 1..].trim_start();
+            stripped_any = true;
+        }
+        if !stripped_any || s.is_empty() {
+            continue;
+        }
+        // Strip common vendor prefixes so compact pills read `"Neon (Medium)"` / `"Sonnet 5.5"`.
+        for prefix in ["Gemini 4 ", "Gemini 3 ", "Gemini 2.5 ", "Gemini ", "Claude "] {
+            if let Some(rest) = s.strip_prefix(prefix) {
+                s = rest.trim();
+                break;
             }
         }
+        if !s.is_empty() && s.len() <= 40 {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+fn read_pane_model_label(client: &Client, pane_id: &str) -> Option<String> {
+    let val: Value = client
+        .call(
+            "agent.read",
+            json!({
+                "target": pane_id,
+                "source": "visible",
+                "format": "text",
+                "strip_ansi": true,
+            }),
+        )
+        .ok()?;
+    let text = extract_read_text(&val);
+    extract_model_label(&text)
+}
+
+fn resolve_session_name(
+    client: &Client,
+    pane_id: &str,
+    agent: &str,
+    session_id: Option<&str>,
+    title: &str,
+    agy_renames: &HashMap<String, String>,
+) -> Option<String> {
+    if agent == "agy" {
+        if let Some(sid) = session_id {
+            if let Some(name) = agy_renames.get(sid) {
+                return Some(name.clone());
+            }
+        }
+        return read_pane_model_label(client, pane_id);
     }
     if agent == "claude" {
         let t = title.trim();
@@ -164,6 +243,7 @@ fn resolve_session_name(agent: &str, session_id: Option<&str>, title: &str) -> O
         {
             return Some(t.to_string());
         }
+        return read_pane_model_label(client, pane_id);
     }
     None
 }
@@ -174,6 +254,7 @@ pub fn list_agents(client: &Client) -> Result<Vec<AgentInfo>, HerdrError> {
     let Some(items) = val.get("agents").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
+    let agy_renames = read_agy_renames();
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let Some(pane_id) = item.get("pane_id").and_then(Value::as_str) else {
@@ -192,7 +273,7 @@ pub fn list_agents(client: &Client) -> Result<Vec<AgentInfo>, HerdrError> {
             .map(str::to_string);
         let agent_kind = item.get("agent").and_then(Value::as_str).unwrap_or("agent").to_string();
         let title = item.get("terminal_title_stripped").and_then(Value::as_str).unwrap_or("").to_string();
-        let session_name = resolve_session_name(&agent_kind, session_id.as_deref(), &title);
+        let session_name = resolve_session_name(client, pane_id, &agent_kind, session_id.as_deref(), &title, &agy_renames);
         out.push(AgentInfo {
             pane_id: pane_id.to_string(),
             workspace_id: item.get("workspace_id").and_then(Value::as_str).unwrap_or("").to_string(),
