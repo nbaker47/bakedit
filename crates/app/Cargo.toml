@@ -28,6 +28,7 @@ arboard.workspace = true
 crossbeam-channel.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
+image.workspace = true
 libc.workspace = true
 log.workspace = true
 nucleo-matcher.workspace = true
