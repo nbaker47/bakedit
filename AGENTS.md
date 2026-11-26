@@ -88,6 +88,14 @@ A library (`src/lib.rs`) plus a thin binary, so tests and examples can drive it.
   keymap's contexts describe and fails on any action the keymap binds or the palette lists
   that nothing acts on. A binding added without a handler fails it; a deliberate no-op goes
   in its `DELIBERATE_NO_OPS` with the reason.
+- **Test keybind features with computer control:** Whenever you add or change a feature that
+  involves keybindings (including `;` nav-layer chords and `herdr::*` shortcuts), unit tests
+  and mock servers are not enough — test it end-to-end against the running `bakedit` using
+  computer control (real macOS `CGEvent` keystrokes via `swift`/CoreGraphics or Kitty remote
+  control on throwaway panes/workspaces, cleaning up and restoring focus afterwards) to
+  confirm the actual keypresses work before calling the task done. When rebuilding and
+  installing `~/.local/bin/bakedit`, check `git log --all --oneline --decorate` first so you
+  branch from the current tip branch rather than dropping stacked feature commits.
 - **Drawing, pure functions of data:** `ui.rs` (clipped `Canvas`, `Style`, truncation),
   `chrome.rs` (tab bar, status bar, prompt, toast), `picker.rs`, `line_input.rs`, `paint.rs`
   (one editor row: syntax, selections, matches, brackets, indent guides; gutter; scrollbar),
