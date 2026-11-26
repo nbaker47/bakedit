@@ -185,11 +185,26 @@ impl Drop for DotsOverlay {
     }
 }
 
-/// Never spawn external windows during tests or inside the ptyshot harness.
+/// Never spawn external windows during tests, inside the ptyshot harness, when
+/// `BAKEDIT_NO_OVERLAY` is set, or under Hyprland (where a spawned terminal would tile
+/// as a normal window instead of floating as an overlay).
 fn suppressed() -> bool {
     cfg!(test)
         || std::env::var_os("TERM_PROGRAM").is_some_and(|v| v == "ptyshot")
         || std::env::var_os("BAKEDIT_NO_OVERLAY").is_some()
+        || is_hyprland_env(
+            std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").as_deref(),
+            std::env::var_os("XDG_CURRENT_DESKTOP").as_deref(),
+        )
+}
+
+fn is_hyprland_env(instance_sig: Option<&std::ffi::OsStr>, desktop: Option<&std::ffi::OsStr>) -> bool {
+    instance_sig.is_some_and(|v| !v.is_empty())
+        || desktop.is_some_and(|v| {
+            v.to_string_lossy()
+                .split(':')
+                .any(|part| part.eq_ignore_ascii_case("hyprland"))
+        })
 }
 
 /// Serialize bakedit's active theme colours for the terminal-styled floating overlay.
@@ -378,5 +393,15 @@ mod tests {
         overlay.on_focus_changed(false, &theme);
         overlay.on_focus_changed(true, &theme);
         assert!(overlay.is_enabled());
+    }
+
+    #[test]
+    fn detects_hyprland_environment() {
+        use std::ffi::OsStr;
+        assert!(is_hyprland_env(Some(OsStr::new("abc_123")), None));
+        assert!(is_hyprland_env(None, Some(OsStr::new("Hyprland"))));
+        assert!(is_hyprland_env(None, Some(OsStr::new("uwsm:Hyprland"))));
+        assert!(!is_hyprland_env(Some(OsStr::new("")), Some(OsStr::new("GNOME"))));
+        assert!(!is_hyprland_env(None, None));
     }
 }
