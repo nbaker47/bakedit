@@ -609,7 +609,7 @@ impl Item for AudioPlayer {
     fn tab(&self, cx: &RenderCx<'_>) -> Tab {
         let title = self.title();
         let icon = Some(file_icon(cx.settings, &title, false, false));
-        Tab { title, dirty: false, preview: false, icon }
+        Tab { title, dirty: false, preview: false, pinned: false, icon }
     }
 
     fn path(&self) -> Option<&Path> {
