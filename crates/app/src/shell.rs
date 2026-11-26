@@ -2079,7 +2079,7 @@ impl Shell {
             (d, u) => d + 2 + u,
         };
         self.status_hits = chrome::status_bar_with_inline(&mut canvas, layout.status, &status, inline_w, &self.theme);
-        if let Some(slot) = self.status_hits.inline_right {
+        if let Some(slot) = self.status_hits.inline_left {
             let mut x = slot.x;
             let mut rem = slot.width;
             if let Some(snap) = dots_snap.filter(|_| dots_w > 0) {

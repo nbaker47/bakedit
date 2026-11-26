@@ -100,6 +100,9 @@ struct Dock {
     open: bool,
     panels: Vec<PanelState>,
     active: Option<usize>,
+    /// Sibling panel that was visible in this dock before a zoomed panel took over,
+    /// restored when the zoomed panel is dismissed.
+    under_zoom: Option<PanelId>,
 }
 
 impl Dock {
@@ -185,7 +188,7 @@ impl Workspace {
     /// listed in the order given; the first is the one the dock shows initially. Everything
     /// starts closed with the focus in the centre.
     pub fn new(placement: &[(PanelId, DockPosition)]) -> Workspace {
-        let empty = || Dock { open: false, panels: Vec::new(), active: None };
+        let empty = || Dock { open: false, panels: Vec::new(), active: None, under_zoom: None };
         let mut docks = [empty(), empty(), empty()];
         for &(id, position) in placement {
             let dock = &mut docks[position.index()];
@@ -349,22 +352,43 @@ impl Workspace {
 
     // ---- focus -------------------------------------------------------------------------
 
+    /// Dismiss a dock whose active panel is zoomed: if a sibling panel was visible
+    /// underneath before zoom took over, restore it and return it; otherwise close the dock.
+    fn dismiss_zoomed_dock(&mut self, position: DockPosition) -> Option<PanelId> {
+        if let Some(prev) = self.dock_mut(position).under_zoom.take() {
+            if self.position_of(prev) == Some(position) {
+                self.activate(prev);
+                self.dock_mut(position).open = true;
+                return Some(prev);
+            }
+        }
+        self.dock_mut(position).open = false;
+        None
+    }
+
     /// Show a panel and give it the focus.
     pub fn focus_panel(&mut self, id: PanelId) {
         let Some(position) = self.position_of(id) else { return };
+        let prev_visible = self.visible_panel(position).filter(|&prev| prev != id);
+        if self.is_panel_zoomed(id) {
+            if let Some(prev) = prev_visible {
+                self.dock_mut(position).under_zoom = Some(prev);
+            }
+        } else {
+            self.dock_mut(position).under_zoom = None;
+        }
         self.activate(id);
         self.dock_mut(position).open = true;
         self.focus = Focus::Panel(id);
         self.reveal_dock(position);
     }
 
-    /// Give the focus to the centre. Docks whose panel is zoomed close so the centre shows.
+    /// Give the focus to the centre. Docks whose panel is zoomed are dismissed so the centre shows.
     pub fn focus_center(&mut self) {
         self.focus = Focus::Center;
         for position in DockPosition::ALL {
-            let dock = self.dock_mut(position);
-            if dock.open && dock.active_panel().is_some_and(|p| p.zoomed) {
-                dock.open = false;
+            if self.dock(position).open && self.dock(position).active_panel().is_some_and(|p| p.zoomed) {
+                self.dismiss_zoomed_dock(position);
             }
         }
     }
@@ -376,7 +400,7 @@ impl Workspace {
         dock.active = dock.index_of(id);
     }
 
-    /// A dock is about to be the thing in focus: un-zoom the centre and close other docks
+    /// A dock is about to be the thing in focus: un-zoom the centre and dismiss other docks
     /// whose panel is zoomed (they would cover it).
     fn reveal_dock(&mut self, revealed: DockPosition) {
         self.center_zoomed = false;
@@ -384,9 +408,8 @@ impl Workspace {
             if position == revealed {
                 continue;
             }
-            let dock = self.dock_mut(position);
-            if dock.open && dock.active_panel().is_some_and(|p| p.zoomed) {
-                dock.open = false;
+            if self.dock(position).open && self.dock(position).active_panel().is_some_and(|p| p.zoomed) {
+                self.dismiss_zoomed_dock(position);
             }
         }
     }
@@ -468,17 +491,24 @@ impl Workspace {
 
     fn close_dock(&mut self, position: DockPosition) {
         let focus_was_here = self.focus_position() == Some(position);
-        let fallback = if focus_was_here {
-            match self.focus {
-                Focus::Panel(id) if id == PanelId::Terminal && self.is_panel_zoomed(id) => {
-                    self.focus_to_the_right(id)
+        let is_zoomed_terminal = focus_was_here
+            && matches!(self.focus, Focus::Panel(id) if id == PanelId::Terminal && self.is_panel_zoomed(id));
+        let fallback = if is_zoomed_terminal {
+            self.focus_to_the_right(PanelId::Terminal)
+        } else {
+            Focus::Center
+        };
+        if self.dock(position).open && self.dock(position).active_panel().is_some_and(|p| p.zoomed) {
+            if let Some(restored) = self.dismiss_zoomed_dock(position) {
+                if focus_was_here {
+                    self.apply_focus(if is_zoomed_terminal { Focus::Panel(restored) } else { Focus::Center });
                 }
-                _ => Focus::Center,
+                return;
             }
         } else {
-            self.focus
-        };
-        self.dock_mut(position).open = false;
+            self.dock_mut(position).under_zoom = None;
+            self.dock_mut(position).open = false;
+        }
         if focus_was_here {
             self.apply_focus(fallback);
         }
@@ -619,6 +649,9 @@ impl Workspace {
     /// Zoom or un-zoom a panel. Zooming one panel un-zooms the others in its dock.
     pub fn set_panel_zoomed(&mut self, id: PanelId, zoomed: bool) {
         let Some(position) = self.position_of(id) else { return };
+        if !zoomed {
+            self.dock_mut(position).under_zoom = None;
+        }
         for panel in &mut self.dock_mut(position).panels {
             if panel.id == id {
                 panel.zoomed = zoomed;
@@ -1110,6 +1143,42 @@ mod tests {
         ws.open_panel(Project);
         ws.toggle_panel(Terminal);
         ws.toggle_panel(Terminal);
+        assert_eq!(ws.focus(), Focus::Center);
+    }
+
+    #[test]
+    fn zooming_terminal_over_git_restores_git_when_minimized() {
+        let mut ws = workspace();
+        ws.open_panel(Git);
+        ws.open_panel(Project);
+        ws.focus_center();
+        assert_eq!(ws.visible_panel(Left), Some(Git));
+        assert_eq!(ws.visible_panel(Right), Some(Project));
+
+        // Pull up terminal fullscreen over Git, then minimize it: Git stays open.
+        ws.toggle_panel_zoom(Terminal);
+        assert_eq!(ws.zoomed(), Some(Zoomed::Panel(Terminal)));
+        assert_eq!(ws.focus(), Focus::Panel(Terminal));
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.zoomed(), None);
+        assert_eq!(ws.visible_panel(Left), Some(Git));
+        assert_eq!(ws.visible_panel(Right), Some(Project));
+        assert_eq!(ws.focus(), Focus::Panel(Git));
+        assert!(ws.is_panel_zoomed(Terminal), "terminal remembers zoom");
+
+        // Pulling terminal back up fullscreen and minimizing again still preserves Git.
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.zoomed(), Some(Zoomed::Panel(Terminal)));
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.visible_panel(Left), Some(Git));
+        assert_eq!(ws.focus(), Focus::Panel(Git));
+
+        // Focusing the editor while terminal is zoomed over Git also preserves Git.
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.zoomed(), Some(Zoomed::Panel(Terminal)));
+        ws.focus_center();
+        assert_eq!(ws.zoomed(), None);
+        assert_eq!(ws.visible_panel(Left), Some(Git));
         assert_eq!(ws.focus(), Focus::Center);
     }
 }

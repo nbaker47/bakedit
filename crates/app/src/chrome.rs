@@ -171,20 +171,20 @@ pub struct StatusBarHits {
     pub mode_pill: Option<Rect>,
     pub zoom_out: Option<Rect>,
     pub zoom_in: Option<Rect>,
-    /// Reserved slice immediately to the left of the zoom buttons for inline agent/usage strips.
-    pub inline_right: Option<Rect>,
+    /// Reserved slice on the left (after the mode pill) for inline agent/usage strips.
+    pub inline_left: Option<Rect>,
 }
 
-/// Draw the status bar in `area` (one row): mode and git on the left, the message in the
-/// middle, the cursor, file facts, and zoom controls on the right. On a narrow screen the
-/// right side gives way first, least important item first, so the mode and branch never get
-/// cut. Returns the clickable hit rects (mode pill and zoom in/out buttons).
+/// Draw the status bar in `area` (one row): mode and inline agent/usage on the left, the
+/// message in the middle, and git branch, editor facts, and zoom controls on the right.
+/// On a narrow screen the right side gives way first, least important item first.
+/// Returns the clickable hit rects (mode pill, zoom buttons, and inline left slot).
 pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> StatusBarHits {
     status_bar_with_inline(canvas, area, status, 0, theme)
 }
 
-/// [`status_bar`], reserving `inline_width` cells immediately to the left of the zoom buttons
-/// (when space permits) for inline agent/usage strips in the bottom-right corner.
+/// [`status_bar`], reserving `inline_width` cells on the left (after any mode pill)
+/// for inline agent/usage strips.
 pub fn status_bar_with_inline(
     canvas: &mut Canvas<'_>,
     area: Rect,
@@ -219,26 +219,17 @@ pub fn status_bar_with_inline(
         x += 1;
     }
 
-    if let Some(branch) = &status.branch {
-        let icon = if status.nerd_font { "\u{e0a0} " } else { "" };
-        let mut text = format!("{icon}{branch}");
-        if status.ahead > 0 {
-            text.push_str(&format!(" ↑{}", status.ahead));
+    // Reserve the inline left slot (agent dots + AI usage) immediately after the mode pill.
+    if inline_width > 0 {
+        let avail = area.right().saturating_sub(x + 1);
+        let w = inline_width.min(avail);
+        if w >= 6 {
+            hits.inline_left = Some(Rect::new(x, y, w, 1));
+            x += w + 2;
         }
-        if status.behind > 0 {
-            text.push_str(&format!(" ↓{}", status.behind));
-        }
-        let room = area.right().saturating_sub(x);
-        x += canvas.text_truncated(x, y, &text, Style::colors(theme.text, bg), room.min(40));
-        if status.changes > 0 {
-            x += 2;
-            let room = area.right().saturating_sub(x);
-            x += canvas.text(x, y, &format!("±{}", status.changes), Style::colors(theme.modified, bg), room);
-        }
-        x += 2;
     }
 
-    // Right side, built from the edge inwards.
+    // Right side, built from the edge inwards (index 0 drops first when narrow).
     let mut right_items: Vec<(String, Style)> = Vec::new();
     match status.nav_layer {
         NavLayerIndicator::Off => {}
@@ -264,6 +255,21 @@ pub fn status_bar_with_inline(
         }
         right_items.push((text, Style::colors(theme.text, bg)));
     }
+    if let Some(branch) = &status.branch {
+        if status.changes > 0 {
+            right_items.push((format!("±{}", status.changes), Style::colors(theme.modified, bg)));
+        }
+        let icon = if status.nerd_font { "\u{e0a0} " } else { "" };
+        let mut text = format!("{icon}{branch}");
+        if status.ahead > 0 {
+            text.push_str(&format!(" ↑{}", status.ahead));
+        }
+        if status.behind > 0 {
+            text.push_str(&format!(" ↓{}", status.behind));
+        }
+        let truncated = ui::truncate_end(&text, 40);
+        right_items.push((truncated, Style::colors(theme.text, bg)));
+    }
 
     // Zoom out / in controls at the far right (` − ` ` + ` = 7 cells + 1 right margin).
     let left_end = x;
@@ -277,17 +283,6 @@ pub fn status_bar_with_inline(
         canvas.text(out_x, y, " − ", btn_style, 3);
         hits.zoom_out = Some(Rect::new(out_x, y, 3, 1));
         right_edge = out_x.saturating_sub(2);
-    }
-
-    // Inline agent/usage strip anchored in the bottom-right corner, just left of the zoom buttons.
-    if inline_width > 0 {
-        let avail = right_edge.saturating_sub(left_end + 2);
-        let w = inline_width.min(avail);
-        if w >= 6 {
-            let inline_x = right_edge.saturating_sub(w);
-            hits.inline_right = Some(Rect::new(inline_x, y, w, 1));
-            right_edge = inline_x.saturating_sub(2);
-        }
     }
 
     // Items are separated by two spaces. Drop from the edge (the least important) until
@@ -566,8 +561,8 @@ mod tests {
     #[test]
     fn status_bar_lays_out_left_middle_right() {
         let text = draw_status(&full_status(), 100);
-        assert!(text.starts_with(" NAV  main ↑1 ↓2  ±3  Saved src/main.rs"), "{text:?}");
-        assert!(text.ends_with("12:5  Rust  Spaces: 4  LF  ;layer   −   +  "), "{text:?}");
+        assert!(text.starts_with(" NAV  Saved src/main.rs"), "{text:?}");
+        assert!(text.ends_with("main ↑1 ↓2  ±3  12:5  Rust  Spaces: 4  LF  ;layer   −   +  "), "{text:?}");
     }
 
     #[test]
@@ -584,11 +579,11 @@ mod tests {
     #[test]
     fn status_bar_drops_the_right_side_first_when_narrow() {
         let text = draw_status(&full_status(), 44);
-        assert!(text.starts_with(" NAV  main ↑1 ↓2  ±3"), "{text:?}");
-        assert!(text.contains("12:5"), "the cursor position is the last to go: {text:?}");
+        assert!(text.starts_with(" NAV "), "{text:?}");
+        assert!(text.contains("main ↑1 ↓2"), "git branch is the last right item to go: {text:?}");
         assert!(!text.contains(";layer"), "{text:?}");
         let text = draw_status(&full_status(), 24);
-        assert!(text.starts_with(" NAV  main ↑1 ↓2  ±3"), "{text:?}");
+        assert!(text.starts_with(" NAV "), "{text:?}");
         assert!(!text.contains("Rust"));
         for width in [0, 1, 3, 8] {
             draw_status(&full_status(), width);
