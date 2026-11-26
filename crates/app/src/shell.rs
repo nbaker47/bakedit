@@ -1907,6 +1907,17 @@ impl Shell {
         handled
     }
 
+    /// Active Kitty Graphics Protocol image placement when the front tab is an HQ image
+    /// viewer and nothing (modal, picker, which-key, zoomed dock) covers the centre.
+    pub fn kitty_image_placement(&mut self, cell_px: (u16, u16)) -> Option<crate::items::image::KittyImagePlacement> {
+        if self.layout.center.is_none() || self.modal.is_some() || !self.which_key.is_empty() {
+            return None;
+        }
+        let item = self.pane.active_mut()?;
+        let viewer = item.as_any_mut().downcast_mut::<crate::items::image::ImageViewer>()?;
+        viewer.kitty_placement(cell_px)
+    }
+
     /// Hand a mouse event to the view at `target`, drawn in `area`.
     fn mouse_to(&mut self, target: Focus, area: Rect, event: &MouseEvent) -> bool {
         let mut cx = cx!(self);

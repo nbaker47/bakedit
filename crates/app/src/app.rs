@@ -176,6 +176,8 @@ pub struct App {
     /// Where the keyboard was after the last event, to notice it moving.
     focus_key: (Focus, Option<String>),
     cursor_shape: Option<seq::CursorShape>,
+    /// Last Kitty Graphics Protocol image transmitted to the host terminal.
+    kitty_image_key: Option<crate::items::image::KittyImageKey>,
     dirty: bool,
     quit: bool,
     // Dropped last: the screen restored after everything else is done with it.
@@ -372,6 +374,7 @@ impl App {
             saved_session: None,
             terminal_palette: bakedit_core::TerminalPalette::default(),
             cursor_shape: None,
+            kitty_image_key: None,
             dirty: true,
             quit: false,
             _host: host,
@@ -927,6 +930,21 @@ impl App {
             if self.cursor_shape != Some(shape) {
                 self.screen.backend_mut().write_all(seq::cursor_shape(shape).as_bytes())?;
                 self.cursor_shape = Some(shape);
+            }
+        }
+        let placement = self.shell.kitty_image_placement(crate::items::image::terminal_cell_pixels());
+        match placement {
+            Some(p) => {
+                if self.kitty_image_key.as_ref() != Some(&p.key) {
+                    let seq = crate::items::image::encode_kitty_graphics(&p);
+                    self.screen.backend_mut().write_all(&seq)?;
+                    self.kitty_image_key = Some(p.key);
+                }
+            }
+            None => {
+                if self.kitty_image_key.take().is_some() {
+                    self.screen.backend_mut().write_all(crate::items::image::delete_kitty_graphics())?;
+                }
             }
         }
         let backend = self.screen.backend_mut();
