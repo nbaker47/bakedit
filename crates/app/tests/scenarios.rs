@@ -15,7 +15,7 @@ use std::process::Command;
 /// processes, the session, and quitting.
 const ESSENTIAL: &[&str] = &[
     "kitty", "restore", "panels", "editing", "modes", "search", "git", "tree", "links", "navlayer", "herdr", "bigfile", "legacy", "ipc",
-    "quit", "dump", "herdr-session",
+    "quit", "dump", "zoom", "herdr-session",
 ];
 
 fn on_path(program: &str) -> bool {

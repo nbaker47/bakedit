@@ -1070,5 +1070,14 @@
       "ctrl-alt-[": "pane::ActivatePreviousItem",
       "ctrl-alt-]": "pane::ActivateNextItem"
     }
+  },
+  // Global font zoom (no context so it wins over Pane's ctrl--/ctrl-0 and works in Terminal too).
+  {
+    "bindings": {
+      "ctrl-=": "bakedit::ZoomIn",
+      "ctrl-+": "bakedit::ZoomIn",
+      "ctrl--": "bakedit::ZoomOut",
+      "ctrl-0": "bakedit::ZoomReset"
+    }
   }
 ]

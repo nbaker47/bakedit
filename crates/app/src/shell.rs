@@ -2120,6 +2120,7 @@ impl Shell {
             _ => "Zoom reset",
         };
         if let Some(sock) = target {
+            #[cfg(not(test))]
             std::thread::spawn(move || {
                 let run = |bin: &str| {
                     std::process::Command::new(bin)
@@ -2133,6 +2134,8 @@ impl Shell {
                     let _ = run("/Applications/kitty.app/Contents/MacOS/kitty");
                 }
             });
+            #[cfg(test)]
+            let _ = (sock, delta_owned);
             self.set_status(msg, false);
         } else {
             self.set_status("Zoom requires Kitty remote control (Cmd+= / Cmd+-)", true);

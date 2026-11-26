@@ -1,0 +1,35 @@
+# Ctrl-= / Ctrl-+ / Ctrl-- / Ctrl-0 zoom works in both the editor and the terminal panel,
+# and invokes kitty remote control (`kitty @ --to <sock> set-font-size --all -- +1/-1/0`).
+
+# Open a file so focus is in Editor (Workspace > Pane > Editor).
+expect No file open
+key ctrl-p
+expect Search project files
+text main.rs
+key enter
+expect src › main.rs
+
+# Zoom in/out/reset from Editor (beating Pane's ctrl-- GoBack and ctrl-0 ActivateLastItem).
+key ctrl-=
+expect Zoomed in
+key ctrl--
+expect Zoomed out
+key ctrl-+
+expect Zoomed in
+key ctrl-0
+expect Zoom reset
+
+# Switch focus to Terminal (Workspace > Dock > Pane > Terminal) and verify zoom works there too.
+key ctrl-j
+expect demo %
+key ctrl-=
+expect Zoomed in
+key ctrl--
+expect Zoomed out
+key ctrl-0
+expect Zoom reset
+
+# Quit and check the mock kitty binary received all seven remote-control invocations.
+key ctrl-] q
+expect-exit
+exec python3 -c "import os, pathlib; log = pathlib.Path(os.environ['BAKEDIT_SCENARIO_WORK'], 'kitty-rc.log').read_text().splitlines(); expected = ['@ --to unix:/tmp/bakedit-test-kitty-rc set-font-size --all -- ' + d for d in ('+1', '-1', '+1', '0', '+1', '-1', '0')]; assert log == expected, f'expected {expected!r}, got {log!r}'"

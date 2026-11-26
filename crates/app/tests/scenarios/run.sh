@@ -28,7 +28,7 @@ out="$(cd "$out" && pwd)"
 bin="${2:-${CARGO_TARGET_DIR:-$repo/target}/debug/bakedit}"
 [ -x "$bin" ] || { echo "no bakedit binary at $bin (cargo build -p bakedit)" >&2; exit 1; }
 shift $(( $# >= 2 ? 2 : $# ))
-all=(kitty restore panels editing modes search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe herdr-session herdr-readme)
+all=(kitty restore panels editing modes search git tree links navlayer herdr bigfile narrow legacy reload ipc quit dump probe zoom herdr-session herdr-readme)
 wanted=("$@")
 [ ${#wanted[@]} -eq 0 ] && wanted=("${all[@]}")
 
@@ -81,7 +81,7 @@ RS
     git_ init --quiet
     git_ add -A
     git_ commit --quiet -m "first"
-    sed -i '' 's/different words/distinct words/' "$project/src/main.rs"
+    sed -i.bak 's/different words/distinct words/' "$project/src/main.rs" && rm -f "$project/src/main.rs.bak"
     printf 'notes\n' > "$project/notes.txt"
 }
 
@@ -154,6 +154,19 @@ for scenario in "${all[@]}"; do
         # The tools: --dump-input and --probe.
         dump) run dump 110x24 -- --terminal shell --dump-input ;;
         probe) run probe 110x24 -- --terminal shell --probe ;;
+        zoom)
+            make_project
+            mkdir -p "$work/mock-bin"
+            rm -f "$work/kitty-rc.log"
+            cat > "$work/mock-bin/kitty" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$BAKEDIT_SCENARIO_WORK/kitty-rc.log"
+SH
+            chmod +x "$work/mock-bin/kitty"
+            saved_env=("${env_args[@]}")
+            env_args+=(--env "PATH=$work/mock-bin:$PATH" --env "KITTY_LISTEN_ON=unix:/tmp/bakedit-test-kitty-rc")
+            run zoom 160x40 -- --terminal shell --new --no-restore "$project"
+            env_args=("${saved_env[@]}") ;;
         herdr-session|herdr-readme)
             if ! command -v herdr > /dev/null; then
                 echo "SKIP $scenario: herdr is not installed"

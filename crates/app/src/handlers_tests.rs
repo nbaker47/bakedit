@@ -358,3 +358,39 @@ fn the_places_are_what_their_names_say() {
     assert!(contexts(Place::GoToLine).contains(&"GoToLine".to_string()));
 }
 
+#[test]
+fn ctrl_zoom_bindings_win_in_editor_terminal_and_panels() {
+    let mut keymap = Keymap::new();
+    assert!(keymap.load(crate::keys::DEFAULT_KEYMAP, KeymapSource::Default).is_empty());
+    let cases = [
+        ("ctrl-=", "bakedit::ZoomIn"),
+        ("ctrl-+", "bakedit::ZoomIn"),
+        ("ctrl--", "bakedit::ZoomOut"),
+        ("ctrl-0", "bakedit::ZoomReset"),
+    ];
+    for place in [Place::Editor, Place::Terminal, Place::Tree, Place::GitList, Place::FileFinder] {
+        let world = world(place);
+        let contexts: Vec<bakedit_keymap::KeyContext> = world
+            .shell
+            .contexts()
+            .into_iter()
+            .map(|c| {
+                let mut kc = bakedit_keymap::KeyContext::new(c.name);
+                for flag in c.flags {
+                    kc = kc.add(flag);
+                }
+                for (k, v) in c.values {
+                    kc = kc.set(k, v);
+                }
+                kc
+            })
+            .collect();
+        for (chord, expected) in cases {
+            let stroke = bakedit_keymap::Keystroke::parse(chord).expect("valid chord");
+            let (bindings, _) = keymap.bindings_for_input(&[stroke.to_event()], &contexts);
+            let top = bindings.first().and_then(|b| b.action()).map(|a| a.name);
+            assert_eq!(top.as_deref(), Some(expected), "{chord} in {place:?} should resolve to {expected}, got {top:?}");
+        }
+    }
+}
+
