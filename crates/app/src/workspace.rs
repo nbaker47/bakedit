@@ -398,18 +398,67 @@ impl Workspace {
         self.dock_mut(position).open = true;
     }
 
+    /// Open horizontal focus targets in visual left-to-right order (ignoring zoom).
+    fn horizontal_order(&self) -> Vec<Focus> {
+        let mut order = Vec::new();
+        if self.is_dock_open(DockPosition::Left) {
+            if self.show_all_left_panels {
+                for id in self.panels_in(DockPosition::Left) {
+                    order.push(Focus::Panel(id));
+                }
+            } else if let Some(id) = self.visible_panel(DockPosition::Left) {
+                order.push(Focus::Panel(id));
+            }
+        }
+        if self.right_dock_inner_left {
+            if let Some(id) = self.visible_panel(DockPosition::Right) {
+                order.push(Focus::Panel(id));
+            }
+        }
+        order.push(Focus::Center);
+        if !self.right_dock_inner_left {
+            if let Some(id) = self.visible_panel(DockPosition::Right) {
+                order.push(Focus::Panel(id));
+            }
+        }
+        order
+    }
+
+    /// The next visible focus target to the right of `id`, falling back to the centre.
+    fn focus_to_the_right(&self, id: PanelId) -> Focus {
+        let order = self.horizontal_order();
+        order
+            .iter()
+            .position(|&target| target == Focus::Panel(id))
+            .and_then(|idx| order.get(idx + 1).copied())
+            .unwrap_or(Focus::Center)
+    }
+
+    fn apply_focus(&mut self, target: Focus) {
+        match target {
+            Focus::Center => self.focus_center(),
+            Focus::Panel(id) => self.focus_panel(id),
+        }
+    }
+
     /// Close `id`. When all left-dock panels are shown side-by-side, closing one left
     /// panel hides only that panel and keeps the other left panel open. Otherwise closes
     /// the dock `id` lives in (Zed's `close_panel`). If focus was on the closed panel it
-    /// returns to the centre.
+    /// returns to the centre, except when closing a zoomed terminal: focus moves to the
+    /// next visible pane to its right.
     pub fn close_panel(&mut self, id: PanelId) {
         let Some(position) = self.position_of(id) else { return };
+        let next_focus = if self.focus == Focus::Panel(id) && id == PanelId::Terminal && self.is_panel_zoomed(id) {
+            Some(self.focus_to_the_right(id))
+        } else {
+            None
+        };
         if self.show_all_left_panels && position == DockPosition::Left && self.is_dock_open(DockPosition::Left) {
             if let Some(other) = self.dock(DockPosition::Left).panels.iter().find(|p| p.id != id).map(|p| p.id) {
                 self.show_all_left_panels = false;
                 self.activate(other);
                 if self.focus == Focus::Panel(id) {
-                    self.focus_center();
+                    self.apply_focus(next_focus.unwrap_or(Focus::Center));
                 }
                 return;
             }
@@ -419,9 +468,19 @@ impl Workspace {
 
     fn close_dock(&mut self, position: DockPosition) {
         let focus_was_here = self.focus_position() == Some(position);
+        let fallback = if focus_was_here {
+            match self.focus {
+                Focus::Panel(id) if id == PanelId::Terminal && self.is_panel_zoomed(id) => {
+                    self.focus_to_the_right(id)
+                }
+                _ => Focus::Center,
+            }
+        } else {
+            self.focus
+        };
         self.dock_mut(position).open = false;
         if focus_was_here {
-            self.focus_center();
+            self.apply_focus(fallback);
         }
     }
 
@@ -445,11 +504,14 @@ impl Workspace {
         }
     }
 
-    /// `<panel>::Toggle`: focus the panel, or if it already has the focus, return to the
-    /// centre and close the panel's dock.
+    /// `<panel>::Toggle`: focus the panel, or if it already has the focus, close the
+    /// panel's dock (moving focus to the next pane to the right when closing a zoomed
+    /// terminal, otherwise returning to the centre).
     pub fn toggle_panel(&mut self, id: PanelId) {
-        if !self.toggle_panel_focus(id) {
+        if self.focus == Focus::Panel(id) {
             self.close_panel(id);
+        } else {
+            self.focus_panel(id);
         }
     }
 
@@ -987,6 +1049,67 @@ mod tests {
         let mut ws = workspace();
         ws.restore(&snapshot);
         assert_eq!(ws.visible_panel(Left), Some(Terminal));
+        assert_eq!(ws.focus(), Focus::Center);
+    }
+
+    #[test]
+    fn closing_zoomed_terminal_focuses_next_pane_to_the_right() {
+        // Default layout (right_dock_inner_left = true) with file explorer open:
+        // Terminal -> Project -> Center. Closing zoomed terminal focuses Project.
+        let mut ws = workspace();
+        ws.open_panel(Project);
+        ws.toggle_panel(Terminal);
+        ws.toggle_zoom();
+        assert_eq!(ws.zoomed(), Some(Zoomed::Panel(Terminal)));
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.visible_panel(Left), None);
+        assert_eq!(ws.zoomed(), None);
+        assert_eq!(ws.focus(), Focus::Panel(Project));
+        assert!(ws.is_panel_zoomed(Terminal), "terminal remembers zoom for next open");
+
+        // Same via close_active_dock and toggle_dock(Left).
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.zoomed(), Some(Zoomed::Panel(Terminal)));
+        assert!(ws.close_active_dock());
+        assert_eq!(ws.focus(), Focus::Panel(Project));
+
+        ws.toggle_panel(Terminal);
+        ws.toggle_dock(Left);
+        assert_eq!(ws.focus(), Focus::Panel(Project));
+
+        // When all left panels are shown side-by-side (Terminal -> Git -> Project -> Center),
+        // closing zoomed terminal focuses Git immediately to its right.
+        let mut ws = workspace();
+        ws.toggle_show_all_left_panels();
+        ws.focus_panel(Terminal);
+        ws.toggle_zoom();
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.visible_panel(Left), Some(Git));
+        assert_eq!(ws.focus(), Focus::Panel(Git));
+        assert_eq!(ws.zoomed(), None);
+
+        // When file explorer is closed, next pane to the right is Center.
+        let mut ws = workspace();
+        ws.toggle_panel(Terminal);
+        ws.toggle_zoom();
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.focus(), Focus::Center);
+
+        // When file explorer is on the far right (right_dock_inner_left = false),
+        // Center sits immediately to the right of Terminal.
+        let mut ws = workspace();
+        ws.toggle_right_dock_inner_left();
+        ws.open_panel(Project);
+        ws.toggle_panel(Terminal);
+        ws.toggle_zoom();
+        ws.toggle_panel(Terminal);
+        assert_eq!(ws.focus(), Focus::Center);
+
+        // Unzoomed terminal closing still returns focus to the centre.
+        let mut ws = workspace();
+        ws.open_panel(Project);
+        ws.toggle_panel(Terminal);
+        ws.toggle_panel(Terminal);
         assert_eq!(ws.focus(), Focus::Center);
     }
 }

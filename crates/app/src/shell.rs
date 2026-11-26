@@ -672,8 +672,10 @@ impl Shell {
                     "ToggleFocus" => {
                         let close = self.settings.close_panel_on_toggle;
                         self.with_workspace(|ws| {
-                            if !ws.toggle_panel_focus(id) && close {
-                                ws.close_panel(id);
+                            if close {
+                                ws.toggle_panel(id);
+                            } else {
+                                ws.toggle_panel_focus(id);
                             }
                         });
                     }
