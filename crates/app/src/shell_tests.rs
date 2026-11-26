@@ -207,7 +207,7 @@ fn the_fullscreen_terminal_flow() {
     assert_eq!(shell.workspace.zoomed(), Some(Zoomed::Panel(PanelId::Terminal)));
     let text = frame(&mut shell, 100, 20);
     assert!(text.lines().next().unwrap().starts_with(" [Terminal]"));
-    assert_eq!(shell.layout().panel(PanelId::Terminal), Some(Rect::new(0, 0, 100, 18)));
+    assert_eq!(shell.layout().panel(PanelId::Terminal), Some(Rect::new(0, 0, 100, 19)));
     // cmd-e: back to the editor, the zoomed terminal gets out of the way.
     act(&mut shell, "workspace::FocusCenterPane");
     assert_eq!(shell.workspace.zoomed(), None);
@@ -258,7 +258,7 @@ fn cmd_alt_e_focuses_the_editor_and_hides_every_dock() {
     act(&mut shell, "workspace::ToggleAllDocks");
     frame(&mut shell, 120, 20);
     assert!(shell.layout().docks.is_empty());
-    assert_eq!(shell.layout().center, Some(Rect::new(0, 0, 120, 18)));
+    assert_eq!(shell.layout().center, Some(Rect::new(0, 0, 120, 19)));
     act(&mut shell, "workspace::ToggleAllDocks");
     frame(&mut shell, 120, 20);
     assert_eq!(shell.layout().docks.len(), 2);
@@ -572,12 +572,14 @@ fn the_frame_has_every_part() {
     assert!(lines[0].contains("[ProjectPanel]"));
     assert!(lines[1].contains("b.rs"), "the active item draws below the tabs: {:?}", lines[1]);
     assert_eq!(lines[0].matches('│').count(), 2, "one divider each side of the centre");
-    assert!(lines[28].contains("main"), "the status bar is the row above the usage strip: {:?}", lines[28]);
-    assert_eq!(lines[29], " cld 7d ▰▰▱▱▱▱ 28%");
-    // Without the strip the status bar is the last row.
+    assert!(lines[29].contains("main"), "the status bar is the single bottom row: {:?}", lines[29]);
+    assert!(lines[29].contains("cld 7d ▰▰▱▱▱▱ 28%"), "usage renders inline on the bottom row: {:?}", lines[29]);
+    // Without the usage meter the status bar still sits on the last row without usage.
     shell.settings.usage_meter = false;
     let text = frame(&mut shell, 200, 30);
-    assert!(text.lines().nth(29).unwrap().contains("main"));
+    let last = text.lines().nth(29).unwrap();
+    assert!(last.contains("main"));
+    assert!(!last.contains("cld 7d"));
     for (w, h) in [(1, 1), (10, 3), (40, 8), (20, 40)] {
         frame(&mut shell, w, h);
     }

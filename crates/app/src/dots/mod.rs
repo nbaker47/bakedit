@@ -158,6 +158,28 @@ pub fn status_glyph_and_color(
     }
 }
 
+/// Columns [`render_inline_strip`] would use within `max_width`.
+pub fn inline_width(snapshot: &DotsSnapshot, max_width: u16, pulse_on: bool, theme: &Theme) -> u16 {
+    if max_width < 10 || snapshot.offline || snapshot.agents.is_empty() {
+        return 0;
+    }
+    let mut x = 0u16;
+    for (idx, agent) in snapshot.agents.iter().enumerate() {
+        let unread = snapshot.unread.contains(&agent.pane_id);
+        let (glyph, _) = status_glyph_and_color(agent.status, unread, pulse_on, theme);
+        let label = format!(" {glyph} {} ", agent.display_agent());
+        let w = ui::width(&label) as u16;
+        if x + w > max_width {
+            break;
+        }
+        x += w;
+        if idx + 1 < snapshot.agents.len() && x + 1 < max_width {
+            x += 1;
+        }
+    }
+    x
+}
+
 /// Draw a compact inline Agent Dots summary into a status-bar slice, returning columns used.
 pub fn render_inline_strip(
     canvas: &mut Canvas<'_>,

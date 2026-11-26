@@ -171,6 +171,8 @@ pub struct StatusBarHits {
     pub mode_pill: Option<Rect>,
     pub zoom_out: Option<Rect>,
     pub zoom_in: Option<Rect>,
+    /// Reserved slice immediately to the left of the zoom buttons for inline agent/usage strips.
+    pub inline_right: Option<Rect>,
 }
 
 /// Draw the status bar in `area` (one row): mode and git on the left, the message in the
@@ -178,6 +180,18 @@ pub struct StatusBarHits {
 /// right side gives way first, least important item first, so the mode and branch never get
 /// cut. Returns the clickable hit rects (mode pill and zoom in/out buttons).
 pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &Theme) -> StatusBarHits {
+    status_bar_with_inline(canvas, area, status, 0, theme)
+}
+
+/// [`status_bar`], reserving `inline_width` cells immediately to the left of the zoom buttons
+/// (when space permits) for inline agent/usage strips in the bottom-right corner.
+pub fn status_bar_with_inline(
+    canvas: &mut Canvas<'_>,
+    area: Rect,
+    status: &Status,
+    inline_width: u16,
+    theme: &Theme,
+) -> StatusBarHits {
     let mut hits = StatusBarHits::default();
     let bg = theme.status_bar_bg;
     canvas.fill(area, bg);
@@ -263,6 +277,17 @@ pub fn status_bar(canvas: &mut Canvas<'_>, area: Rect, status: &Status, theme: &
         canvas.text(out_x, y, " − ", btn_style, 3);
         hits.zoom_out = Some(Rect::new(out_x, y, 3, 1));
         right_edge = out_x.saturating_sub(2);
+    }
+
+    // Inline agent/usage strip anchored in the bottom-right corner, just left of the zoom buttons.
+    if inline_width > 0 {
+        let avail = right_edge.saturating_sub(left_end + 2);
+        let w = inline_width.min(avail);
+        if w >= 6 {
+            let inline_x = right_edge.saturating_sub(w);
+            hits.inline_right = Some(Rect::new(inline_x, y, w, 1));
+            right_edge = inline_x.saturating_sub(2);
+        }
     }
 
     // Items are separated by two spaces. Drop from the edge (the least important) until

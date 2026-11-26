@@ -420,6 +420,102 @@ fn vendor_width(vendor: &Vendor, detail: Detail, bar: u16, now: i64) -> u16 {
     width
 }
 
+/// Columns [`render_inline`] will use within `max_width` (without outer padding).
+pub fn inline_width(vendors: &[Vendor], max_width: u16, now: i64) -> u16 {
+    if max_width < 6 {
+        return 0;
+    }
+    if vendors.is_empty() {
+        return (ui::width("usage…") as u16).min(max_width);
+    }
+    const BAR: u16 = 6;
+    const GAP: u16 = 3;
+    let total = |detail: Detail| -> u16 {
+        vendors.iter().map(|v| vendor_width(v, detail, BAR, now)).sum::<u16>() + GAP * (vendors.len() as u16 - 1)
+    };
+    let detail = [Detail::Full, Detail::NoCountdown, Detail::NumbersOnly]
+        .into_iter()
+        .find(|d| total(*d) <= max_width)
+        .unwrap_or(Detail::NumbersOnly);
+
+    let mut used = 0u16;
+    for (index, vendor) in vendors.iter().enumerate() {
+        let w = vendor_width(vendor, detail, BAR, now);
+        let needed = if index > 0 { GAP + w } else { w };
+        if used + needed > max_width {
+            break;
+        }
+        used += needed;
+    }
+    used
+}
+
+/// Draw the usage summary inline inside a status-bar slice (no outer padding).
+pub fn render_inline(canvas: &mut Canvas<'_>, area: Rect, vendors: &[Vendor], now: i64, theme: &Theme) {
+    let bg = theme.status_bar_bg;
+    if area.width < 6 || area.height == 0 {
+        return;
+    }
+    let muted = Style::colors(theme.text_muted, bg);
+    if vendors.is_empty() {
+        canvas.text_truncated(area.x, area.y, "usage…", muted, area.width);
+        return;
+    }
+    const BAR: u16 = 6;
+    const GAP: u16 = 3;
+    let total = |detail: Detail| -> u16 {
+        vendors.iter().map(|v| vendor_width(v, detail, BAR, now)).sum::<u16>() + GAP * (vendors.len() as u16 - 1)
+    };
+    let detail = [Detail::Full, Detail::NoCountdown, Detail::NumbersOnly]
+        .into_iter()
+        .find(|d| total(*d) <= area.width)
+        .unwrap_or(Detail::NumbersOnly);
+
+    let mut x = area.x;
+    let right = area.right();
+    for (index, vendor) in vendors.iter().enumerate() {
+        let width = vendor_width(vendor, detail, BAR, now);
+        if x + width > right {
+            break;
+        }
+        if index > 0 {
+            canvas.text(x - 2, area.y, "·", muted, 1);
+        }
+        x += canvas.text(x, area.y, &vendor.short, Style::colors(theme.text, bg).bold(), width);
+        if vendor.meters.is_empty() {
+            canvas.text(x + 1, area.y, "–", muted, 1);
+            x += 2;
+        }
+        for meter in &vendor.meters {
+            let color = level_color(meter.percent, theme);
+            x += 1;
+            x += canvas.text(x, area.y, &meter.window, muted, 4);
+            x += 1;
+            if detail != Detail::NumbersOnly {
+                let filled = ((meter.percent / 100.0) * BAR as f32).round() as u16;
+                let filled = if meter.percent > 0.0 { filled.max(1) } else { 0 }.min(BAR);
+                for cell in 0..BAR {
+                    let (glyph, style) = if cell < filled {
+                        ("▰", Style::colors(color, bg))
+                    } else {
+                        ("▱", Style::colors(theme.text_muted.lerp(bg, 0.5), bg))
+                    };
+                    canvas.put(x + cell, area.y, glyph, style);
+                }
+                x += BAR + 1;
+            }
+            x += canvas.text(x, area.y, &format!("{:.0}%", meter.percent), Style::colors(color, bg), 5);
+            if detail == Detail::Full {
+                if let Some(reset) = meter.reset_at {
+                    x += 1;
+                    x += canvas.text(x, area.y, &countdown(reset - now), muted, 8);
+                }
+            }
+        }
+        x += GAP;
+    }
+}
+
 /// Draw the usage strip in `area` (one row). Vendors that do not fit are dropped from the
 /// right after the detail has been reduced as far as it goes.
 pub fn render(canvas: &mut Canvas<'_>, area: Rect, vendors: &[Vendor], now: i64, theme: &Theme) {

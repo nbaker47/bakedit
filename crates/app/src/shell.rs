@@ -2057,26 +2057,48 @@ impl Shell {
             nav_layer: self.nav_layer,
             nerd_font: self.settings.icons == crate::settings::Icons::Nerd,
         };
-        self.status_hits = chrome::status_bar(&mut canvas, layout.status, &status, &self.theme);
-        if let Some(strip) = layout.usage {
-            let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            if self.settings.agent_dots {
-                if let Some(snap) = &self.dots {
-                    let dots_w = (strip.width / 2).min(60);
-                    let used = dots::render_inline_strip(
-                        &mut canvas,
-                        Rect::new(strip.x, strip.y, dots_w, strip.height),
-                        snap,
-                        self.dots_pulse,
-                        &self.theme,
-                    );
-                    let rest = Rect::new(strip.x + used, strip.y, strip.width.saturating_sub(used), strip.height);
-                    usage::render(&mut canvas, rest, &self.usage, now_unix, &self.theme);
-                } else {
-                    usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let max_inline = layout.status.width.saturating_sub(36);
+        let dots_snap = if self.settings.agent_dots { self.dots.as_ref() } else { None };
+        let dots_w = dots_snap
+            .map(|snap| dots::inline_width(snap, (max_inline / 2).min(60), self.dots_pulse, &self.theme))
+            .unwrap_or(0);
+        let usage_budget = max_inline.saturating_sub(dots_w + if dots_w > 0 { 2 } else { 0 });
+        let usage_w = if self.settings.usage_meter {
+            usage::inline_width(&self.usage, usage_budget, now_unix)
+        } else {
+            0
+        };
+        let inline_w = match (dots_w, usage_w) {
+            (0, 0) => 0,
+            (d, 0) => d,
+            (0, u) => u,
+            (d, u) => d + 2 + u,
+        };
+        self.status_hits = chrome::status_bar_with_inline(&mut canvas, layout.status, &status, inline_w, &self.theme);
+        if let Some(slot) = self.status_hits.inline_right {
+            let mut x = slot.x;
+            let mut rem = slot.width;
+            if let Some(snap) = dots_snap.filter(|_| dots_w > 0) {
+                let used = dots::render_inline_strip(
+                    &mut canvas,
+                    Rect::new(x, slot.y, dots_w.min(rem), slot.height),
+                    snap,
+                    self.dots_pulse,
+                    &self.theme,
+                );
+                x += used;
+                rem = rem.saturating_sub(used);
+                if usage_w > 0 && rem >= 2 {
+                    x += 2;
+                    rem = rem.saturating_sub(2);
                 }
-            } else {
-                usage::render(&mut canvas, strip, &self.usage, now_unix, &self.theme);
+            }
+            if self.settings.usage_meter && usage_w > 0 && rem >= 6 {
+                usage::render_inline(&mut canvas, Rect::new(x, slot.y, rem, slot.height), &self.usage, now_unix, &self.theme);
             }
         }
 
