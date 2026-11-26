@@ -664,6 +664,106 @@ fn move_pane_in_a_single_pane_tab_does_nothing() {
     assert_eq!(session.tree(&a), "a");
 }
 
+#[test]
+fn move_pane_crosses_between_tabs_and_workspaces() {
+    let Some(mut session) = Session::open() else {
+        return;
+    };
+    let a = session.workspace("a");
+    let b = session.split(&a, "right", "b");
+    let c = session.tab(&a.workspace, "c");
+    let d = session.workspace("d");
+
+    // Moving b right at the right edge of tab 1 crosses into tab 2 alongside c.
+    session.focus(&b);
+    assert_eq!(
+        move_pane(&session.client, Direction::Right).unwrap(),
+        MoveOutcome::MovedToTab {
+            tab_id: c.tab.clone(),
+            pane_id: b.pane.clone(),
+        }
+    );
+    assert_eq!(session.tree(&a), "a");
+    assert_eq!(session.tree(&c), "(c |0.5 b)");
+    assert_eq!(session.focused(), "b");
+    assert_eq!(
+        move_pane(&session.client, Direction::Right).unwrap(),
+        MoveOutcome::Unchanged,
+        "already in the last tab"
+    );
+
+    // Moving b left swaps past c, then crosses back into tab 1 alongside a.
+    assert_eq!(
+        move_pane(&session.client, Direction::Left).unwrap(),
+        MoveOutcome::Swapped {
+            with_pane_id: c.pane.clone(),
+        }
+    );
+    assert_eq!(session.tree(&c), "(b |0.5 c)");
+    assert_eq!(
+        move_pane(&session.client, Direction::Left).unwrap(),
+        MoveOutcome::MovedToTab {
+            tab_id: a.tab.clone(),
+            pane_id: b.pane.clone(),
+        }
+    );
+    assert_eq!(session.tree(&a), "(a |0.5 b)");
+    assert_eq!(session.focused(), "b");
+
+    // Moving b down first turns the horizontal split into a stack, then crosses into workspace d.
+    assert_eq!(
+        move_pane(&session.client, Direction::Down).unwrap(),
+        MoveOutcome::Reoriented {
+            beside_pane_id: a.pane.clone(),
+        }
+    );
+    assert_eq!(session.tree(&a), "(a /0.5 b)");
+    let moved = move_pane(&session.client, Direction::Down).unwrap();
+    let MoveOutcome::MovedToWorkspace {
+        workspace_id,
+        tab_id,
+        pane_id,
+    } = moved
+    else {
+        panic!("expected MovedToWorkspace, got {moved:?}");
+    };
+    assert_eq!(workspace_id, d.workspace);
+    assert_eq!(tab_id, d.tab);
+    assert_ne!(pane_id, b.pane, "cross-workspace move assigns a new pane id");
+    session.names.insert(pane_id.clone(), "b_moved".into());
+    assert_eq!(session.tree(&d), "(d /0.5 b_moved)");
+    assert_eq!(session.focused(), "b_moved");
+
+    // Already in the last workspace: down does nothing.
+    assert_eq!(
+        move_pane(&session.client, Direction::Down).unwrap(),
+        MoveOutcome::Unchanged
+    );
+
+    // Moving up swaps above d, then crosses back into workspace a's active tab.
+    assert_eq!(
+        move_pane(&session.client, Direction::Up).unwrap(),
+        MoveOutcome::Swapped {
+            with_pane_id: d.pane.clone(),
+        }
+    );
+    assert_eq!(session.tree(&d), "(b_moved /0.5 d)");
+    let moved_back = move_pane(&session.client, Direction::Up).unwrap();
+    let MoveOutcome::MovedToWorkspace {
+        workspace_id,
+        tab_id,
+        pane_id,
+    } = moved_back
+    else {
+        panic!("expected MovedToWorkspace, got {moved_back:?}");
+    };
+    assert_eq!(workspace_id, a.workspace);
+    assert_eq!(tab_id, a.tab);
+    session.names.insert(pane_id, "b_back".into());
+    assert_eq!(session.tree(&a), "(a /0.5 b_back)");
+    assert_eq!(session.focused(), "b_back");
+}
+
 // ---- collapse ----------------------------------------------------------------------------
 
 #[test]
@@ -1492,10 +1592,8 @@ fn move_pane_matches_the_move_script() {
     let Some(scripts) = Scripts::find(&session) else {
         return;
     };
-    // Two tabs with the same three panes; the script works on the first, this crate on the
-    // second, and the pictures are compared with the panes called by the same names.
-    let theirs = three_panes(&mut session, "");
-    let ours = three_panes(&mut session, "");
+    // Run the script on a lone workspace first, close it, then run this crate on an identical
+    // lone workspace so neither has a second workspace to cross into during intra-tab steps.
     use Direction::{Down, Left, Right, Up};
     // Each step: which pane to focus (by name), then the direction to move it.
     let steps = [
@@ -1519,10 +1617,19 @@ fn move_pane_matches_the_move_script() {
         "b" => set.b.clone(),
         _ => set.c.clone(),
     };
-    for (step, (name, direction)) in steps.into_iter().enumerate() {
+
+    let theirs = three_panes(&mut session, "");
+    let mut expected = Vec::with_capacity(steps.len());
+    for (name, direction) in steps {
         session.focus(&pick(&theirs, name));
         scripts.run("herdr-move", &[direction.as_str()]);
-        let script = (session.tree(&theirs.a), session.focused());
+        expected.push((session.tree(&theirs.a), session.focused()));
+    }
+    session.call("workspace.close", json!({"workspace_id": theirs.a.workspace}));
+    session.workspaces.retain(|id| id != &theirs.a.workspace);
+
+    let ours = three_panes(&mut session, "");
+    for (step, ((name, direction), script)) in steps.into_iter().zip(expected).enumerate() {
         session.focus(&pick(&ours, name));
         let outcome = move_pane(&session.client, direction).unwrap();
         let crate_ = (session.tree(&ours.a), session.focused());
