@@ -8,13 +8,12 @@
 use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::Cursor as IoCursor;
 use std::path::{Path, PathBuf};
 
 use bakedit_core::{Action, Key, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb};
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::imageops::FilterType;
-use image::{ColorType, DynamicImage, GenericImageView, ImageEncoder, ImageFormat, RgbaImage};
+use image::{ColorType, DynamicImage, GenericImageView, ImageEncoder, RgbaImage};
 use ratatui::layout::Rect;
 
 use crate::chrome::Tab;
@@ -27,8 +26,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 ];
 
 const KITTY_IMAGE_ID: u32 = 42;
-const MAX_RAW_PNG_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ENCODED_DIM: u32 = 2400;
+const MAX_ENCODED_DIM: u32 = 4096;
 
 /// Cache key identifying the exact image, viewport, and view transform currently shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +35,8 @@ pub struct KittyImageKey {
     pub revision: u64,
     pub rect: Rect,
     pub state_hash: u64,
-    pub cell_px: (u16, u16),
+    /// Cell dimensions in hundredths of a pixel `(cw * 100, ch * 100)`.
+    pub cell_px: (u32, u32),
 }
 
 /// Ready-to-transmit Kitty Graphics Protocol placement for the active image tab.
@@ -76,20 +75,29 @@ pub fn kitty_graphics_supported() -> bool {
     false
 }
 
-/// Pixel dimensions of one terminal cell `(width_px, height_px)` via `TIOCGWINSZ`.
-pub fn terminal_cell_pixels() -> (u16, u16) {
+/// Pixel dimensions of one terminal cell `(width_px, height_px)` via `TIOCGWINSZ`,
+/// preserved in floating point to avoid integer-division truncation on HiDPI screens.
+pub fn terminal_cell_pixels() -> (f32, f32) {
     #[cfg(unix)]
     {
         let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: TIOCGWINSZ writes terminal dimensions into the valid stack `winsize` struct.
         let rc = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
         if rc == 0 && ws.ws_col > 0 && ws.ws_row > 0 && ws.ws_xpixel > 0 && ws.ws_ypixel > 0 {
-            let cw = (ws.ws_xpixel / ws.ws_col).max(4);
-            let ch = (ws.ws_ypixel / ws.ws_row).max(4);
+            let cw = (ws.ws_xpixel as f32 / ws.ws_col as f32).max(4.0);
+            let ch = (ws.ws_ypixel as f32 / ws.ws_row as f32).max(4.0);
             return (cw, ch);
         }
     }
-    (10, 20)
+    (10.0, 20.0)
+}
+
+/// Convert floating-point cell pixel dimensions into a stable cache-key tuple.
+pub fn cell_px_key(cell_px: (f32, f32)) -> (u32, u32) {
+    (
+        (cell_px.0.max(4.0) * 100.0).round() as u32,
+        (cell_px.1.max(4.0) * 100.0).round() as u32,
+    )
 }
 
 /// Escape sequence that removes bakedit's active Kitty graphics image.
@@ -156,8 +164,6 @@ pub struct ImageViewer {
     width: u32,
     height: u32,
     pixels: RgbaImage,
-    /// Original PNG bytes when the file is already a reasonably-sized PNG (fast path for Fit).
-    raw_png: Option<Vec<u8>>,
     /// `None` = fit to viewport; `Some(mult)` = zoom multiplier relative to Fit (`1.0` = Fit).
     zoom: Option<f32>,
     /// Pan offset in source image pixels when zoomed in.
@@ -181,18 +187,15 @@ impl ImageViewer {
     pub fn open(path: &Path) -> Result<ImageViewer, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let file_size = bytes.len() as u64;
-        let is_png = bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() <= MAX_RAW_PNG_BYTES;
         let img = image::load_from_memory(&bytes)
             .map_err(|e| format!("could not decode image {}: {e}", path.display()))?;
-        let raw_png = if is_png { Some(bytes) } else { None };
-        Ok(Self::from_dynamic(path.to_path_buf(), file_size, img, raw_png, kitty_graphics_supported()))
+        Ok(Self::from_dynamic(path.to_path_buf(), file_size, img, kitty_graphics_supported()))
     }
 
     fn from_dynamic(
         path: PathBuf,
         file_size: u64,
         img: DynamicImage,
-        raw_png: Option<Vec<u8>>,
         use_kitty_graphics: bool,
     ) -> ImageViewer {
         let (width, height) = img.dimensions();
@@ -204,7 +207,6 @@ impl ImageViewer {
             width,
             height,
             pixels,
-            raw_png,
             zoom: None,
             pan_x: 0.0,
             pan_y: 0.0,
@@ -217,14 +219,12 @@ impl ImageViewer {
 
     fn reload(&mut self) {
         if let Ok(bytes) = std::fs::read(&self.path) {
-            let is_png = bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() <= MAX_RAW_PNG_BYTES;
             if let Ok(img) = image::load_from_memory(&bytes) {
                 let (w, h) = img.dimensions();
                 self.file_size = bytes.len() as u64;
                 self.width = w;
                 self.height = h;
                 self.pixels = img.to_rgba8();
-                self.raw_png = if is_png { Some(bytes) } else { None };
                 self.revision = self.revision.wrapping_add(1);
                 self.cached_placement = None;
                 self.clamp_pan();
@@ -233,43 +233,47 @@ impl ImageViewer {
     }
 
     /// Build or return the cached Kitty Graphics placement for the last rendered viewport.
-    pub fn kitty_placement(&mut self, cell_px: (u16, u16)) -> Option<KittyImagePlacement> {
+    ///
+    /// Resamples to exact 1:1 physical display pixels with Lanczos3 (or nearest-neighbor
+    /// when upscaling small pixel art) and centers on an aspect-preserving cell canvas so
+    /// the host terminal never blurs or stretches the image.
+    pub fn kitty_placement(&mut self, cell_px: (f32, f32)) -> Option<KittyImagePlacement> {
         if !self.use_kitty_graphics || self.last_viewport.width < 2 || self.last_viewport.height < 2 {
             return None;
         }
         let vp = self.last_viewport;
-        let cw = cell_px.0.max(4) as f32;
-        let ch = cell_px.1.max(4) as f32;
+        let cw = cell_px.0.max(4.0);
+        let ch = cell_px.1.max(4.0);
         let vp_px_w = vp.width as f32 * cw;
         let vp_px_h = vp.height as f32 * ch;
         let fit_scale = (vp_px_w / self.width.max(1) as f32).min(vp_px_h / self.height.max(1) as f32);
 
-        let (place_rect, crop_rect) = match self.zoom {
+        let (place_rect, disp_w, disp_h, crop_rect) = match self.zoom {
             None => {
                 let disp_w = (self.width as f32 * fit_scale).max(1.0);
                 let disp_h = (self.height as f32 * fit_scale).max(1.0);
-                let cols = (disp_w / cw).round().clamp(1.0, vp.width as f32) as u16;
-                let rows = (disp_h / ch).round().clamp(1.0, vp.height as f32) as u16;
+                let cols = (disp_w / cw).ceil().clamp(1.0, vp.width as f32) as u16;
+                let rows = (disp_h / ch).ceil().clamp(1.0, vp.height as f32) as u16;
                 let col = vp.x + (vp.width.saturating_sub(cols)) / 2;
                 let row = vp.y + (vp.height.saturating_sub(rows)) / 2;
-                (Rect::new(col, row, cols, rows), None)
+                (Rect::new(col, row, cols, rows), disp_w, disp_h, None)
             }
             Some(mult) => {
                 let scale = (fit_scale * mult).max(0.01);
                 let disp_w = (self.width as f32 * scale).min(vp_px_w).max(1.0);
                 let disp_h = (self.height as f32 * scale).min(vp_px_h).max(1.0);
-                let cols = (disp_w / cw).round().clamp(1.0, vp.width as f32) as u16;
-                let rows = (disp_h / ch).round().clamp(1.0, vp.height as f32) as u16;
+                let cols = (disp_w / cw).ceil().clamp(1.0, vp.width as f32) as u16;
+                let rows = (disp_h / ch).ceil().clamp(1.0, vp.height as f32) as u16;
                 let col = vp.x + (vp.width.saturating_sub(cols)) / 2;
                 let row = vp.y + (vp.height.saturating_sub(rows)) / 2;
 
-                let src_w = ((cols as f32 * cw) / scale).round().clamp(1.0, self.width as f32) as u32;
-                let src_h = ((rows as f32 * ch) / scale).round().clamp(1.0, self.height as f32) as u32;
+                let src_w = (disp_w / scale).round().clamp(1.0, self.width as f32) as u32;
+                let src_h = (disp_h / scale).round().clamp(1.0, self.height as f32) as u32;
                 let cx = self.width as f32 * 0.5 + self.pan_x;
                 let cy = self.height as f32 * 0.5 + self.pan_y;
                 let sx = (cx - src_w as f32 * 0.5).round().clamp(0.0, self.width.saturating_sub(src_w) as f32) as u32;
                 let sy = (cy - src_h as f32 * 0.5).round().clamp(0.0, self.height.saturating_sub(src_h) as f32) as u32;
-                (Rect::new(col, row, cols, rows), Some((sx, sy, src_w, src_h)))
+                (Rect::new(col, row, cols, rows), disp_w, disp_h, Some((sx, sy, src_w, src_h)))
             }
         };
 
@@ -282,7 +286,7 @@ impl ImageViewer {
             revision: self.revision,
             rect: place_rect,
             state_hash: h.finish(),
-            cell_px,
+            cell_px: cell_px_key(cell_px),
         };
         if let Some(cached) = &self.cached_placement {
             if cached.key == key {
@@ -290,18 +294,19 @@ impl ImageViewer {
             }
         }
 
-        let png = if crop_rect.is_none() {
-            if let Some(raw) = &self.raw_png {
-                raw.clone()
-            } else {
-                encode_png(&self.pixels, MAX_ENCODED_DIM)?
+        let canvas_w = ((place_rect.width as f32 * cw).round() as u32).clamp(1, MAX_ENCODED_DIM);
+        let canvas_h = ((place_rect.height as f32 * ch).round() as u32).clamp(1, MAX_ENCODED_DIM);
+        let target_w = (disp_w.round() as u32).clamp(1, canvas_w);
+        let target_h = (disp_h.round() as u32).clamp(1, canvas_h);
+
+        let frame = match crop_rect {
+            None => render_hq_frame(&self.pixels, target_w, target_h, canvas_w, canvas_h),
+            Some((sx, sy, sw, sh)) => {
+                let sub = image::imageops::crop_imm(&self.pixels, sx, sy, sw, sh).to_image();
+                render_hq_frame(&sub, target_w, target_h, canvas_w, canvas_h)
             }
-        } else if let Some((sx, sy, sw, sh)) = crop_rect {
-            let sub = image::imageops::crop_imm(&self.pixels, sx, sy, sw, sh).to_image();
-            encode_png(&sub, MAX_ENCODED_DIM)?
-        } else {
-            return None;
         };
+        let png = encode_fast_png(&frame)?;
 
         let placement = KittyImagePlacement { key, rect: place_rect, png };
         self.cached_placement = Some(placement.clone());
@@ -392,15 +397,25 @@ pub fn encode_fast_png(rgba: &RgbaImage) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn encode_png(rgba: &RgbaImage, max_dim: u32) -> Option<Vec<u8>> {
-    let dyn_img = if rgba.width() > max_dim || rgba.height() > max_dim {
-        DynamicImage::ImageRgba8(rgba.clone()).resize(max_dim, max_dim, FilterType::Triangle)
+/// Resample `src` to exact `(target_w, target_h)` using Lanczos3 (or nearest-neighbor for
+/// small pixel-art upscales) and center it on an exact `(canvas_w, canvas_h)` RGBA frame
+/// so Kitty displays it at 1:1 physical screen pixels without bilinear blurring or stretch.
+fn render_hq_frame(src: &RgbaImage, target_w: u32, target_h: u32, canvas_w: u32, canvas_h: u32) -> RgbaImage {
+    let resized = if src.width() == target_w && src.height() == target_h {
+        src.clone()
     } else {
-        DynamicImage::ImageRgba8(rgba.clone())
+        let is_small_pixel_art = src.width().max(src.height()) < 128 && (target_w > src.width() || target_h > src.height());
+        let filter = if is_small_pixel_art { FilterType::Nearest } else { FilterType::Lanczos3 };
+        image::imageops::resize(src, target_w, target_h, filter)
     };
-    let mut out = Vec::new();
-    dyn_img.write_to(&mut IoCursor::new(&mut out), ImageFormat::Png).ok()?;
-    Some(out)
+    if target_w == canvas_w && target_h == canvas_h {
+        return resized;
+    }
+    let mut canvas = RgbaImage::from_pixel(canvas_w, canvas_h, image::Rgba([0, 0, 0, 0]));
+    let ox = ((canvas_w - target_w) / 2) as i64;
+    let oy = ((canvas_h - target_h) / 2) as i64;
+    image::imageops::replace(&mut canvas, &resized, ox, oy);
+    canvas
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -663,7 +678,6 @@ mod tests {
             PathBuf::from("/tmp/sample.png"),
             128,
             DynamicImage::ImageRgba8(rgba),
-            None,
             false,
         );
         let harness = Harness::new("/tmp");
@@ -692,7 +706,6 @@ mod tests {
             PathBuf::from("/tmp/banner.png"),
             1024,
             DynamicImage::ImageRgba8(rgba),
-            None,
             true,
         );
         let harness = Harness::new("/tmp");
@@ -702,9 +715,14 @@ mod tests {
             let mut canvas = Canvas::new(&mut buf, area);
             viewer.render(&mut canvas, area, &harness.render_cx(true));
         }
-        let placement = viewer.kitty_placement((10, 20)).expect("kitty placement");
+        let placement = viewer.kitty_placement((10.0, 20.0)).expect("kitty placement");
         assert!(placement.png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(placement.rect.x >= 10 && placement.rect.y >= 3);
+        let decoded = image::load_from_memory(&placement.png).expect("valid png");
+        assert_eq!(
+            decoded.dimensions(),
+            (placement.rect.width as u32 * 10, placement.rect.height as u32 * 20)
+        );
         let seq = String::from_utf8(encode_kitty_graphics(&placement)).unwrap();
         assert!(seq.contains("\x1b_Ga=T,f=100,i=42,"));
         assert!(seq.contains(",C=1,q=2,"));

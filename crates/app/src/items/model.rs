@@ -21,15 +21,18 @@ use ratatui::layout::Rect;
 
 use crate::chrome::Tab;
 use crate::icons::file_icon;
-use crate::items::image::{encode_fast_png, kitty_graphics_supported, KittyImageKey, KittyImagePlacement};
+use crate::items::image::{cell_px_key, encode_fast_png, kitty_graphics_supported, KittyImageKey, KittyImagePlacement};
 use crate::ui::{self, Canvas, Style};
 use crate::view::{Context, Cursor, Cx, Effect, FsChange, Item, ItemStatus, RenderCx, View};
 
 const MODEL_EXTENSIONS: &[&str] = &["glb", "gltf", "obj"];
 
-/// Cap CPU rasterizer resolution so interactive orbit stays responsive.
-const MAX_RENDER_W: u32 = 840;
-const MAX_RENDER_H: u32 = 640;
+/// Full native HiDPI viewport cap for the 3D rasterizer (up to 4K).
+const MAX_RENDER_W: u32 = 3840;
+const MAX_RENDER_H: u32 = 2160;
+/// Cap for the 2x2 SSAA supersampled internal render buffer when settled.
+const MAX_SSAA_W: u32 = 4096;
+const MAX_SSAA_H: u32 = 3072;
 
 const DEFAULT_YAW: f32 = 0.55;
 const DEFAULT_PITCH: f32 = 0.18;
@@ -238,6 +241,10 @@ impl ModelViewer {
         self.distance = (self.distance * factor).clamp(0.55, 12.0);
     }
 
+    fn is_interactive(&self) -> bool {
+        self.drag.is_some() || self.auto_spin
+    }
+
     fn state_hash(&self, bg: Rgb) -> u64 {
         let mut h = DefaultHasher::new();
         self.yaw.to_bits().hash(&mut h);
@@ -248,6 +255,7 @@ impl ModelViewer {
         self.shading.hash(&mut h);
         self.wireframe_overlay.hash(&mut h);
         self.show_grid.hash(&mut h);
+        self.is_interactive().hash(&mut h);
         bg.r.hash(&mut h);
         bg.g.hash(&mut h);
         bg.b.hash(&mut h);
@@ -255,7 +263,10 @@ impl ModelViewer {
     }
 
     /// Build or return the cached Kitty Graphics placement for the last rendered viewport.
-    pub fn kitty_placement(&mut self, cell_px: (u16, u16)) -> Option<KittyImagePlacement> {
+    ///
+    /// Renders at full native HiDPI viewport pixels (up to 4K), with 2×2 supersampled
+    /// anti-aliasing (SSAA) whenever settled and fast 1× native resolution while orbiting.
+    pub fn kitty_placement(&mut self, cell_px: (f32, f32)) -> Option<KittyImagePlacement> {
         if !self.use_kitty_graphics || self.last_viewport.width < 2 || self.last_viewport.height < 2 {
             return None;
         }
@@ -265,7 +276,7 @@ impl ModelViewer {
             revision: self.revision,
             rect: vp,
             state_hash: self.state_hash(self.last_bg),
-            cell_px,
+            cell_px: cell_px_key(cell_px),
         };
         if let Some(cached) = &self.cached_placement {
             if cached.key == key {
@@ -273,15 +284,23 @@ impl ModelViewer {
             }
         }
 
-        let raw_w = (vp.width as u32 * cell_px.0.max(4) as u32).max(64);
-        let raw_h = (vp.height as u32 * cell_px.1.max(4) as u32).max(64);
+        let raw_w = ((vp.width as f32 * cell_px.0.max(4.0)).round() as u32).max(64);
+        let raw_h = ((vp.height as f32 * cell_px.1.max(4.0)).round() as u32).max(64);
         let scale = (MAX_RENDER_W as f32 / raw_w as f32)
             .min(MAX_RENDER_H as f32 / raw_h as f32)
             .min(1.0);
         let render_w = ((raw_w as f32 * scale).round() as u32).max(32);
         let render_h = ((raw_h as f32 * scale).round() as u32).max(32);
 
-        let img = self.render_rgba(render_w, render_h, self.last_bg);
+        let ssaa = !self.is_interactive()
+            && render_w.saturating_mul(2) <= MAX_SSAA_W
+            && render_h.saturating_mul(2) <= MAX_SSAA_H;
+        let img = if ssaa {
+            let hi = self.render_rgba(render_w * 2, render_h * 2, self.last_bg);
+            downsample_2x_linear(&hi)
+        } else {
+            self.render_rgba(render_w, render_h, self.last_bg)
+        };
         let png = encode_fast_png(&img)?;
         let placement = KittyImagePlacement { key, rect: vp, png };
         self.cached_placement = Some(placement.clone());
@@ -1003,14 +1022,57 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
     let wf = w as f32;
     let hf = h as f32;
 
+    if cam.shading == ShadingMode::Wireframe {
+        let wire_col = [140u8, 210, 255];
+        for part in &scene.parts {
+            let proj_verts: Vec<Option<ScreenVert>> = part
+                .vertices
+                .iter()
+                .map(|v| project_vertex(v, &vp, wf, hf))
+                .collect();
+            for &[i0, i1, i2] in &part.indices {
+                let (Some(v0), Some(v1), Some(v2)) = (
+                    proj_verts[i0 as usize],
+                    proj_verts[i1 as usize],
+                    proj_verts[i2 as usize],
+                ) else {
+                    continue;
+                };
+                if edge_fn(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y).abs() < 1e-4 {
+                    continue;
+                }
+                draw_line_3d(v0, v1, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
+                draw_line_3d(v1, v2, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
+                draw_line_3d(v2, v0, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
+            }
+        }
+        return RgbaImage::from_raw(width.max(1), height.max(1), color_buf)
+            .unwrap_or_else(|| RgbaImage::new(width.max(1), height.max(1)));
+    }
+
+    // Pre-project and collect visible triangles once so worker threads rasterize in parallel.
+    struct ProjectedTri {
+        v0: ScreenVert,
+        v1: ScreenVert,
+        v2: ScreenVert,
+        inv_area: f32,
+        flip_normal: bool,
+        min_x: usize,
+        max_x: usize,
+        min_y: usize,
+        max_y: usize,
+        base_color: [f32; 3],
+        texture_idx: Option<usize>,
+    }
+
+    let mut tris = Vec::with_capacity(scene.triangle_count);
     for part in &scene.parts {
-        let tex = part.texture_idx.and_then(|i| scene.textures.get(i));
         let proj_verts: Vec<Option<ScreenVert>> = part
             .vertices
             .iter()
             .map(|v| project_vertex(v, &vp, wf, hf))
             .collect();
-
+        let base_color = [part.base_color[0], part.base_color[1], part.base_color[2]];
         for &[i0, i1, i2] in &part.indices {
             let (Some(v0), Some(v1), Some(v2)) = (
                 proj_verts[i0 as usize],
@@ -1019,23 +1081,13 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
             ) else {
                 continue;
             };
-
             let area = edge_fn(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
             if area.abs() < 1e-4 {
                 continue;
             }
-            if !part.double_sided && cam.shading != ShadingMode::Wireframe && area < 0.0 {
+            if !part.double_sided && area < 0.0 {
                 continue;
             }
-
-            if cam.shading == ShadingMode::Wireframe {
-                let wire_col = [140u8, 210, 255];
-                draw_line_3d(v0, v1, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
-                draw_line_3d(v1, v2, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
-                draw_line_3d(v2, v0, wire_col, w, h, &mut color_buf, &mut depth_buf, 0.0);
-                continue;
-            }
-
             let min_x = v0.x.min(v1.x).min(v2.x).floor().max(0.0) as usize;
             let max_x = v0.x.max(v1.x).max(v2.x).ceil().min(wf - 1.0) as usize;
             let min_y = v0.y.min(v1.y).min(v2.y).floor().max(0.0) as usize;
@@ -1043,14 +1095,54 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
             if min_x > max_x || min_y > max_y {
                 continue;
             }
+            tris.push(ProjectedTri {
+                v0,
+                v1,
+                v2,
+                inv_area: 1.0 / area,
+                flip_normal: area < 0.0,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                base_color,
+                texture_idx: part.texture_idx,
+            });
+        }
+    }
 
-            let inv_area = 1.0 / area;
-            let flip_normal = area < 0.0;
+    let num_threads = if h >= 128 && !tris.is_empty() {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16).min(h / 32).max(1)
+    } else {
+        1
+    };
+    let rows_per_band = h.div_ceil(num_threads);
+    let shading = cam.shading;
+    let textures = &scene.textures;
 
-            for py in min_y..=max_y {
+    let rasterize_band = |band_y0: usize, color_band: &mut [u8], depth_band: &mut [f32]| {
+        let band_rows = depth_band.len() / w;
+        if band_rows == 0 {
+            return;
+        }
+        let band_y1 = band_y0 + band_rows - 1;
+        for tri in &tris {
+            if tri.max_y < band_y0 || tri.min_y > band_y1 {
+                continue;
+            }
+            let y_start = tri.min_y.max(band_y0);
+            let y_end = tri.max_y.min(band_y1);
+            let tex = tri.texture_idx.and_then(|i| textures.get(i));
+            let v0 = tri.v0;
+            let v1 = tri.v1;
+            let v2 = tri.v2;
+            let inv_area = tri.inv_area;
+            let flip_normal = tri.flip_normal;
+
+            for py in y_start..=y_end {
                 let fy = py as f32 + 0.5;
-                let row_offset = py * w;
-                for px in min_x..=max_x {
+                let local_row = (py - band_y0) * w;
+                for px in tri.min_x..=tri.max_x {
                     let fx = px as f32 + 0.5;
                     let w0 = edge_fn(v1.x, v1.y, v2.x, v2.y, fx, fy) * inv_area;
                     if w0 < 0.0 {
@@ -1066,8 +1158,8 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
                     }
 
                     let z = w0 * v0.z + w1 * v1.z + w2 * v2.z;
-                    let idx = row_offset + px;
-                    if z >= depth_buf[idx] || z < 0.0 || z > 1.0 {
+                    let idx = local_row + px;
+                    if z >= depth_band[idx] || z < 0.0 || z > 1.0 {
                         continue;
                     }
 
@@ -1088,7 +1180,7 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
                         n = [-n[0], -n[1], -n[2]];
                     }
 
-                    let rgb = match cam.shading {
+                    let rgb = match shading {
                         ShadingMode::Normals => [
                             ((n[0] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
                             ((n[1] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
@@ -1099,9 +1191,9 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
                         }
                         ShadingMode::Shaded => {
                             let mut albedo = [
-                                part.base_color[0] * (b0 * v0.color[0] + b1 * v1.color[0] + b2 * v2.color[0]),
-                                part.base_color[1] * (b0 * v0.color[1] + b1 * v1.color[1] + b2 * v2.color[1]),
-                                part.base_color[2] * (b0 * v0.color[2] + b1 * v1.color[2] + b2 * v2.color[2]),
+                                tri.base_color[0] * (b0 * v0.color[0] + b1 * v1.color[0] + b2 * v2.color[0]),
+                                tri.base_color[1] * (b0 * v0.color[1] + b1 * v1.color[1] + b2 * v2.color[1]),
+                                tri.base_color[2] * (b0 * v0.color[2] + b1 * v1.color[2] + b2 * v2.color[2]),
                             ];
                             if let Some(t) = tex {
                                 let u = b0 * v0.uv[0] + b1 * v1.uv[0] + b2 * v2.uv[0];
@@ -1119,26 +1211,111 @@ fn render_scene(scene: &ModelScene, width: u32, height: u32, cam: CameraParams) 
                         ShadingMode::Wireframe => unreachable!(),
                     };
 
-                    depth_buf[idx] = z;
+                    depth_band[idx] = z;
                     let p = idx * 4;
-                    color_buf[p] = rgb[0];
-                    color_buf[p + 1] = rgb[1];
-                    color_buf[p + 2] = rgb[2];
-                    color_buf[p + 3] = 255;
+                    color_band[p] = rgb[0];
+                    color_band[p + 1] = rgb[1];
+                    color_band[p + 2] = rgb[2];
+                    color_band[p + 3] = 255;
                 }
             }
+        }
+    };
 
-            if cam.wireframe_overlay {
-                let wire_col = [40u8, 220, 210];
-                draw_line_3d(v0, v1, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
-                draw_line_3d(v1, v2, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
-                draw_line_3d(v2, v0, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
+    if num_threads == 1 {
+        rasterize_band(0, &mut color_buf, &mut depth_buf);
+    } else {
+        let color_chunk = rows_per_band * w * 4;
+        let depth_chunk = rows_per_band * w;
+        std::thread::scope(|s| {
+            for (band_idx, (color_band, depth_band)) in color_buf
+                .chunks_mut(color_chunk)
+                .zip(depth_buf.chunks_mut(depth_chunk))
+                .enumerate()
+            {
+                let y0 = band_idx * rows_per_band;
+                s.spawn(move || rasterize_band(y0, color_band, depth_band));
             }
+        });
+    }
+
+    if cam.wireframe_overlay {
+        let wire_col = [40u8, 220, 210];
+        for tri in &tris {
+            draw_line_3d(tri.v0, tri.v1, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
+            draw_line_3d(tri.v1, tri.v2, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
+            draw_line_3d(tri.v2, tri.v0, wire_col, w, h, &mut color_buf, &mut depth_buf, -0.0008);
         }
     }
 
     RgbaImage::from_raw(width.max(1), height.max(1), color_buf)
         .unwrap_or_else(|| RgbaImage::new(width.max(1), height.max(1)))
+}
+
+/// Downsample a 2×2 supersampled RGBA image in linear light for crisp anti-aliased edges.
+fn downsample_2x_linear(hi: &RgbaImage) -> RgbaImage {
+    let out_w = (hi.width() / 2).max(1) as usize;
+    let out_h = (hi.height() / 2).max(1) as usize;
+    let hi_w = hi.width() as usize;
+    let src = hi.as_raw();
+    let mut dst = vec![0u8; out_w * out_h * 4];
+
+    for y in 0..out_h {
+        let sy0 = y * 2 * hi_w;
+        let sy1 = (y * 2 + 1) * hi_w;
+        let dy = y * out_w;
+        for x in 0..out_w {
+            let i00 = (sy0 + x * 2) * 4;
+            let i10 = i00 + 4;
+            let i01 = (sy1 + x * 2) * 4;
+            let i11 = i01 + 4;
+
+            let mut acc = [0.0f32; 3];
+            for idx in [i00, i10, i01, i11] {
+                acc[0] += srgb_u8_to_linear(src[idx]);
+                acc[1] += srgb_u8_to_linear(src[idx + 1]);
+                acc[2] += srgb_u8_to_linear(src[idx + 2]);
+            }
+            let out = (dy + x) * 4;
+            dst[out] = linear_to_srgb_u8(acc[0] * 0.25);
+            dst[out + 1] = linear_to_srgb_u8(acc[1] * 0.25);
+            dst[out + 2] = linear_to_srgb_u8(acc[2] * 0.25);
+            dst[out + 3] = 255;
+        }
+    }
+    RgbaImage::from_raw(out_w as u32, out_h as u32, dst)
+        .unwrap_or_else(|| RgbaImage::new(out_w as u32, out_h as u32))
+}
+
+#[inline]
+fn srgb_u8_to_linear(v: u8) -> f32 {
+    let c = v as f32 * (1.0 / 255.0);
+    if c <= 0.04045 {
+        c * (1.0 / 12.92)
+    } else {
+        ((c + 0.055) * (1.0 / 1.055)).powf(2.4)
+    }
+}
+
+#[inline]
+fn srgb_to_linear(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.04045 {
+        c * (1.0 / 12.92)
+    } else {
+        ((c + 0.055) * (1.0 / 1.055)).powf(2.4)
+    }
+}
+
+#[inline]
+fn linear_to_srgb_u8(c: f32) -> u8 {
+    let c = c.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
 
 #[inline]
@@ -1150,11 +1327,16 @@ fn shade_lit(
     rim_dir: [f32; 3],
     view_dir: [f32; 3],
 ) -> [u8; 3] {
+    // Convert sRGB albedo into linear space for physically accurate shading.
+    let ar = srgb_to_linear(albedo[0]);
+    let ag = srgb_to_linear(albedo[1]);
+    let ab = srgb_to_linear(albedo[2]);
+
     // Hemisphere ambient.
     let hemi = (n[1] * 0.5 + 0.5).clamp(0.0, 1.0);
-    let amb_r = 0.16 + 0.14 * hemi;
-    let amb_g = 0.17 + 0.15 * hemi;
-    let amb_b = 0.20 + 0.16 * hemi;
+    let amb_r = 0.08 + 0.10 * hemi;
+    let amb_g = 0.09 + 0.11 * hemi;
+    let amb_b = 0.11 + 0.12 * hemi;
 
     // 3-point diffuse.
     let k = vec3_dot(n, key_dir).max(0.0);
@@ -1163,19 +1345,22 @@ fn shade_lit(
 
     // Subtle Blinn-Phong specular from key light.
     let half_v = vec3_normalize(vec3_add(key_dir, view_dir));
-    let spec = vec3_dot(n, half_v).max(0.0).powf(28.0) * 0.22;
+    let spec = vec3_dot(n, half_v).max(0.0).powf(36.0) * 0.18;
 
-    let lr = amb_r + k * 0.88 + f * 0.24 + r * 0.22;
-    let lg = amb_g + k * 0.85 + f * 0.28 + r * 0.24;
-    let lb = amb_b + k * 0.80 + f * 0.34 + r * 0.30;
+    let lr = amb_r + k * 0.92 + f * 0.24 + r * 0.22;
+    let lg = amb_g + k * 0.89 + f * 0.27 + r * 0.24;
+    let lb = amb_b + k * 0.84 + f * 0.32 + r * 0.29;
 
+    // Soft highlight rolloff (Reinhard-like shoulder) before converting back to sRGB.
+    let tone = |x: f32| x / (1.0 + x * 0.25);
     [
-        ((albedo[0] * lr + spec).clamp(0.0, 1.0) * 255.0) as u8,
-        ((albedo[1] * lg + spec).clamp(0.0, 1.0) * 255.0) as u8,
-        ((albedo[2] * lb + spec).clamp(0.0, 1.0) * 255.0) as u8,
+        linear_to_srgb_u8(tone(ar * lr + spec)),
+        linear_to_srgb_u8(tone(ag * lg + spec)),
+        linear_to_srgb_u8(tone(ab * lb + spec)),
     ]
 }
 
+/// Bilinear-filtered wrapped texture lookup.
 #[inline]
 fn sample_texture(tex: &RgbaImage, u: f32, v: f32) -> [f32; 4] {
     let w = tex.width();
@@ -1183,12 +1368,37 @@ fn sample_texture(tex: &RgbaImage, u: f32, v: f32) -> [f32; 4] {
     if w == 0 || h == 0 {
         return [1.0, 1.0, 1.0, 1.0];
     }
-    let uu = u.rem_euclid(1.0);
-    let vv = v.rem_euclid(1.0);
-    let x = ((uu * w as f32) as u32).min(w - 1);
-    let y = ((vv * h as f32) as u32).min(h - 1);
-    let p = tex.get_pixel(x, y).0;
-    [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
+    let uu = u.rem_euclid(1.0) * w as f32 - 0.5;
+    let vv = v.rem_euclid(1.0) * h as f32 - 0.5;
+    let x0 = uu.floor() as i32;
+    let y0 = vv.floor() as i32;
+    let fx = uu - x0 as f32;
+    let fy = vv - y0 as f32;
+
+    let wi = w as i32;
+    let hi = h as i32;
+    let rx0 = x0.rem_euclid(wi) as u32;
+    let rx1 = (x0 + 1).rem_euclid(wi) as u32;
+    let ry0 = y0.rem_euclid(hi) as u32;
+    let ry1 = (y0 + 1).rem_euclid(hi) as u32;
+
+    let p00 = tex.get_pixel(rx0, ry0).0;
+    let p10 = tex.get_pixel(rx1, ry0).0;
+    let p01 = tex.get_pixel(rx0, ry1).0;
+    let p11 = tex.get_pixel(rx1, ry1).0;
+
+    let w00 = (1.0 - fx) * (1.0 - fy);
+    let w10 = fx * (1.0 - fy);
+    let w01 = (1.0 - fx) * fy;
+    let w11 = fx * fy;
+    let inv = 1.0 / 255.0;
+
+    [
+        (p00[0] as f32 * w00 + p10[0] as f32 * w10 + p01[0] as f32 * w01 + p11[0] as f32 * w11) * inv,
+        (p00[1] as f32 * w00 + p10[1] as f32 * w10 + p01[1] as f32 * w01 + p11[1] as f32 * w11) * inv,
+        (p00[2] as f32 * w00 + p10[2] as f32 * w10 + p01[2] as f32 * w01 + p11[2] as f32 * w11) * inv,
+        (p00[3] as f32 * w00 + p10[3] as f32 * w10 + p01[3] as f32 * w01 + p11[3] as f32 * w11) * inv,
+    ]
 }
 
 fn draw_ground_grid(
@@ -1281,7 +1491,8 @@ fn draw_line_3d(
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let steps = dx.abs().max(dy.abs()).ceil() as i32;
-    if steps <= 0 || steps > 4096 {
+    let max_steps = (w + h).max(4096) as i32;
+    if steps <= 0 || steps > max_steps {
         return;
     }
     let inv = 1.0 / steps as f32;
@@ -1501,15 +1712,17 @@ mod tests {
             true,
         );
         viewer.last_viewport = Rect::new(2, 3, 40, 20);
-        let p1 = viewer.kitty_placement((10, 20)).expect("kitty placement");
+        let p1 = viewer.kitty_placement((10.0, 20.0)).expect("kitty placement");
         assert!(p1.png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let decoded = image::load_from_memory(&p1.png).expect("valid png");
+        assert_eq!((decoded.width(), decoded.height()), (400, 400));
         let seq = String::from_utf8(encode_kitty_graphics(&p1)).unwrap();
         assert!(seq.contains("a=T,f=100,i=42,c=40,r=20"));
 
         let old_yaw = viewer.yaw;
         viewer.orbit(0.25, 0.0);
         assert!((viewer.yaw - old_yaw).abs() > 0.1);
-        let p2 = viewer.kitty_placement((10, 20)).expect("updated placement");
+        let p2 = viewer.kitty_placement((10.0, 20.0)).expect("updated placement");
         assert_ne!(p1.key, p2.key);
     }
 }

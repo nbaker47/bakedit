@@ -1986,7 +1986,7 @@ impl Shell {
 
     /// Active Kitty Graphics Protocol image placement when the front tab is an HQ image
     /// or 3D model viewer and nothing (modal, picker, which-key, zoomed dock) covers the centre.
-    pub fn kitty_image_placement(&mut self, cell_px: (u16, u16)) -> Option<crate::items::image::KittyImagePlacement> {
+    pub fn kitty_image_placement(&mut self, cell_px: (f32, f32)) -> Option<crate::items::image::KittyImagePlacement> {
         if self.layout.center.is_none() || self.modal.is_some() || !self.which_key.is_empty() {
             return None;
         }
