@@ -35,6 +35,9 @@ pub struct WindowState {
     /// Last observed host window position and size.
     #[serde(default)]
     pub geometry: Option<WindowGeometry>,
+    /// Whether "toggle all left sidebars" (`workspace::ToggleAllLeftPanels`) was enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_all_left_panels: Option<bool>,
 }
 
 /// Path to the persisted window state file.
@@ -376,6 +379,7 @@ mod tests {
             version: VERSION,
             zoom_offset: 3,
             geometry: Some(WindowGeometry { x: 100, y: 50, width: 1600, height: 900, floating: true }),
+            show_all_left_panels: Some(true),
         };
         save(dir.path(), &state).unwrap();
         assert_eq!(load(dir.path()), state);

@@ -308,6 +308,11 @@ impl App {
         shell.zoom_offset = window_state.zoom_offset;
         window_state::spawn_restore(window_state.clone());
         open_session(&mut shell, &sessions_dir, options.restore);
+        if let Some(want) = window_state.show_all_left_panels {
+            if shell.workspace.is_showing_all_left_panels() != want {
+                shell.workspace.toggle_show_all_left_panels();
+            }
+        }
         for file in &options.files {
             shell.open_file_range(&file.path, file.line, file.end_line, file.column, false, true);
         }
@@ -561,6 +566,11 @@ impl App {
         self.update_nav_indicator();
         if self.dirty && self.session_deadline.is_none() {
             self.session_deadline = Some(Instant::now() + SESSION_DEBOUNCE);
+        }
+        let show_all_left = self.shell.workspace.is_showing_all_left_panels();
+        if self.window_state.show_all_left_panels != Some(show_all_left) {
+            self.window_state.show_all_left_panels = Some(show_all_left);
+            let _ = window_state::save(&self.state_dir, &self.window_state);
         }
         if self.shell.quit {
             self.quit = true;

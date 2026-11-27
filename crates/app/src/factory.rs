@@ -17,6 +17,7 @@ use crate::items::diff::ProjectDiff;
 use crate::items::image::ImageViewer;
 use crate::items::model::ModelViewer;
 use crate::items::search::ProjectSearch;
+use crate::items::video::VideoPlayer;
 use crate::picker::PickerItem;
 use crate::view::{Cx, Effect, Item, ItemFactory, PickerKind, PickerSource};
 
@@ -33,6 +34,9 @@ impl ItemFactory for AppFactory {
         }
         if ModelViewer::supports(path) {
             return ModelViewer::open(path).map(|item| Box::new(item) as Box<dyn Item>);
+        }
+        if VideoPlayer::supports(path) {
+            return VideoPlayer::open(path, cx).map(|item| Box::new(item) as Box<dyn Item>);
         }
         if AudioPlayer::supports(path) {
             return AudioPlayer::open(path, cx).map(|item| Box::new(item) as Box<dyn Item>);

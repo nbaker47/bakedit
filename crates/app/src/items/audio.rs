@@ -194,7 +194,9 @@ impl Drop for AudioPlayer {
     }
 }
 
-fn spawn_player(path: &Path, start_secs: f64) -> Result<Child, String> {
+/// Play the sound of `path` from `start_secs` through the first system player found
+/// (`ffplay`, `mpv`, then `afplay`/`pw-play`/`paplay`/`aplay`, which always start at 0).
+pub(crate) fn spawn_player(path: &Path, start_secs: f64) -> Result<Child, String> {
     let start_str = format!("{start_secs:.2}");
     if let Some(ffplay) = crate::format::which("ffplay") {
         let mut cmd = Command::new(ffplay);
