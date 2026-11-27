@@ -43,8 +43,19 @@ impl std::error::Error for FormatError {}
 
 /// Find `name` on `PATH`.
 pub fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| is_executable(candidate))
+    if let Some(path) = std::env::var_os("PATH") {
+        if let Some(found) = std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| is_executable(candidate)) {
+            return Some(found);
+        }
+    }
+    // GUI-launched macOS apps (Kitty, Ghostty, Finder) inherit a minimal PATH without Homebrew
+    // or user-local bin dirs; check standard locations as a fallback.
+    let mut fallbacks: Vec<PathBuf> = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+    if let Some(home) = dirs::home_dir() {
+        fallbacks.push(home.join(".local/bin"));
+        fallbacks.push(home.join(".cargo/bin"));
+    }
+    fallbacks.into_iter().map(|dir| dir.join(name)).find(|candidate| is_executable(candidate))
 }
 
 fn is_executable(path: &Path) -> bool {
