@@ -358,7 +358,8 @@ pub fn decide(args: &Args, facts: &Facts) -> Place {
 /// running `$EDITOR`. Such a bakedit runs here or in a new window it waits for
 /// (`open -W`), never in a running window. Only editing waits.
 pub fn waits(args: &Args, facts: &Facts) -> bool {
-    args.mode == Mode::Edit && args.wait.unwrap_or(facts.started_by_program)
+    let fire_and_forget = args.no_focus || args.highlight || args.speak.is_some();
+    args.mode == Mode::Edit && args.wait.unwrap_or(facts.started_by_program && !fire_and_forget)
 }
 
 /// Where to run after [`decide`] said [`Place::NewWindow`] and opening it failed with
