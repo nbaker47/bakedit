@@ -50,6 +50,7 @@ use crate::shell::{Modal, Request, Shell};
 use crate::themes;
 use crate::usage::UsageWatcher;
 use crate::view::CursorShape;
+use crate::window_state::{self, WindowState};
 use crate::workspace::{Focus, PanelId};
 
 /// How long the start of an escape sequence waits for the rest before it is read as Escape.
@@ -171,6 +172,10 @@ pub struct App {
     config: ConfigFiles,
     /// The session as last written, to skip writing the same again.
     saved_session: Option<String>,
+    /// Persisted host window zoom level and geometry.
+    window_state: WindowState,
+    /// Whether the host window was resized or unfocused since geometry was last captured.
+    window_geometry_dirty: bool,
     /// Colours reported by the host terminal via OSC 10/11/12/4 and CSI ? 997 n.
     terminal_palette: bakedit_core::TerminalPalette,
     /// Where the keyboard was after the last event, to notice it moving.
@@ -290,6 +295,7 @@ impl App {
         let nav_wanted = loaded.settings.nav_layer;
         let usage_meter = loaded.settings.usage_meter;
         let agent_dots = loaded.settings.agent_dots;
+        let window_state = window_state::load(&state_dir);
         let mut shell = build_shell(
             &options.root,
             (loaded.settings, loaded.theme),
@@ -299,6 +305,8 @@ impl App {
             &state_dir,
             &loaded.router,
         );
+        shell.zoom_offset = window_state.zoom_offset;
+        window_state::spawn_restore(window_state.clone());
         open_session(&mut shell, &sessions_dir, options.restore);
         for file in &options.files {
             shell.open_file(&file.path, file.line, file.column, false, true);
@@ -372,6 +380,8 @@ impl App {
             dots_pulse_deadline: Instant::now() + DOTS_PULSE,
             config: ConfigFiles::new(),
             saved_session: None,
+            window_state,
+            window_geometry_dirty: false,
             terminal_palette: bakedit_core::TerminalPalette::default(),
             cursor_shape: None,
             kitty_image_key: None,
@@ -386,6 +396,7 @@ impl App {
         let _ = app.screen.backend_mut().write_all(title.as_bytes());
         let result = app.event_loop();
         app.save_session();
+        window_state::capture_and_save_sync(&app.state_dir, &mut app.window_state);
         drop(app);
         host::restore();
         result
@@ -467,7 +478,10 @@ impl App {
                 self.escape_deadline = self.parser.has_pending().then(|| Instant::now() + ESCAPE_TIMEOUT);
             }
             AppEvent::InputClosed | AppEvent::Terminate => self.quit = true,
-            AppEvent::Resized => self.dirty = true,
+            AppEvent::Resized => {
+                self.dirty = true;
+                self.window_geometry_dirty = true;
+            }
             AppEvent::Wake => self.on_wake(),
             AppEvent::Ipc(request) => {
                 self.handle_ipc(request);
@@ -609,6 +623,7 @@ impl App {
                 ipc.touch_focus();
             }
         } else {
+            self.window_geometry_dirty = true;
             // Nothing held now will be reported released: let go of all of it.
             let releases = self.nav.reset();
             for key in releases {
@@ -786,6 +801,10 @@ impl App {
                 );
                 self.config.changed();
             }
+            Request::SaveZoomOffset(offset) => {
+                self.window_state.zoom_offset = offset;
+                window_state::spawn_capture_and_save(self.state_dir.clone(), self.window_state.clone());
+            }
             Request::ApplyOnboarding { agent_dots, theme } => {
                 self.shell.settings.theme = Some(theme.clone());
                 let (loaded_theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
@@ -884,6 +903,7 @@ impl App {
         shell.usage = usage;
         shell.nav_layer = self.shell.nav_layer;
         shell.cmd_keys = self.shell.cmd_keys;
+        shell.zoom_offset = self.shell.zoom_offset;
         open_session(&mut shell, &self.sessions_dir, true);
         self.shell = shell;
         self.saved_session = None;
@@ -903,6 +923,10 @@ impl App {
     /// Write the session if it changed since it was last written.
     fn save_session(&mut self) {
         self.session_deadline = None;
+        if self.window_geometry_dirty {
+            self.window_geometry_dirty = false;
+            window_state::spawn_capture_and_save(self.state_dir.clone(), self.window_state.clone());
+        }
         let current = session::capture(&self.shell);
         let Ok(text) = serde_json::to_string(&current) else { return };
         if self.saved_session.as_deref() == Some(text.as_str()) {

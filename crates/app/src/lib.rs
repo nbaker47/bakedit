@@ -38,6 +38,7 @@ pub mod ui;
 pub mod usage;
 pub mod view;
 pub mod window;
+pub mod window_state;
 pub mod workspace;
 
 #[cfg(test)]

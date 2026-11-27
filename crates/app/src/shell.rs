@@ -75,6 +75,8 @@ pub enum Request {
     ToggleAgentDots,
     /// Persist `project_panel.git_diff_on_select` to settings.json.
     SaveProjectPanelGitDiff(bool),
+    /// Persist the current terminal font-size zoom offset.
+    SaveZoomOffset(i32),
     /// Save onboarding choices (`agent_dots` + `theme`) and write the onboarded marker.
     ApplyOnboarding { agent_dots: bool, theme: String },
     /// Cancel onboarding (restoring any previewed theme) and write the onboarded marker.
@@ -114,6 +116,8 @@ pub struct Shell {
     /// bakedit's configuration folder, where `zed::OpenSettingsFile` and `zed::OpenKeymap`
     /// find (or start) the files: [`crate::settings::config_dir`] unless a test moves it.
     pub config_dir: PathBuf,
+    /// Current terminal font-size zoom offset in points (persisted across restarts).
+    pub zoom_offset: i32,
     panels: HashMap<PanelId, Box<dyn View>>,
     factory: Box<dyn ItemFactory>,
     source: Box<dyn PickerSource>,
@@ -200,6 +204,7 @@ impl Shell {
             which_key: Vec::new(),
             binding_hint: Box::new(|_| None),
             config_dir: crate::settings::config_dir(),
+            zoom_offset: 0,
             panels: HashMap::new(),
             factory,
             source,
@@ -745,7 +750,7 @@ impl Shell {
                         let msg = if enabled {
                             "File tree: git diff preview on"
                         } else {
-                            "File tree: git diff preview off"
+                            "File tree: editor preview on (git diff preview off)"
                         };
                         self.set_status(msg, false);
                     }
@@ -2230,31 +2235,21 @@ impl Shell {
     /// Adjust the host terminal's font size via Kitty remote control (`+1`, `-1`, or `0` to reset).
     fn adjust_font_size(&mut self, delta: &str) {
         let delta_owned = delta.to_string();
-        let listen_on = std::env::var("KITTY_LISTEN_ON").ok();
-        let kitty_pid = std::env::var("KITTY_PID").ok();
-        let target = listen_on.or_else(|| kitty_pid.map(|pid| format!("unix:/tmp/kitty-rc-{pid}")));
-        let msg = match delta {
-            "+1" => "Zoomed in",
-            "-1" => "Zoomed out",
-            _ => "Zoom reset",
-        };
+        let target = crate::window_state::kitty_socket();
         if let Some(sock) = target {
+            self.zoom_offset = crate::window_state::apply_zoom_delta(self.zoom_offset, delta);
+            self.requests.push(Request::SaveZoomOffset(self.zoom_offset));
             #[cfg(not(test))]
             std::thread::spawn(move || {
-                let run = |bin: &str| {
-                    std::process::Command::new(bin)
-                        .args(["@", "--to", &sock, "set-font-size", "--all", "--", &delta_owned])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                };
-                if run("kitty").is_err() {
-                    let _ = run("/Applications/kitty.app/Contents/MacOS/kitty");
-                }
+                let _ = crate::window_state::send_kitty_font_size(&sock, &delta_owned);
             });
             #[cfg(test)]
             let _ = (sock, delta_owned);
+            let msg = match delta {
+                "+1" => format!("Zoomed in ({:+})", self.zoom_offset),
+                "-1" => format!("Zoomed out ({:+})", self.zoom_offset),
+                _ => "Zoom reset".to_string(),
+            };
             self.set_status(msg, false);
         } else {
             self.set_status("Zoom requires Kitty remote control (Cmd+= / Cmd+-)", true);
