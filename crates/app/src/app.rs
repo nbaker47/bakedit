@@ -183,6 +183,8 @@ pub struct App {
     cursor_shape: Option<seq::CursorShape>,
     /// Last Kitty Graphics Protocol image transmitted to the host terminal.
     kitty_image_key: Option<crate::items::image::KittyImageKey>,
+    /// Background TTS playback owned by this window (for `--speak` / code-walkthrough).
+    speaker: crate::tts::Speaker,
     dirty: bool,
     quit: bool,
     // Dropped last: the screen restored after everything else is done with it.
@@ -354,6 +356,9 @@ impl App {
         if agent_dots {
             dots_overlay.sync_theme(&shell.theme);
         }
+        if let Err(error) = crate::skills::install_default(false) {
+            log::debug!("could not install bundled skills: {error}");
+        }
         if options.onboarding || onboarding::should_auto_open(&state_dir) {
             shell.open_onboarding();
         }
@@ -390,6 +395,7 @@ impl App {
             terminal_palette: bakedit_core::TerminalPalette::default(),
             cursor_shape: None,
             kitty_image_key: None,
+            speaker: crate::tts::Speaker::new(),
             dirty: true,
             quit: false,
             _host: host,
@@ -737,7 +743,7 @@ impl App {
 
     fn handle_ipc(&mut self, request: ipc::Request) {
         match request {
-            ipc::Request::Open { targets, focus } => {
+            ipc::Request::Open { targets, focus, speak } => {
                 let focus = focus.unwrap_or(true);
                 for target in targets {
                     if target.path.is_dir() {
@@ -746,7 +752,14 @@ impl App {
                     }
                     self.shell.open_file_range(&target.path, target.line, target.end_line, target.column, false, focus);
                 }
+                if let Some(text) = speak {
+                    self.speaker.speak(text);
+                }
             }
+            ipc::Request::Speak { text } => match text {
+                Some(text) => self.speaker.speak(text),
+                None => self.speaker.stop(),
+            },
             ipc::Request::Action { name, args } => {
                 if !self.shell.dispatch(&Action { name: name.clone(), args }) {
                     self.shell.set_status(format!("Nothing here handles {name}"), true);
@@ -1019,7 +1032,13 @@ pub fn window_for_files(files: &[PathSpec]) -> Option<ipc::InstanceInfo> {
 }
 
 /// Hand the files to `target`, a window [`window_for_files`] picked.
-pub fn send_files(target: &ipc::InstanceInfo, files: &[PathSpec], highlight: bool, focus: bool) -> Result<(), String> {
+pub fn send_files(
+    target: &ipc::InstanceInfo,
+    files: &[PathSpec],
+    highlight: bool,
+    focus: bool,
+    speak: Option<String>,
+) -> Result<(), String> {
     let targets = files
         .iter()
         .map(|file| ipc::OpenTarget {
@@ -1029,10 +1048,28 @@ pub fn send_files(target: &ipc::InstanceInfo, files: &[PathSpec], highlight: boo
             column: file.column,
         })
         .collect();
-    let request = ipc::Request::Open { targets, focus: (!focus).then_some(false) };
+    let request = ipc::Request::Open { targets, focus: (!focus).then_some(false), speak };
     match ipc::send(&target.socket, &request) {
         Ok(response) if response.ok => Ok(()),
         Ok(response) => Err(response.error.unwrap_or_else(|| "the window refused the files".to_string())),
+        Err(error) => Err(format!("could not reach the window (pid {}): {error}", target.pid)),
+    }
+}
+
+/// Ask the most recently focused running window to speak `text` (or stop speaking when `None`).
+/// If no window is running and `text` is `Some`, speaks synchronously in this process.
+pub fn send_speak(text: Option<String>) -> Result<(), String> {
+    let instances = ipc::live_instances(&ipc::instances_dir());
+    let Some(target) = instances.first() else {
+        if let Some(text) = text {
+            crate::tts::speak_blocking(&text);
+        }
+        return Ok(());
+    };
+    let request = ipc::Request::Speak { text };
+    match ipc::send(&target.socket, &request) {
+        Ok(response) if response.ok => Ok(()),
+        Ok(response) => Err(response.error.unwrap_or_else(|| "the window refused the speak request".to_string())),
         Err(error) => Err(format!("could not reach the window (pid {}): {error}", target.pid)),
     }
 }

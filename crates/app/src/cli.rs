@@ -43,6 +43,9 @@ Options:
       --no-restore          do not reopen the last session's tabs
       --no-focus            when sending files to a running window, keep focus where it is
       --highlight           highlight the target line (or line range) in the editor
+      --speak <text>        read <text> aloud via the running window's background TTS
+      --stop-speaking       stop any in-flight TTS playback in the running window
+      --install-skills      install/update bundled agent skills into ~/.agents/skills
       --dump-input          print every key and mouse event as bakedit decodes it (ctrl-c twice to
                             quit); in the current terminal, or in a Ghostty window with --window
       --probe               print what the host terminal supports and exit (in the current
@@ -75,6 +78,8 @@ pub enum Mode {
     PrintKeymap,
     PrintGhosttyConfig,
     Dots,
+    StopSpeaking,
+    InstallSkills,
     Action { name: String, args: Option<serde_json::Value> },
     Help,
     Version,
@@ -98,6 +103,7 @@ pub struct Args {
     pub no_restore: bool,
     pub no_focus: bool,
     pub highlight: bool,
+    pub speak: Option<String>,
     pub onboarding: bool,
     pub log_file: Option<PathBuf>,
     /// The arguments as given, minus the ones only the launching process acts on
@@ -120,6 +126,7 @@ impl Default for Args {
             no_restore: false,
             no_focus: false,
             highlight: false,
+            speak: None,
             onboarding: false,
             log_file: None,
             forward: Vec::new(),
@@ -180,6 +187,18 @@ where
                 forwarded.clear();
             }
             "--highlight" => out.highlight = true,
+            "--speak" => {
+                out.speak = Some(value("--speak")?);
+                forwarded.clear();
+            }
+            "--stop-speaking" => {
+                out.mode = Mode::StopSpeaking;
+                forwarded.clear();
+            }
+            "--install-skills" => {
+                out.mode = Mode::InstallSkills;
+                forwarded.clear();
+            }
             "--onboarding" => out.onboarding = true,
             "--dots" => out.mode = Mode::Dots,
             "--terminal" => {

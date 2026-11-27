@@ -68,6 +68,10 @@ fn main() -> ExitCode {
             Ok(())
         }
         Mode::Action { name, args } => app::send_action(name, args.clone()).map_err(anyhow::Error::msg),
+        Mode::StopSpeaking => app::send_speak(None).map_err(anyhow::Error::msg),
+        Mode::InstallSkills => bakedit::skills::install_default(true)
+            .map(|count| println!("installed {count} bundled skill(s)"))
+            .map_err(anyhow::Error::from),
         Mode::Dots => bakedit::dots::tui::run(),
         Mode::DumpInput | Mode::Probe | Mode::Edit => launch(args, &cwd),
     };
@@ -89,6 +93,9 @@ fn user_keymap() -> bakedit_keymap::Keymap {
 /// The editor or a diagnostic, wherever `window::decide` puts it: a running window (files,
 /// as `zed file` does), a new Ghostty window, or this terminal.
 fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
+    if args.mode == Mode::Edit && args.paths.is_empty() && args.speak.is_some() {
+        return app::send_speak(args.speak).map_err(anyhow::Error::msg);
+    }
     let ghostty = window::find_ghostty();
     let running = if window::may_hand_over(&args) { app::window_for_files(&args.paths) } else { None };
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -108,7 +115,7 @@ fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
     };
     let mut place = window::decide(&args, &facts);
     if let (Place::RunningWindow, Some(target)) = (&place, &running) {
-        match app::send_files(target, &args.paths, args.highlight, !args.no_focus) {
+        match app::send_files(target, &args.paths, args.highlight, !args.no_focus, args.speak.clone()) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 log::warn!("not handed to the running window: {error}");

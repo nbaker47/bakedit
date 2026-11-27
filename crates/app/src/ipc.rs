@@ -37,6 +37,14 @@ pub enum Request {
         /// Whether to focus the center editor pane (defaults to `true`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         focus: Option<bool>,
+        /// Optional text to speak aloud in the background after opening.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        speak: Option<String>,
+    },
+    /// Speak `text` aloud in the background, or stop any active speech when `None`.
+    Speak {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     /// Run a named action, as if a key bound to it had been pressed.
     Action {
@@ -274,6 +282,7 @@ mod tests {
         let request = Request::Open {
             targets: vec![OpenTarget { path: "/a/b.rs".into(), line: Some(3), end_line: None, column: None }],
             focus: None,
+            speak: None,
         };
         let text = serde_json::to_string(&request).unwrap();
         assert_eq!(text, r#"{"op":"open","targets":[{"path":"/a/b.rs","line":3}]}"#);
