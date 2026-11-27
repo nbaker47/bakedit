@@ -312,6 +312,7 @@ impl EditorItem {
                 }
             }
         }
+        let mut cached_table: Option<crate::markdown::TableSpec> = None;
         let mut shown: Vec<ShownRow> = Vec::with_capacity(rows);
         let mut scroll = self.scroll;
         scroll.row = scroll.row.min(self.rows_in(scroll.line).saturating_sub(1));
@@ -332,6 +333,16 @@ impl EditorItem {
                 in_fence = !in_fence;
             }
             let use_md = render_md && (!was_in_fence || fence_line);
+            if use_md && !fence_line {
+                let valid = cached_table.as_ref().is_some_and(|t| line >= t.start && line < t.end);
+                if !valid {
+                    cached_table = crate::markdown::detect_table_at(line, line_count, text_width as usize, theme, |l| {
+                        Some(buffer.line_text(l).into_owned())
+                    });
+                }
+            } else {
+                cached_table = None;
+            }
             let line_start = buffer.line_to_char(line);
             let line_len = buffer.line_len(line);
             let line_end = line_start + line_len;
@@ -413,7 +424,29 @@ impl EditorItem {
                     canvas.put(bx + blame_width - 1, y, "│", sep_style);
                 }
                 let row_bg = if current { theme.active_line_bg } else { theme.editor_bg };
-                if use_md && row_index == 0 && line_selections.is_empty() && matches.is_empty() {
+                let table_spec = if use_md && !fence_line {
+                    cached_table.as_ref().filter(|t| line >= t.start && line < t.end)
+                } else {
+                    None
+                };
+                if let Some(spec) = table_spec.filter(|_| line_selections.is_empty() && matches.is_empty()) {
+                    canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
+                    let kind = spec.row_kind(line);
+                    crate::markdown::draw_table_row(
+                        canvas,
+                        self.geo.text.x,
+                        y,
+                        text_width,
+                        self.left,
+                        &text,
+                        spec,
+                        kind,
+                        row_index,
+                        ranges.len(),
+                        row_bg,
+                        theme,
+                    );
+                } else if use_md && row_index == 0 && line_selections.is_empty() && matches.is_empty() {
                     canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
                     crate::markdown::draw_line(canvas, self.geo.text.x, y, text_width, self.left, &text, row_bg, theme, was_in_fence);
                 } else {

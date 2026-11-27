@@ -871,7 +871,22 @@ impl ProjectDiff {
                     }
                     let fence_line = crate::markdown::is_fence(&text);
                     if !in_fence || fence_line {
-                        crate::markdown::draw_line(canvas, text_x, y, text_w, self.left, &text, line_bg, theme, in_fence);
+                        let table_spec = if !fence_line {
+                            crate::markdown::detect_table_at(index, self.rows.len(), text_w as usize, theme, |idx| {
+                                match self.rows.get(idx)? {
+                                    DiffRow::Line { file: f, text: t, .. } if *f == file => Some(t.clone()),
+                                    _ => None,
+                                }
+                            })
+                        } else {
+                            None
+                        };
+                        if let Some(spec) = table_spec {
+                            let kind = spec.row_kind(index);
+                            crate::markdown::draw_table_row(canvas, text_x, y, text_w, self.left, &text, &spec, kind, 0, 1, line_bg, theme);
+                        } else {
+                            crate::markdown::draw_line(canvas, text_x, y, text_w, self.left, &text, line_bg, theme, in_fence);
+                        }
                     } else {
                         self.draw_code(canvas, text_x, y, text_w, &text, &spans, line_bg, theme);
                     }
