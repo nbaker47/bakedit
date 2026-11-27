@@ -1314,13 +1314,35 @@ impl View for ProjectPanel {
                 let double = self.last_click.is_some_and(|(row, at)| row == index && at.elapsed() < DOUBLE_CLICK);
                 self.last_click = Some((index, Instant::now()));
                 let is_dir = self.selected_row().is_some_and(Row::is_dir);
-                // A click opens a folder or previews a file; a second click keeps the tab.
-                // Folders were already toggled by the first click of a double click.
-                if double && is_dir {
-                    self.sync_git_repo(cx);
+                // Folders toggle on the first click (not again on the second of a double click)
+                // and sync the diff view when git diff preview mode is enabled.
+                if is_dir {
+                    if !double {
+                        self.tree.toggle_selected();
+                        self.watch_ignored(cx);
+                    }
+                    self.sync_git_selection(cx);
                     return true;
                 }
-                return self.open_selected(!double, cx);
+                // Single-clicking a modified file in git diff preview mode opens its diff,
+                // matching arrow-key navigation; double-clicking still opens it in the editor.
+                if !double
+                    && cx.settings.project_panel.git_diff_on_select
+                    && self.selected_row().is_some_and(|row| {
+                        cx.project.repo_root_for_path(&row.path).is_some()
+                            && self.colors.files.contains_key(&row.path)
+                    })
+                {
+                    self.sync_git_selection(cx);
+                    return true;
+                }
+                let opened = self.open_selected(!double, cx);
+                if let Some(row) = self.selected_row() {
+                    if cx.project.repo_root_for_path(&row.path).is_some() {
+                        cx.push(Effect::SelectInGitPanel(row.path.clone()));
+                    }
+                }
+                return opened;
             }
             _ => return false,
         }
@@ -2248,6 +2270,7 @@ mod tests {
         let sub_path = harness.project.root().join("sub");
         let b_path = harness.project.root().join("b.txt");
         let a_path = harness.project.root().join("a.txt");
+        panel.colors.generation = Some(harness.project.git_generation());
         panel.colors.files.insert(b_path.clone(), DisplayStatus::Modified);
         panel.colors.dirs.insert(sub_path.clone());
 
@@ -2286,6 +2309,46 @@ mod tests {
         act(&mut panel, &mut harness, "menu::SelectPrevious");
         assert_eq!(panel.selected_row().unwrap().path, sub_path);
         assert!(!harness.effects.iter().any(|e| matches!(e, Effect::OpenFile { .. })));
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
+
+        // Clicking obeys the same toggle mode: render first so hit-testing knows each row's y.
+        let area = Rect::new(0, 0, 30, 10);
+        harness.draw(&mut panel, area.width, area.height);
+        let row_y = |panel: &ProjectPanel, target: &Path| -> u16 {
+            let idx = panel.tree.index_of(target).unwrap();
+            let pos = panel.shown.iter().position(|line| *line == Line::Entry(idx)).unwrap();
+            (pos + 1) as u16
+        };
+        let click = |y: u16| MouseEvent {
+            kind: MouseKind::Press(MouseButton::Left),
+            col: 2,
+            row: y,
+            mods: Mods::empty(),
+        };
+
+        // git_diff_on_select = true: clicking a modified file or modified folder opens ShowProjectDiff.
+        harness.settings.project_panel.git_diff_on_select = true;
+        panel.last_click = None;
+        harness.effects.clear();
+        let b_y = row_y(&panel, &b_path);
+        assert!(panel.handle_mouse(&click(b_y), area, &mut harness.cx()));
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { path: Some(p), focus: false } if p == &b_path)));
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::OpenFile { .. })));
+
+        panel.last_click = None;
+        harness.effects.clear();
+        let sub_y = row_y(&panel, &sub_path);
+        assert!(panel.handle_mouse(&click(sub_y), area, &mut harness.cx()));
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { path: Some(p), focus: false } if p == &sub_path)));
+
+        // git_diff_on_select = false: clicking a modified file opens it in the editor (preview), not diff.
+        harness.settings.project_panel.git_diff_on_select = false;
+        harness.draw(&mut panel, area.width, area.height);
+        panel.last_click = None;
+        harness.effects.clear();
+        let b_y = row_y(&panel, &b_path);
+        assert!(panel.handle_mouse(&click(b_y), area, &mut harness.cx()));
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::OpenFile { path, preview: true, focus: false, .. } if path == &b_path)));
         assert!(!harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
     }
 }
