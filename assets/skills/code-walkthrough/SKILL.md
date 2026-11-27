@@ -6,9 +6,9 @@ description: >-
   stealing terminal focus, reads each step aloud with bakedit's built-in
   cross-platform neural TTS, and explains it one block (or line) at a time with
   plain-English explanations and concrete justifications, waiting for
-  confirmation before advancing. Use when the user asks to "explain these
-  files", "explain this folder", "walk me through ...", "explain how ... works",
-  or types /code-walkthrough.
+  confirmation before advancing. ONLY activate when the user explicitly invokes
+  /code-walkthrough or explicitly asks to use the code-walkthrough skill — do
+  not trigger automatically on general "explain ..." questions.
 ---
 <!-- bakedit-bundled-skill -->
 
