@@ -28,6 +28,7 @@ arboard.workspace = true
 crossbeam-channel.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
+gltf.workspace = true
 image.workspace = true
 libc.workspace = true
 log.workspace = true
@@ -37,6 +38,7 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
+tobj.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 

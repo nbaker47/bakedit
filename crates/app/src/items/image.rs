@@ -6,12 +6,15 @@
 //! reload on disk changes, and opening externally (`o`).
 
 use std::any::Any;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Cursor as IoCursor;
 use std::path::{Path, PathBuf};
 
 use bakedit_core::{Action, Key, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind, Rgb};
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbaImage};
+use image::{ColorType, DynamicImage, GenericImageView, ImageEncoder, ImageFormat, RgbaImage};
 use ratatui::layout::Rect;
 
 use crate::chrome::Tab;
@@ -33,9 +36,7 @@ pub struct KittyImageKey {
     pub path: PathBuf,
     pub revision: u64,
     pub rect: Rect,
-    pub zoom_bits: Option<u32>,
-    pub pan_x_bits: u32,
-    pub pan_y_bits: u32,
+    pub state_hash: u64,
     pub cell_px: (u16, u16),
 }
 
@@ -272,13 +273,15 @@ impl ImageViewer {
             }
         };
 
+        let mut h = DefaultHasher::new();
+        self.zoom.map(f32::to_bits).hash(&mut h);
+        self.pan_x.to_bits().hash(&mut h);
+        self.pan_y.to_bits().hash(&mut h);
         let key = KittyImageKey {
             path: self.path.clone(),
             revision: self.revision,
             rect: place_rect,
-            zoom_bits: self.zoom.map(f32::to_bits),
-            pan_x_bits: self.pan_x.to_bits(),
-            pan_y_bits: self.pan_y.to_bits(),
+            state_hash: h.finish(),
             cell_px,
         };
         if let Some(cached) = &self.cached_placement {
@@ -377,6 +380,16 @@ impl ImageViewer {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.path.display().to_string())
     }
+}
+
+/// Fast-compressed PNG encoder for interactive frames (e.g. 3D model viewport).
+pub fn encode_fast_png(rgba: &RgbaImage) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity((rgba.width() * rgba.height()) as usize);
+    let encoder = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, PngFilterType::NoFilter);
+    encoder
+        .write_image(rgba.as_raw(), rgba.width(), rgba.height(), ColorType::Rgba8.into())
+        .ok()?;
+    Some(out)
 }
 
 fn encode_png(rgba: &RgbaImage, max_dim: u32) -> Option<Vec<u8>> {

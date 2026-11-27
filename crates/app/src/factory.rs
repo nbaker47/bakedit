@@ -15,6 +15,7 @@ use crate::icons::file_icon;
 use crate::items::audio::AudioPlayer;
 use crate::items::diff::ProjectDiff;
 use crate::items::image::ImageViewer;
+use crate::items::model::ModelViewer;
 use crate::items::search::ProjectSearch;
 use crate::picker::PickerItem;
 use crate::view::{Cx, Effect, Item, ItemFactory, PickerKind, PickerSource};
@@ -29,6 +30,9 @@ impl ItemFactory for AppFactory {
     fn open_path(&mut self, path: &Path, cx: &mut Cx<'_>) -> Result<Box<dyn Item>, String> {
         if ImageViewer::supports(path) {
             return ImageViewer::open(path).map(|item| Box::new(item) as Box<dyn Item>);
+        }
+        if ModelViewer::supports(path) {
+            return ModelViewer::open(path).map(|item| Box::new(item) as Box<dyn Item>);
         }
         if AudioPlayer::supports(path) {
             return AudioPlayer::open(path, cx).map(|item| Box::new(item) as Box<dyn Item>);
