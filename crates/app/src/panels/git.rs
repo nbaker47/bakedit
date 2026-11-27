@@ -201,6 +201,7 @@ pub struct GitPanel {
     mode_button: Rect,
     prev_commit_button: Rect,
     next_commit_button: Rect,
+    commit_header_rows: u16,
     list_area: Rect,
     branch_header: Rect,
     branch_list_area: Rect,
@@ -480,6 +481,7 @@ impl GitPanel {
             mode_button: Rect::default(),
             prev_commit_button: Rect::default(),
             next_commit_button: Rect::default(),
+            commit_header_rows: 0,
             list_area: Rect::default(),
             branch_header: Rect::default(),
             branch_list_area: Rect::default(),
@@ -1325,11 +1327,7 @@ impl GitPanel {
             let right_w = ui::width(&count_str) as u16 + if count_str.is_empty() { 1 } else { 3 };
             let end = area.right().saturating_sub(1 + right_w + 1);
             if x < end {
-                let used = canvas.text_truncated(x, area.y, &commit.short, Style::colors(theme.text_accent, bg).bold(), end - x);
-                x += used + 1;
-            }
-            if x < end {
-                canvas.text_truncated(x, area.y, &commit.subject, Style::colors(theme.text, bg), end - x);
+                canvas.text_truncated(x, area.y, &commit.short, Style::colors(theme.text_accent, bg).bold(), end - x);
             }
             let arrow_x = area.right().saturating_sub(2);
             canvas.text(arrow_x, area.y, right_arrow, Style::colors(theme.text_accent, bg).bold(), 1);
@@ -1566,18 +1564,40 @@ impl GitPanel {
     fn draw_commit_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, cx: &RenderCx<'_>) {
         let theme = cx.theme;
         let bg = theme.panel_bg;
+        self.commit_header_rows = 0;
         let list_area = if area.height >= 2 {
+            let mut used_rows: u16 = 1;
             if let Some(commit) = self.viewing_commit() {
-                let mut x = area.x + 1;
                 let max_w = area.width.saturating_sub(2);
+                let mut x = area.x + 1;
                 let used = canvas.text_truncated(x, area.y, &commit.author, Style::colors(theme.text_accent, bg), max_w);
                 x += used;
                 let rem = (area.x + 1 + max_w).saturating_sub(x);
                 if rem > 3 && !commit.relative_time.is_empty() {
                     canvas.text_truncated(x, area.y, &format!(" · {}", commit.relative_time), Style::colors(theme.text_muted, bg), rem);
                 }
+
+                // Wrap the commit subject across as many rows as needed so it is fully readable
+                // without overflowing, while always keeping room for the file list below.
+                let min_list_rows: u16 = if area.height >= 4 { 2 } else { 1 };
+                let max_subject_rows = area.height.saturating_sub(used_rows + min_list_rows) as usize;
+                if max_subject_rows > 0 && max_w > 0 && !commit.subject.is_empty() {
+                    let wrapped = wrap_words(&commit.subject, max_w as usize);
+                    let show = wrapped.len().min(max_subject_rows);
+                    for (i, line) in wrapped.iter().take(show).enumerate() {
+                        let y = area.y + used_rows + i as u16;
+                        if i + 1 == show && wrapped.len() > show {
+                            let rest = wrapped[i..].join(" ");
+                            canvas.text_truncated(area.x + 1, y, &rest, Style::colors(theme.text, bg), max_w);
+                        } else {
+                            canvas.text_truncated(area.x + 1, y, line, Style::colors(theme.text, bg), max_w);
+                        }
+                    }
+                    used_rows += show as u16;
+                }
             }
-            Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+            self.commit_header_rows = used_rows;
+            Rect::new(area.x, area.y + used_rows, area.width, area.height.saturating_sub(used_rows))
         } else {
             area
         };
@@ -1948,10 +1968,10 @@ impl View for GitPanel {
             }
             "menu::SelectNext" | "git_panel::NextEntry" if in_list => self.move_selection(1),
             "menu::SelectPrevious" | "git_panel::PreviousEntry" if in_list => self.move_selection(-1),
-            "git_panel::PreviousCommit" if in_list && (self.active_section == ListSection::Uncommitted || self.changes.is_empty()) => {
+            "git_panel::PreviousCommit" if in_list => {
                 return self.step_commit(1, cx);
             }
-            "git_panel::NextCommit" if in_list && (self.active_section == ListSection::Uncommitted || self.commit_offset > 0) => {
+            "git_panel::NextCommit" if in_list => {
                 return self.step_commit(-1, cx);
             }
             "menu::SelectFirst" | "git_panel::FirstEntry" if in_list => self.select(0),
@@ -2128,7 +2148,7 @@ impl View for GitPanel {
                 }
                 self.focus = PanelFocus::Changes;
                 if self.commit_offset > 0 {
-                    let header_rows = u16::from(self.list_area.height >= 2);
+                    let header_rows = self.commit_header_rows;
                     if event.row < self.list_area.y + header_rows {
                         return true;
                     }
@@ -2612,4 +2632,75 @@ mod tests {
         assert!(trash.path().join("x.txt").exists() && trash.path().join("x 2.txt").exists());
         assert!(trash_into(trash.path(), &dir.path().join("gone")).is_err());
     }
+
+    #[test]
+    fn wrap_words_wraps_long_commit_subjects_without_overflow() {
+        let msg = "feat(epsilon): add Infrastructure Lens workload tree, Git diff panel, Image Builds, and NFS backups";
+        let lines = wrap_words(msg, 30);
+        assert!(lines.len() >= 3);
+        for line in &lines {
+            assert!(ui::width(line) <= 30, "line too wide: {line:?}");
+        }
+        assert_eq!(lines.join(" "), msg);
+        assert_eq!(wrap_words("supercalifragilistic", 6), vec!["superc", "alifra", "gilist", "ic"]);
+        assert!(wrap_words("", 20).is_empty());
+        assert!(wrap_words("hi", 0).is_empty());
+    }
+}
+
+/// Word-wrap `text` into lines of at most `max_width` terminal columns.
+/// Words wider than `max_width` are split on character boundaries.
+fn wrap_words(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    for word in text.split_whitespace() {
+        let word_w = ui::width(word);
+        if current_w == 0 {
+            if word_w <= max_width {
+                current.push_str(word);
+                current_w = word_w;
+            } else {
+                for ch in word.chars() {
+                    let mut buf = [0u8; 4];
+                    let ch_w = ui::width(ch.encode_utf8(&mut buf)).max(1);
+                    if current_w > 0 && current_w + ch_w > max_width {
+                        lines.push(std::mem::take(&mut current));
+                        current_w = 0;
+                    }
+                    current.push(ch);
+                    current_w += ch_w;
+                }
+            }
+        } else if current_w + 1 + word_w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + word_w;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current_w = 0;
+            if word_w <= max_width {
+                current.push_str(word);
+                current_w = word_w;
+            } else {
+                for ch in word.chars() {
+                    let mut buf = [0u8; 4];
+                    let ch_w = ui::width(ch.encode_utf8(&mut buf)).max(1);
+                    if current_w > 0 && current_w + ch_w > max_width {
+                        lines.push(std::mem::take(&mut current));
+                        current_w = 0;
+                    }
+                    current.push(ch);
+                    current_w += ch_w;
+                }
+            }
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
