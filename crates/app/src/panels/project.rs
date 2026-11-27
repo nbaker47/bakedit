@@ -419,7 +419,7 @@ impl ProjectPanel {
             return;
         }
         cx.push(Effect::SelectInGitPanel(row.path.clone()));
-        if self.colors.files.contains_key(&row.path) {
+        if cx.settings.project_panel.git_diff_on_select && self.colors.files.contains_key(&row.path) {
             cx.push(Effect::ShowProjectDiff { path: Some(row.path.clone()), focus: false });
         }
     }
@@ -2192,5 +2192,52 @@ mod tests {
 
         assert!(act(&mut panel, &mut harness, "buffer_search::Dismiss"));
         assert!(panel.find.is_none());
+    }
+
+    #[test]
+    fn walking_tree_respects_git_diff_on_select_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "two\n").unwrap();
+
+        let mut harness =
+            Harness::with_project(crate::project::Project::open(dir.path(), crate::background::Waker::detached()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while harness.project.repo().is_none() && std::time::Instant::now() < deadline {
+            harness.project.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(harness.project.repo().is_some(), "git repo should be discovered");
+
+        let mut panel = ProjectPanel::new(&mut harness.cx());
+        let b_path = harness.project.root().join("b.txt");
+        let a_path = harness.project.root().join("a.txt");
+        panel.colors.files.insert(b_path.clone(), DisplayStatus::Modified);
+
+        // Default (git_diff_on_select = true): walking onto a modified file opens the diff.
+        select(&mut panel, &mut harness, &a_path);
+        harness.effects.clear();
+        act(&mut panel, &mut harness, "menu::SelectNext");
+        assert_eq!(panel.selected_row().unwrap().path, b_path);
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
+
+        // Disabled (git_diff_on_select = false): walking still syncs git panel, but does not open diff.
+        harness.settings.project_panel.git_diff_on_select = false;
+        select(&mut panel, &mut harness, &a_path);
+        harness.effects.clear();
+        act(&mut panel, &mut harness, "menu::SelectNext");
+        assert_eq!(panel.selected_row().unwrap().path, b_path);
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::SelectInGitPanel(_))));
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
     }
 }

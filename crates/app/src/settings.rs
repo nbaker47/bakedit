@@ -118,6 +118,7 @@ pub struct ProjectPanelSettings {
     pub auto_reveal_entries: bool,
     pub hide_gitignore: bool,
     pub git_status: bool,
+    pub git_diff_on_select: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -284,6 +285,7 @@ impl Default for Settings {
                 auto_reveal_entries: true,
                 hide_gitignore: false,
                 git_status: true,
+                git_diff_on_select: true,
             },
 
             nav_layer: true,
@@ -414,6 +416,34 @@ pub fn save_values(path: &Path, pairs: &[(&str, Value)]) -> Result<(), String> {
     };
     for (k, v) in pairs {
         map.insert((*k).to_string(), v.clone());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(map))
+        .map_err(|e| format!("cannot format settings JSON: {e}"))?;
+    std::fs::write(path, format!("{text}\n"))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Update or insert a nested key (`section.key`) in `path` (creating the file, parent
+/// folder, and section object when needed), keeping every other key intact.
+pub fn save_nested_value(path: &Path, section: &str, key: &str, value: Value) -> Result<(), String> {
+    let mut map = match std::fs::read_to_string(path) {
+        Ok(text) => match jsonc::from_str::<Value>(&text) {
+            Ok(Value::Object(obj)) => obj,
+            Ok(_) => return Err(format!("{} is not a JSON object", path.display())),
+            Err(err) => return Err(format!("cannot parse {}: {err}", path.display())),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let entry = map.entry(section.to_string()).or_insert_with(|| Value::Object(Map::new()));
+    if !entry.is_object() {
+        *entry = Value::Object(Map::new());
+    }
+    if let Value::Object(obj) = entry {
+        obj.insert(key.to_string(), value);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
@@ -718,6 +748,7 @@ impl Settings {
             panel.bool("auto_reveal_entries", &mut self.project_panel.auto_reveal_entries);
             panel.bool("hide_gitignore", &mut self.project_panel.hide_gitignore);
             panel.bool("git_status", &mut self.project_panel.git_status);
+            panel.bool("git_diff_on_select", &mut self.project_panel.git_diff_on_select);
         }
 
         match map.get("nav_layer") {
@@ -1101,5 +1132,19 @@ mod tests {
         assert_eq!(split_words("a 'b c' \"d e\""), vec!["a", "b c", "d e"]);
         assert_eq!(split_words("a\\ b ''"), vec!["a b", ""]);
         assert_eq!(split_words(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn save_nested_value_preserves_siblings_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"tab_size": 2, "project_panel": {"dock": "left"}}"#).unwrap();
+
+        save_nested_value(&path, "project_panel", "git_diff_on_select", Value::Bool(false)).unwrap();
+        let loaded = load_from(&path, &dir.path().join("missing.json"));
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.tab_size, 2);
+        assert_eq!(loaded.settings.project_panel.dock, DockPosition::Left);
+        assert!(!loaded.settings.project_panel.git_diff_on_select);
     }
 }

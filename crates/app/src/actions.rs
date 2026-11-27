@@ -76,6 +76,7 @@ const PALETTE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("project_panel::Toggle", None, None),
     ("project_panel::ToggleFocus", None, None),
     ("project_panel::SwapPosition", None, Some("project panel: swap position (far right ↔ next to git/terminal)")),
+    ("project_panel::ToggleGitDiff", None, Some("project panel: toggle git diff preview when navigating file tree")),
     ("workspace::ToggleAllLeftPanels", None, Some("workspace: toggle all left panels (herdr, git, file tree)")),
     ("workspace::FocusCenterPane", None, Some("workspace: focus the editor")),
     ("workspace::ToggleZoom", None, Some("workspace: toggle fullscreen for the focused pane")),

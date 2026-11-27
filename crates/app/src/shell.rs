@@ -73,6 +73,8 @@ pub enum Request {
     SelectTheme(String),
     /// Toggle Agent Dots on or off and persist to settings.json.
     ToggleAgentDots,
+    /// Persist `project_panel.git_diff_on_select` to settings.json.
+    SaveProjectPanelGitDiff(bool),
     /// Save onboarding choices (`agent_dots` + `theme`) and write the onboarded marker.
     ApplyOnboarding { agent_dots: bool, theme: String },
     /// Cancel onboarding (restoring any previewed theme) and write the onboarded marker.
@@ -732,6 +734,18 @@ impl Shell {
                             "File tree: right of git/terminal"
                         } else {
                             "File tree: far right"
+                        };
+                        self.set_status(msg, false);
+                    }
+                    "ToggleGitDiff" if id == PanelId::Project => {
+                        self.settings.project_panel.git_diff_on_select =
+                            !self.settings.project_panel.git_diff_on_select;
+                        let enabled = self.settings.project_panel.git_diff_on_select;
+                        self.requests.push(Request::SaveProjectPanelGitDiff(enabled));
+                        let msg = if enabled {
+                            "File tree: git diff preview on"
+                        } else {
+                            "File tree: git diff preview off"
                         };
                         self.set_status(msg, false);
                     }

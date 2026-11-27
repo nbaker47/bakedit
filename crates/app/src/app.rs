@@ -777,6 +777,15 @@ impl App {
                     false,
                 );
             }
+            Request::SaveProjectPanelGitDiff(enabled) => {
+                let _ = settings::save_nested_value(
+                    &settings::settings_path(),
+                    "project_panel",
+                    "git_diff_on_select",
+                    serde_json::Value::Bool(enabled),
+                );
+                self.config.changed();
+            }
             Request::ApplyOnboarding { agent_dots, theme } => {
                 self.shell.settings.theme = Some(theme.clone());
                 let (loaded_theme, _) = themes::load_with_palette(&self.shell.settings, &self.terminal_palette);
