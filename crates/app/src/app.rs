@@ -309,7 +309,7 @@ impl App {
         window_state::spawn_restore(window_state.clone());
         open_session(&mut shell, &sessions_dir, options.restore);
         for file in &options.files {
-            shell.open_file(&file.path, file.line, file.column, false, true);
+            shell.open_file_range(&file.path, file.line, file.end_line, file.column, false, true);
         }
         // Why there is no window comes first: it explains what the user is looking at.
         let messages: Vec<&String> = options.notice.iter().chain(&loaded.warnings).collect();
@@ -727,13 +727,14 @@ impl App {
 
     fn handle_ipc(&mut self, request: ipc::Request) {
         match request {
-            ipc::Request::Open { targets } => {
+            ipc::Request::Open { targets, focus } => {
+                let focus = focus.unwrap_or(true);
                 for target in targets {
                     if target.path.is_dir() {
                         self.shell.set_status(format!("{} is a folder: open it with projects::OpenRecent or a new bakedit", target.path.display()), true);
                         continue;
                     }
-                    self.shell.open_file(&target.path, target.line, target.column, false, true);
+                    self.shell.open_file_range(&target.path, target.line, target.end_line, target.column, false, focus);
                 }
             }
             ipc::Request::Action { name, args } => {
@@ -1008,9 +1009,18 @@ pub fn window_for_files(files: &[PathSpec]) -> Option<ipc::InstanceInfo> {
 }
 
 /// Hand the files to `target`, a window [`window_for_files`] picked.
-pub fn send_files(target: &ipc::InstanceInfo, files: &[PathSpec]) -> Result<(), String> {
-    let targets = files.iter().map(|file| ipc::OpenTarget { path: file.path.clone(), line: file.line, column: file.column }).collect();
-    match ipc::send(&target.socket, &ipc::Request::Open { targets }) {
+pub fn send_files(target: &ipc::InstanceInfo, files: &[PathSpec], highlight: bool, focus: bool) -> Result<(), String> {
+    let targets = files
+        .iter()
+        .map(|file| ipc::OpenTarget {
+            path: file.path.clone(),
+            line: file.line,
+            end_line: file.end_line.or_else(|| highlight.then_some(file.line).flatten()),
+            column: file.column,
+        })
+        .collect();
+    let request = ipc::Request::Open { targets, focus: (!focus).then_some(false) };
+    match ipc::send(&target.socket, &request) {
         Ok(response) if response.ok => Ok(()),
         Ok(response) => Err(response.error.unwrap_or_else(|| "the window refused the files".to_string())),
         Err(error) => Err(format!("could not reach the window (pid {}): {error}", target.pid)),

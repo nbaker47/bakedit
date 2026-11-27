@@ -16,12 +16,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// A file to open, with an optional 1-based position.
+/// A file to open, with an optional 1-based position (and optional inclusive end line to highlight).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenTarget {
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<u32>,
 }
@@ -30,7 +32,12 @@ pub struct OpenTarget {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     /// Open these files; the last one ends up in front.
-    Open { targets: Vec<OpenTarget> },
+    Open {
+        targets: Vec<OpenTarget>,
+        /// Whether to focus the center editor pane (defaults to `true`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<bool>,
+    },
     /// Run a named action, as if a key bound to it had been pressed.
     Action {
         name: String,
@@ -265,7 +272,8 @@ mod tests {
     #[test]
     fn requests_round_trip_as_json_lines() {
         let request = Request::Open {
-            targets: vec![OpenTarget { path: "/a/b.rs".into(), line: Some(3), column: None }],
+            targets: vec![OpenTarget { path: "/a/b.rs".into(), line: Some(3), end_line: None, column: None }],
+            focus: None,
         };
         let text = serde_json::to_string(&request).unwrap();
         assert_eq!(text, r#"{"op":"open","targets":[{"path":"/a/b.rs","line":3}]}"#);

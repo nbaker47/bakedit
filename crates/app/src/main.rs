@@ -108,7 +108,7 @@ fn launch(args: cli::Args, cwd: &Path) -> anyhow::Result<()> {
     };
     let mut place = window::decide(&args, &facts);
     if let (Place::RunningWindow, Some(target)) = (&place, &running) {
-        match app::send_files(target, &args.paths) {
+        match app::send_files(target, &args.paths, args.highlight, !args.no_focus) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 log::warn!("not handed to the running window: {error}");

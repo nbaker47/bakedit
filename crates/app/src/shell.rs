@@ -990,10 +990,33 @@ impl Shell {
 
     /// Open a file in the centre (1-based position), remembering where the jump started.
     pub fn open_file(&mut self, path: &Path, line: Option<u32>, column: Option<u32>, preview: bool, focus: bool) {
+        self.open_file_range(path, line, None, column, preview, focus);
+    }
+
+    /// Open `path`, optionally highlighting `line..=end_line`. When `focus` is `false` and a dock
+    /// panel is zoomed over the editor, unzoom that panel (keeping focus in it) so the editor is
+    /// visible beside it.
+    pub fn open_file_range(
+        &mut self,
+        path: &Path,
+        line: Option<u32>,
+        end_line: Option<u32>,
+        column: Option<u32>,
+        preview: bool,
+        focus: bool,
+    ) {
         if let Some(from) = self.current_location() {
             self.pane.record_jump(from);
         }
+        if !focus {
+            if let Some(crate::workspace::Zoomed::Panel(id)) = self.workspace.zoomed() {
+                self.workspace.set_panel_zoomed(id, false);
+            }
+        }
         self.open_file_no_history(path, line, column, preview, focus);
+        if let (Some(start), Some(end), Some(item)) = (line, end_line, self.pane.active_mut()) {
+            item.highlight_lines(start, end);
+        }
     }
 
     fn open_file_no_history(&mut self, path: &Path, line: Option<u32>, column: Option<u32>, preview: bool, focus: bool) {

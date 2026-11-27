@@ -41,6 +41,8 @@ Options:
       --terminal <command>  run this in the terminal panel instead of the configured command
                             (\"shell\" for a plain shell)
       --no-restore          do not reopen the last session's tabs
+      --no-focus            when sending files to a running window, keep focus where it is
+      --highlight           highlight the target line (or line range) in the editor
       --dump-input          print every key and mouse event as bakedit decodes it (ctrl-c twice to
                             quit); in the current terminal, or in a Ghostty window with --window
       --probe               print what the host terminal supports and exit (in the current
@@ -55,11 +57,12 @@ Options:
   -V, --version             show the version
 ";
 
-/// A file argument with an optional 1-based position.
+/// A file argument with an optional 1-based position (and optional inclusive end line).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathSpec {
     pub path: PathBuf,
     pub line: Option<u32>,
+    pub end_line: Option<u32>,
     pub column: Option<u32>,
 }
 
@@ -93,6 +96,8 @@ pub struct Args {
     pub cwd: Option<PathBuf>,
     pub terminal_command: Option<String>,
     pub no_restore: bool,
+    pub no_focus: bool,
+    pub highlight: bool,
     pub onboarding: bool,
     pub log_file: Option<PathBuf>,
     /// The arguments as given, minus the ones only the launching process acts on
@@ -113,6 +118,8 @@ impl Default for Args {
             cwd: None,
             terminal_command: None,
             no_restore: false,
+            no_focus: false,
+            highlight: false,
             onboarding: false,
             log_file: None,
             forward: Vec::new(),
@@ -168,6 +175,11 @@ where
                 forwarded.clear();
             }
             "--no-restore" => out.no_restore = true,
+            "--no-focus" => {
+                out.no_focus = true;
+                forwarded.clear();
+            }
+            "--highlight" => out.highlight = true,
             "--onboarding" => out.onboarding = true,
             "--dots" => out.mode = Mode::Dots,
             "--terminal" => {
@@ -207,7 +219,16 @@ where
         out.forward.extend(forwarded);
     }
     let base = out.cwd.clone().unwrap_or_else(|| cwd.to_path_buf());
-    out.paths = raw_paths.iter().map(|raw| parse_path_spec(raw, &base)).collect();
+    out.paths = raw_paths
+        .iter()
+        .map(|raw| {
+            let mut spec = parse_path_spec(raw, &base);
+            if out.highlight && spec.end_line.is_none() {
+                spec.end_line = spec.line;
+            }
+            spec
+        })
+        .collect();
     out.log_file = raw_log.map(|file| absolute(Path::new(&file), &base));
     Ok(out)
 }
@@ -238,21 +259,24 @@ pub fn parse_path_spec(raw: &str, cwd: &Path) -> PathSpec {
     let text = raw.strip_prefix("file://").map(percent_decode).unwrap_or_else(|| raw.to_string());
     let whole = absolute(Path::new(&text), cwd);
     if whole.exists() {
-        return PathSpec { path: whole, line: None, column: None };
+        return PathSpec { path: whole, line: None, end_line: None, column: None };
     }
-    let (path, line, column) = split_position(&text);
-    PathSpec { path: absolute(Path::new(path), cwd), line, column }
+    let (path, line, end_line, column) = split_position(&text);
+    PathSpec { path: absolute(Path::new(path), cwd), line, end_line, column }
 }
 
 /// The position suffix forms: `#L10`, `#L10-L20`, `:10`, `:10:4`, `:10-20`, `(10,4)`.
-fn split_position(text: &str) -> (&str, Option<u32>, Option<u32>) {
+fn split_position(text: &str) -> (&str, Option<u32>, Option<u32>, Option<u32>) {
     let number = |s: &str| s.parse::<u32>().ok().filter(|n| *n > 0);
 
     if let Some((path, fragment)) = text.rsplit_once("#L") {
-        let first = fragment.split('-').next().unwrap_or("");
+        let mut parts = fragment.split('-');
+        let first = parts.next().unwrap_or("");
+        let second = parts.next().map(|s| s.strip_prefix('L').unwrap_or(s));
         if let Some(line) = number(first) {
-            if !path.is_empty() {
-                return (path, Some(line), None);
+            if !path.is_empty() && parts.next().is_none() {
+                let end_line = second.and_then(number);
+                return (path, Some(line), end_line, None);
             }
         }
     }
@@ -262,7 +286,7 @@ fn split_position(text: &str) -> (&str, Option<u32>, Option<u32>) {
             if let Some(line) = parts.next().and_then(number) {
                 let column = parts.next().and_then(|c| number(c.trim()));
                 if open > 0 && parts.next().is_none() {
-                    return (&text[..open], Some(line), column);
+                    return (&text[..open], Some(line), None, column);
                 }
             }
         }
@@ -275,32 +299,36 @@ fn split_position(text: &str) -> (&str, Option<u32>, Option<u32>) {
     match pieces.as_slice() {
         [path, line, column] if !path.is_empty() => {
             if let (Some(line), Some(column)) = (number(line), number(column)) {
-                return (&trimmed[..path.len()], Some(line), Some(column));
+                return (&trimmed[..path.len()], Some(line), None, Some(column));
             }
             // `a:b:12` where only the last piece is a number: the path contains a colon.
             let split = trimmed.len() - column.len() - 1;
-            if let Some(line) = line_of(column) {
-                return (&trimmed[..split], Some(line), None);
+            if let Some((line, end_line)) = line_range_of(column) {
+                return (&trimmed[..split], Some(line), end_line, None);
             }
         }
         [path, line] if !path.is_empty() => {
-            if let Some(line) = line_of(line) {
-                return (&trimmed[..path.len()], Some(line), None);
+            if let Some((line, end_line)) = line_range_of(line) {
+                return (&trimmed[..path.len()], Some(line), end_line, None);
             }
         }
         _ => {}
     }
-    (text, None, None)
+    (text, None, None, None)
 }
 
-/// `12` or the start of a range `12-30`.
-fn line_of(text: &str) -> Option<u32> {
-    let first = text.split('-').next()?;
-    let rest_ok = text.split('-').skip(1).all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
-    if !rest_ok || text.split('-').count() > 2 {
+/// `12` -> `(12, None)` or `12-30` -> `(12, Some(30))`.
+fn line_range_of(text: &str) -> Option<(u32, Option<u32>)> {
+    let mut parts = text.split('-');
+    let first = parts.next()?.parse::<u32>().ok().filter(|n| *n > 0)?;
+    let second = match parts.next() {
+        Some(end) => Some(end.parse::<u32>().ok().filter(|n| *n > 0)?),
+        None => None,
+    };
+    if parts.next().is_some() {
         return None;
     }
-    first.parse::<u32>().ok().filter(|n| *n > 0)
+    Some((first, second))
 }
 
 fn percent_decode(text: &str) -> String {
@@ -388,10 +416,15 @@ mod tests {
         let odd = dir.path().join("notes:2");
         std::fs::write(&odd, "x").unwrap();
         let parsed = parse_path_spec("notes:2", dir.path());
-        assert_eq!(parsed, PathSpec { path: odd, line: None, column: None });
+        assert_eq!(parsed, PathSpec { path: odd, line: None, end_line: None, column: None });
         // When it does not exist the suffix is a position.
         let parsed = parse_path_spec("other:2", dir.path());
         assert_eq!(parsed.line, Some(2));
+        assert_eq!(parsed.end_line, None);
+        let range = parse_path_spec("other:2-9", dir.path());
+        assert_eq!((range.line, range.end_line), (Some(2), Some(9)));
+        let hash_range = parse_path_spec("other#L4-L12", dir.path());
+        assert_eq!((hash_range.line, hash_range.end_line), (Some(4), Some(12)));
     }
 
     #[test]
@@ -403,11 +436,12 @@ mod tests {
     #[test]
     fn options() {
         let cwd = Path::new("/work");
-        let args = parse(["-n", "--no-restore", "--terminal", "shell", "a.rs:3", "--log", "debug.log"], cwd).unwrap();
-        assert!(args.new_instance && args.no_restore);
+        let args = parse(["-n", "--no-restore", "--no-focus", "--highlight", "--terminal", "shell", "a.rs:3", "--log", "debug.log"], cwd).unwrap();
+        assert!(args.new_instance && args.no_restore && args.no_focus && args.highlight);
         assert_eq!(args.terminal_command.as_deref(), Some("shell"));
         assert_eq!(args.paths.len(), 1);
         assert_eq!(args.paths[0].line, Some(3));
+        assert_eq!(args.paths[0].end_line, Some(3));
         assert_eq!(args.log_file, Some(PathBuf::from("/work/debug.log")));
         assert_eq!(args.mode, Mode::Edit);
 

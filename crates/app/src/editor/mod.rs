@@ -429,6 +429,25 @@ impl Item for EditorItem {
         self.reveal = Reveal::Center;
     }
 
+    fn highlight_lines(&mut self, start_line: u32, end_line: u32) {
+        let buffer = self.editor.buffer();
+        let max_line = buffer.len_lines().max(1);
+        let start_idx = (start_line.max(1) as usize).min(max_line) - 1;
+        let end_idx = (end_line.max(1) as usize).min(max_line).max(start_idx + 1) - 1;
+        let start_char = buffer.line_to_char(start_idx);
+        let end_char = if end_idx + 1 < buffer.len_lines() {
+            buffer.line_to_char(end_idx + 1)
+        } else {
+            buffer.len_chars()
+        };
+        // Anchor at the end and place head at the start so `Reveal::Center` centers the top of
+        // the highlighted block while the selection covers every line in `start_line..=end_line`.
+        let selection = bakedit_text::Selection::new(end_char, start_char);
+        self.editor.break_undo_group();
+        self.editor.set_selections(bakedit_text::Selections::new(vec![selection], 0));
+        self.reveal = Reveal::Center;
+    }
+
     fn line_count(&self) -> Option<usize> {
         Some(self.editor.buffer().len_lines())
     }

@@ -405,6 +405,12 @@ pub trait Item: View {
         let _ = (line, column);
     }
 
+    /// Highlight an inclusive 1-based line range and reveal it. Defaults to [`Item::go_to`].
+    fn highlight_lines(&mut self, start_line: u32, end_line: u32) {
+        let _ = end_line;
+        self.go_to(start_line, None);
+    }
+
     /// The 1-based cursor position, for the navigation history and the session file.
     fn position(&self) -> Option<(u32, u32)> {
         None
