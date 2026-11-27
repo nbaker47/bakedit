@@ -400,27 +400,50 @@ impl ProjectPanel {
     }
 
     /// Switch the active git repository when the selected file tree entry belongs to a
-    /// different discovered repository.
-    fn sync_git_repo(&self, cx: &mut Cx<'_>) {
-        let Some(row) = self.selected_row() else { return };
-        let Some(repo_root) = cx.project.repo_root_for_path(&row.path) else { return };
+    /// different discovered repository. Returns `true` when the active repository changed.
+    fn sync_git_repo(&self, cx: &mut Cx<'_>) -> bool {
+        let Some(row) = self.selected_row() else { return false };
+        let Some(repo_root) = cx.project.repo_root_for_path(&row.path) else { return false };
         if cx.project.repo().map(|r| r.root()) == Some(repo_root.as_path()) {
-            return;
+            return false;
         }
         cx.push(Effect::SelectRepo(repo_root));
+        true
     }
 
-    /// While walking files in the tree, keep the git panel selection and git diff tab
-    /// synced to the highlighted file (without stealing keyboard focus from the tree).
+    /// While walking entries in the tree, keep the git panel selection and centre pane
+    /// synced to the highlighted entry (without stealing keyboard focus from the tree):
+    ///
+    /// - When `project_panel.git_diff_on_select` is on, files and folders with git changes
+    ///   (or newly entered repositories) open/scroll the git diff tab.
+    /// - When `project_panel.git_diff_on_select` is off, files open automatically in a
+    ///   preview tab in the editor without needing Space or Enter.
     fn sync_git_selection(&self, cx: &mut Cx<'_>) {
-        self.sync_git_repo(cx);
+        let switched_repo = self.sync_git_repo(cx);
         let Some(row) = self.selected_row() else { return };
-        if row.is_dir() || cx.project.repo_root_for_path(&row.path).is_none() {
-            return;
+        let in_repo = cx.project.repo_root_for_path(&row.path).is_some();
+        if !row.is_dir() && in_repo {
+            cx.push(Effect::SelectInGitPanel(row.path.clone()));
         }
-        cx.push(Effect::SelectInGitPanel(row.path.clone()));
-        if cx.settings.project_panel.git_diff_on_select && self.colors.files.contains_key(&row.path) {
-            cx.push(Effect::ShowProjectDiff { path: Some(row.path.clone()), focus: false });
+        if cx.settings.project_panel.git_diff_on_select {
+            if in_repo {
+                let has_diff = if row.is_dir() {
+                    self.colors.dirs.contains(&row.path) || switched_repo
+                } else {
+                    self.colors.files.contains_key(&row.path)
+                };
+                if has_diff {
+                    cx.push(Effect::ShowProjectDiff { path: Some(row.path.clone()), focus: false });
+                }
+            }
+        } else if !row.is_dir() {
+            cx.push(Effect::OpenFile {
+                path: row.path.clone(),
+                line: None,
+                column: None,
+                preview: true,
+                focus: false,
+            });
         }
     }
 
@@ -2207,6 +2230,8 @@ mod tests {
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/c.txt"), "three\n").unwrap();
         std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "two\n").unwrap();
 
@@ -2220,24 +2245,47 @@ mod tests {
         assert!(harness.project.repo().is_some(), "git repo should be discovered");
 
         let mut panel = ProjectPanel::new(&mut harness.cx());
+        let sub_path = harness.project.root().join("sub");
         let b_path = harness.project.root().join("b.txt");
         let a_path = harness.project.root().join("a.txt");
         panel.colors.files.insert(b_path.clone(), DisplayStatus::Modified);
+        panel.colors.dirs.insert(sub_path.clone());
 
         // Default (git_diff_on_select = true): walking onto a modified file opens the diff.
         select(&mut panel, &mut harness, &a_path);
         harness.effects.clear();
         act(&mut panel, &mut harness, "menu::SelectNext");
         assert_eq!(panel.selected_row().unwrap().path, b_path);
-        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { path: Some(p), focus: false } if p == &b_path)));
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::OpenFile { .. })));
 
-        // Disabled (git_diff_on_select = false): walking still syncs git panel, but does not open diff.
+        // Default (git_diff_on_select = true): walking onto a folder with changes also triggers git diff.
+        select(&mut panel, &mut harness, &a_path);
+        harness.effects.clear();
+        act(&mut panel, &mut harness, "menu::SelectPrevious");
+        assert_eq!(panel.selected_row().unwrap().path, sub_path);
+        assert!(harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { path: Some(p), focus: false } if p == &sub_path)));
+
+        // Disabled (git_diff_on_select = false): walking onto a file opens it in a preview editor tab
+        // without stealing focus, still syncs git panel, and does not open diff.
         harness.settings.project_panel.git_diff_on_select = false;
         select(&mut panel, &mut harness, &a_path);
         harness.effects.clear();
         act(&mut panel, &mut harness, "menu::SelectNext");
         assert_eq!(panel.selected_row().unwrap().path, b_path);
         assert!(harness.effects.iter().any(|e| matches!(e, Effect::SelectInGitPanel(_))));
+        assert!(harness.effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenFile { path, line: None, column: None, preview: true, focus: false } if path == &b_path
+        )));
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
+
+        // Disabled (git_diff_on_select = false): walking onto a folder does not open an editor or diff tab.
+        select(&mut panel, &mut harness, &a_path);
+        harness.effects.clear();
+        act(&mut panel, &mut harness, "menu::SelectPrevious");
+        assert_eq!(panel.selected_row().unwrap().path, sub_path);
+        assert!(!harness.effects.iter().any(|e| matches!(e, Effect::OpenFile { .. })));
         assert!(!harness.effects.iter().any(|e| matches!(e, Effect::ShowProjectDiff { .. })));
     }
 }

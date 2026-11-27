@@ -586,9 +586,21 @@ impl ProjectDiff {
         }
     }
 
-    /// The row of a file's header, by its path relative to the work tree.
+    /// The row of a file's header, by its path relative to the work tree. When `relative` is
+    /// a directory (or the repository root `""`), returns the first changed file inside it.
     fn file_row(&self, relative: &Path) -> Option<usize> {
-        self.rows.iter().position(|row| matches!(row, DiffRow::File(file) if self.files[*file].path == relative))
+        self.rows
+            .iter()
+            .position(|row| matches!(row, DiffRow::File(file) if self.files[*file].path == relative))
+            .or_else(|| {
+                self.rows.iter().position(|row| {
+                    matches!(
+                        row,
+                        DiffRow::File(file)
+                            if relative.as_os_str().is_empty() || self.files[*file].path.starts_with(relative)
+                    )
+                })
+            })
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -1042,7 +1054,7 @@ impl View for ProjectDiff {
                     None => {
                         self.wanted = Some(relative);
                         if self.task.is_none()
-                            && self.generation.is_some()
+                            && self.generation == Some(cx.project.git_generation())
                             && self.diff_base == crate::project::DiffBase::Uncommitted
                         {
                             self.wanted_fallback = true;
@@ -1533,5 +1545,22 @@ mod tests {
 
         assert!(act(&mut harness, &mut diff, "buffer_search::Dismiss"));
         assert!(diff.find.is_none());
+    }
+
+    #[test]
+    fn show_file_with_folder_scrolls_to_first_changed_file_in_folder() {
+        let dir = repo();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "top\n").unwrap();
+        std::fs::write(dir.path().join("sub/z.txt"), "nested\n").unwrap();
+        let (mut harness, mut diff) = loaded(dir.path());
+
+        let show = Action::with_args(
+            "project_diff::ShowFile",
+            json!({ "path": dir.path().join("sub").to_string_lossy() }),
+        );
+        assert!(diff.handle_action(&show, &mut harness.cx()));
+        assert_eq!(diff.file_under_cursor().map(|f| f.path.as_path()), Some(Path::new("sub/z.txt")));
+        assert_eq!(diff.scroll, diff.cursor);
     }
 }
