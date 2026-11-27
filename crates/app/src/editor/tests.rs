@@ -1554,3 +1554,23 @@ fn write_snapshots_for_looking_at() {
     let mut md = EditorItem::page("notes.md", &"A long paragraph of text that has to wrap onto several rows when the window is narrow. ".repeat(6), Some("Markdown"), &mut harness.cx());
     write("editor-wrap.html", &harness, &mut md, 60, 12);
 }
+
+#[test]
+fn markdown_tables_render_aligned_in_nav_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut harness = Harness::new(dir.path());
+    harness.settings.vim_mode = true;
+    let doc = concat!(
+        "# Table\n",
+        "| Crate | Count | Status |\n",
+        "| :--- | :---: | ---: |\n",
+        "| `core` | **12** | [ok](https://example.com) |\n",
+        "| `app` | 3 | ready |\n",
+    );
+    let mut item = EditorItem::page("notes.md", doc, Some("Markdown"), &mut harness.cx());
+    let (rendered, _, _) = harness.draw(&mut item, 60, 10);
+    assert!(rendered.contains("│ Crate │ Count │ Status │"), "missing aligned header:\n{rendered}");
+    assert!(rendered.contains("├───────┼───────┼────────┤"), "missing box-drawing rule:\n{rendered}");
+    assert!(rendered.contains("│ core  │  12   │     ok │"), "missing aligned first body row:\n{rendered}");
+    assert!(rendered.contains("│ app   │   3   │  ready │"), "missing aligned second body row:\n{rendered}");
+}
