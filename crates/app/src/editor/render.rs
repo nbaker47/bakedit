@@ -304,15 +304,26 @@ impl EditorItem {
         // ---- rows ---------------------------------------------------------------------
         let render_md = self.language.id == "markdown" && self.modal && !self.insert;
         let mut in_fence = false;
+        let mut fence_lang_cur: Option<String> = None;
+        let mut fence_open_line: usize = 0;
         if render_md {
             let buffer = self.editor.buffer();
             for l in 0..self.scroll.line.min(line_count) {
-                if crate::markdown::is_fence(&buffer.line_text(l)) {
-                    in_fence = !in_fence;
+                let lt = buffer.line_text(l);
+                if crate::markdown::is_fence(&lt) {
+                    if in_fence {
+                        in_fence = false;
+                        fence_lang_cur = None;
+                    } else {
+                        in_fence = true;
+                        fence_open_line = l;
+                        fence_lang_cur = crate::markdown::fence_lang(&lt).map(|s| s.to_ascii_lowercase());
+                    }
                 }
             }
         }
         let mut cached_table: Option<crate::markdown::TableSpec> = None;
+        let mut cached_mermaid: Option<(usize, usize, crate::mermaid::RenderedDiagram)> = None;
         let mut shown: Vec<ShownRow> = Vec::with_capacity(rows);
         let mut scroll = self.scroll;
         scroll.row = scroll.row.min(self.rows_in(scroll.line).saturating_sub(1));
@@ -330,7 +341,32 @@ impl EditorItem {
             let fence_line = render_md && crate::markdown::is_fence(&text);
             let was_in_fence = in_fence;
             if fence_line {
-                in_fence = !in_fence;
+                if in_fence {
+                    in_fence = false;
+                    fence_lang_cur = None;
+                } else {
+                    in_fence = true;
+                    fence_open_line = line;
+                    fence_lang_cur = crate::markdown::fence_lang(&text).map(|s| s.to_ascii_lowercase());
+                }
+            }
+            let in_mermaid = render_md && was_in_fence && !fence_line && fence_lang_cur.as_deref() == Some("mermaid");
+            if in_mermaid {
+                let valid = cached_mermaid.as_ref().is_some_and(|(o, c, _)| line > *o && line < *c);
+                if !valid {
+                    let mut close = line_count;
+                    for l in (fence_open_line + 1)..line_count {
+                        if crate::markdown::is_fence(&buffer.line_text(l)) {
+                            close = l;
+                            break;
+                        }
+                    }
+                    let src: Vec<String> = ((fence_open_line + 1)..close).map(|l| buffer.line_text(l).into_owned()).collect();
+                    cached_mermaid = crate::mermaid::render(&src, text_width as usize, theme.editor_bg, theme)
+                        .map(|diag| (fence_open_line, close, diag));
+                }
+            } else {
+                cached_mermaid = None;
             }
             let use_md = render_md && (!was_in_fence || fence_line);
             if use_md && !fence_line {
@@ -424,12 +460,42 @@ impl EditorItem {
                     canvas.put(bx + blame_width - 1, y, "│", sep_style);
                 }
                 let row_bg = if current { theme.active_line_bg } else { theme.editor_bg };
+                let mermaid_hit = if in_mermaid && row_index == 0 && line_selections.is_empty() && matches.is_empty() {
+                    cached_mermaid.as_ref().filter(|(o, c, _)| line > *o && line < *c)
+                } else {
+                    None
+                };
                 let table_spec = if use_md && !fence_line {
                     cached_table.as_ref().filter(|t| line >= t.start && line < t.end)
                 } else {
                     None
                 };
-                if let Some(spec) = table_spec.filter(|_| line_selections.is_empty() && matches.is_empty()) {
+                if let Some((open_l, close_l, diag)) = mermaid_hit {
+                    canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
+                    let idx = line - (open_l + 1);
+                    if let Some(drow) = diag.lines.get(idx) {
+                        crate::mermaid::draw_diagram_row(canvas, self.geo.text.x, y, text_width, self.left, drow);
+                    }
+                    // If the rendered diagram is taller than the source fence interior, emit
+                    // the remaining diagram rows right after the last interior line.
+                    if line + 1 == *close_l {
+                        let interior_len = close_l.saturating_sub(open_l + 1);
+                        for extra in diag.lines.iter().skip(interior_len) {
+                            y += 1;
+                            if y >= body.bottom() {
+                                break;
+                            }
+                            paint::gutter(canvas, body.x, y, gutter_width, GutterInfo { number: None, current: false, git: None }, numbers, theme);
+                            if blame_width > 0 {
+                                let bx = body.x + gutter_width;
+                                canvas.fill(Rect::new(bx, y, blame_width, 1), theme.gutter_bg);
+                                canvas.put(bx + blame_width - 1, y, "│", Style::colors(theme.border_variant, theme.gutter_bg));
+                            }
+                            canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), theme.editor_bg);
+                            crate::mermaid::draw_diagram_row(canvas, self.geo.text.x, y, text_width, self.left, extra);
+                        }
+                    }
+                } else if let Some(spec) = table_spec.filter(|_| line_selections.is_empty() && matches.is_empty()) {
                     canvas.fill(Rect::new(self.geo.text.x, y, text_width, 1), row_bg);
                     let kind = spec.row_kind(line);
                     crate::markdown::draw_table_row(

@@ -23,6 +23,7 @@ pub mod layout;
 pub mod line_input;
 pub mod logging;
 pub mod markdown;
+pub mod mermaid;
 pub mod minimap;
 pub mod onboarding;
 pub mod paint;
